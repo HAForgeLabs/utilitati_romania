@@ -118,30 +118,6 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return 0;
   }
 
-  _readNumericState(entityId) {
-    const state = entityId ? this._hass?.states?.[entityId]?.state : null;
-    if (state === null || state === undefined || ["unknown", "unavailable"].includes(String(state))) {
-      return null;
-    }
-    const value = this._toNumber(state);
-    return Number.isFinite(value) ? value : null;
-  }
-
-  async _waitForNumberState(entityId, expectedValue, timeoutMs = 15000) {
-    const expected = Number(expectedValue);
-    const startedAt = Date.now();
-
-    while (Date.now() - startedAt <= timeoutMs) {
-      const current = this._readNumericState(entityId);
-      if (current !== null && Math.abs(current - expected) < 0.000001) {
-        return true;
-      }
-      await this._sleep(300);
-    }
-
-    return false;
-  }
-
   _formatMoney(value, currency = "RON") {
     if (value === null || value === undefined || value === "") return "—";
     const amount = this._toNumber(value);
@@ -185,21 +161,49 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   _parseDateLike(value) {
     if (!value) return null;
     const text = String(value).trim();
-    if (!text) return null;
+    if (!text || text === "-") return null;
 
     if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
       return new Date(`${text}T00:00:00`);
     }
     if (/^\d{4}-\d{2}-\d{2}T/.test(text)) {
-      return new Date(text);
+      const parsed = new Date(text);
+      if (Number.isNaN(parsed.getTime())) return null;
+      return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
     }
-    if (/^\d{2}\.\d{2}\.\d{4}$/.test(text)) {
-      const [dd, mm, yyyy] = text.split(".");
+    if (/^\d{2}[./-]\d{2}[./-]\d{4}$/.test(text)) {
+      const [dd, mm, yyyy] = text.split(/[./-]/);
       return new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
     }
 
     const parsed = new Date(text);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+    if (Number.isNaN(parsed.getTime())) return null;
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  }
+
+  _daysPastDue(value) {
+    const date = this._parseDateLike(value);
+    if (!date) return null;
+
+    const diffMs = this._todayDate().getTime() - date.getTime();
+    const diffDays = Math.floor(diffMs / 86400000);
+    return diffDays > 0 ? diffDays : 0;
+  }
+
+  _buildDueDateMeta(provider, status) {
+    const rawDueDate = provider?.due_date || provider?.data_scadenta || provider?.scadenta || provider?.dueDate;
+    const formattedDueDate = this._formatDate(rawDueDate);
+    if (!rawDueDate || formattedDueDate === "—") return "";
+
+    const daysPastDue = this._daysPastDue(rawDueDate);
+    const isOverdue = status === "unpaid" && Number.isFinite(daysPastDue) && daysPastDue > 0;
+    const overdueText = daysPastDue === 1 ? "depășită cu 1 zi" : `depășită cu ${daysPastDue} zile`;
+
+    return `
+      <div class="row-due ${isOverdue ? "row-due-overdue" : ""}">
+        Scadentă: ${this._escapeHtml(formattedDueDate)}${isOverdue ? ` • ${this._escapeHtml(overdueText)}` : ""}
+      </div>
+    `;
   }
 
   _todayDate() {
@@ -313,7 +317,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal"].includes(providerKey)) {
+    if (!providerKey || !["hidroelectrica", "eon", "myelectrica"].includes(providerKey)) {
       return null;
     }
 
@@ -325,9 +329,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
       const looksLikeReadingSensor = !!(
         entityId.includes("citire_permisa") ||
-        entityId.includes("citire_index_permisa") ||
         text.includes("citire permisa") ||
-        text.includes("citire index permisa") ||
         attrs.inceput_perioada || attrs.sfarsit_perioada || attrs["Perioadă start"] || attrs["Perioadă sfârșit"]
       );
 
@@ -447,128 +449,31 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
     if (providerKey === "eon") {
       const base = sensorObject.replace(/_citire_permisa$/, "");
-      const idCont = String(provider?.id_cont || "").trim();
-      const tipServiciu = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
-      const wantsGas = tipServiciu.includes("gaz");
-      const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie");
-
-      const isOtherProviderEntity = (stateObj) => {
-        const text = this._entityFriendlyText(stateObj);
-        const entityId = String(stateObj?.entity_id || "").toLowerCase();
-        return (
-          entityId.includes("hidro") ||
-          entityId.includes("hidroelectrica") ||
-          entityId.includes("myelectrica") ||
-          entityId.includes("apa_canal") ||
-          entityId.includes("apacanal") ||
-          entityId.includes("ebloc") ||
-          text.includes("hidro") ||
-          text.includes("hidroelectrica") ||
-          text.includes("myelectrica") ||
-          text.includes("apa canal") ||
-          text.includes("ebloc")
-        );
-      };
-
-      const scoreEonEntity = (stateObj, kind) => {
-        if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
-        if (isOtherProviderEntity(stateObj)) return -1;
-
-        const entityId = String(stateObj.entity_id || "").toLowerCase();
-        const text = this._entityFriendlyText(stateObj);
-        const attrs = stateObj.attributes || {};
-        let score = 0;
-
-        if (entityId.includes("eon")) score += 160;
-        if (text.includes("eon")) score += 80;
-        if (idCont && entityId.includes(idCont)) score += 160;
-        if (idCont && String(attrs.id_cont ?? "").trim() === idCont) score += 180;
-        if (entityId.includes(base)) score += 120;
-        if (this._textMatchesAny(text, terms)) score += 90;
-        if (this._textMatchesAny(entityId, terms)) score += 50;
-
-        if (kind === "number") {
-          if (text.includes("index gaz") || entityId.includes("index_gaz")) score += wantsGas ? 120 : 40;
-          if (text.includes("index energie") || entityId.includes("index_energie")) score += wantsElectric ? 120 : 40;
-          if (text.includes("index") || entityId.includes("index")) score += 40;
-        }
-
-        if (kind === "button") {
-          if (!text.includes("trimite index") && !entityId.includes("trimite_index")) return -1;
-          if (text.includes("gaz") || entityId.includes("gaz")) score += wantsGas ? 120 : 30;
-          if (text.includes("energie") || entityId.includes("electric")) score += wantsElectric ? 120 : 30;
-          if (entityId.includes("eon")) score += 160;
-        }
-
-        return score;
-      };
-
-      const bestEntity = (kind, minimumScore) => {
-        let best = null;
-        let bestScore = -1;
-        for (const stateObj of Object.values(states)) {
-          const score = scoreEonEntity(stateObj, kind);
-          if (score > bestScore) {
-            best = stateObj;
-            bestScore = score;
-          }
-        }
-        return bestScore >= minimumScore ? best : null;
-      };
-
-      const exactNumber = states[`number.${base}_index`] || states[`number.${base}_index_gaz`] || states[`number.${base}_index_energie_electrica`] || null;
-      const numberEntity = exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : bestEntity("number", 120);
-
-      let currentEntity = states[`sensor.${base}_index_contor`] || states[`sensor.${base}_index_energie_electrica`] || states[`sensor.${base}_index_gaz`] || null;
-      if (currentEntity && isOtherProviderEntity(currentEntity)) currentEntity = null;
-      if (!currentEntity) currentEntity = bestEntity("sensor", 120);
-
-      const exactButton = states[`button.${base}_trimite_index`] || states[`button.${base}_trimite_index_gaz`] || states[`button.${base}_trimite_index_energie_electrica`] || null;
-      const buttonEntity = exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120);
-
-      if (numberEntity && buttonEntity) {
-        controls.push({
-          key: `${providerKey}_${provider.id_cont || base}`,
-          providerKey,
-          label: "Index de transmis",
-          numberEntityId: numberEntity.entity_id,
-          buttonEntityId: buttonEntity.entity_id,
-          currentEntityId: currentEntity?.entity_id || null,
-        });
-      }
-      return controls;
-    }
-
-
-
-    if (providerKey === "apa_canal") {
-      const base = sensorObject.replace(/_citire_index_permisa$/, "").replace(/_citire_permisa$/, "");
-      let numberEntity = states[`number.${base}_index_de_transmis`] || null;
+      let numberEntity = Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("number.") && stateObj.entity_id.includes(`${base}_index`));
       if (!numberEntity) {
         numberEntity = Object.values(states).find((stateObj) => {
           if (!stateObj.entity_id.startsWith("number.")) return false;
-          const attrs = stateObj.attributes || {};
           const text = this._entityFriendlyText(stateObj);
-          return (
-            String(attrs.id_cont ?? "") === String(provider.id_cont ?? "") ||
-            (this._textMatchesAny(text, terms) && text.includes("index"))
-          );
+          return this._textMatchesAny(text, terms) && (text.includes("index gaz") || text.includes("index energie") || text.includes("index"));
         });
       }
-
-      const buttonEntity = states[`button.${base}_trimite_index`] || Object.values(states).find((stateObj) => {
+      let currentEntity = Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("sensor.") && (stateObj.entity_id === `sensor.${base}_index_contor` || stateObj.entity_id === `sensor.${base}_index_energie_electrica` || stateObj.entity_id === `sensor.${base}_index_gaz`));
+      if (!currentEntity) {
+        currentEntity = Object.values(states).find((stateObj) => {
+          if (!stateObj.entity_id.startsWith("sensor.")) return false;
+          const text = this._entityFriendlyText(stateObj);
+          return this._textMatchesAny(text, terms) && (text.includes(" index ") || text.includes("index gaz") || text.includes("index energie") || text.includes("index contor"));
+        });
+      }
+      const buttonEntity = Object.values(states).find((stateObj) => {
         if (!stateObj.entity_id.startsWith("button.")) return false;
         const text = this._entityFriendlyText(stateObj);
-        return text.includes("trimite index") && this._textMatchesAny(text, terms);
+        return text.includes("trimite index") && (this._textMatchesAny(text, terms) || text.includes(readingText));
       });
-
-      const currentEntity = states[`sensor.${base}_ultimul_index`] || null;
-
       if (numberEntity && buttonEntity) {
         controls.push({
           key: `${providerKey}_${provider.id_cont || base}`,
-          providerKey,
-          label: "Index apă de transmis",
+          label: "Index de transmis",
           numberEntityId: numberEntity.entity_id,
           buttonEntityId: buttonEntity.entity_id,
           currentEntityId: currentEntity?.entity_id || null,
@@ -662,8 +567,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
         ...control,
         numberState,
         currentState,
-        readingSensorState: readingSensor,
-        unit: numberState?.attributes?.unit_of_measurement || currentState?.attributes?.unit_of_measurement || readingSensor?.attributes?.unit_of_measurement || "",
+        unit: numberState?.attributes?.unit_of_measurement || currentState?.attributes?.unit_of_measurement || "",
         currentValue: currentState ? currentState.state : null,
       };
     });
@@ -716,120 +620,20 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     });
   }
 
-  _firstDefined(...values) {
-    for (const value of values) {
-      if (value !== undefined && value !== null && value !== "") {
-        return value;
-      }
-    }
-    return null;
-  }
-
-  _normalizeReadingUnit(unit) {
-    const text = String(unit || "").trim();
-    if (!text) return "";
-    if (["m3", "M3", "mc", "MC"].includes(text)) return "m³";
-    return text;
-  }
-
   _getBackendReadingHistoryEntry(control) {
-    const currentAttrs = control?.currentState?.attributes || {};
-    const numberAttrs = control?.numberState?.attributes || {};
-    const readingAttrs = control?.readingSensorState?.attributes || {};
-    const providerKey = String(control?.providerKey || "").trim().toLowerCase();
-
-    const value = this._firstDefined(
-      currentAttrs.ultima_citire_transmisa,
-      currentAttrs.ultima_citire_transmisa_valoare,
-      currentAttrs.ultima_citire_client,
-      currentAttrs.ultima_citire,
-      currentAttrs.ultimul_index_transmis,
-      currentAttrs.index_transmis,
-      currentAttrs.valoare,
-      currentAttrs.value,
-      currentAttrs.index,
-      readingAttrs.ultima_citire_transmisa,
-      readingAttrs.ultima_citire_transmisa_valoare,
-      readingAttrs.ultima_citire_client,
-      readingAttrs.ultima_citire,
-      readingAttrs.ultimul_index_transmis,
-      readingAttrs.index_transmis,
-      readingAttrs.valoare,
-      readingAttrs.value,
-      readingAttrs.index,
-      numberAttrs.ultima_citire_transmisa,
-      numberAttrs.ultima_citire_transmisa_valoare,
-      numberAttrs.ultima_citire_client,
-      numberAttrs.ultima_citire,
-      numberAttrs.ultimul_index_transmis,
-      numberAttrs.index_transmis,
-      numberAttrs.valoare,
-      numberAttrs.value,
-      numberAttrs.index
-    );
-
-    const timestamp = this._firstDefined(
-      currentAttrs.ultima_citire_transmisa_la,
-      currentAttrs.ultima_citire_transmisa_data,
-      currentAttrs.data_ultima_citire,
-      currentAttrs.ultima_citire_data,
-      currentAttrs.data_citire,
-      currentAttrs.timestamp,
-      currentAttrs.date,
-      currentAttrs.data,
-      readingAttrs.ultima_citire_transmisa_la,
-      readingAttrs.ultima_citire_transmisa_data,
-      readingAttrs.data_ultima_citire,
-      readingAttrs.ultima_citire_data,
-      readingAttrs.data_citire,
-      readingAttrs.timestamp,
-      readingAttrs.date,
-      readingAttrs.data,
-      numberAttrs.ultima_citire_transmisa_la,
-      numberAttrs.ultima_citire_transmisa_data,
-      numberAttrs.data_ultima_citire,
-      numberAttrs.ultima_citire_data,
-      numberAttrs.data_citire,
-      numberAttrs.timestamp,
-      numberAttrs.date,
-      numberAttrs.data
-    );
-
-    let finalValue = value;
-    const finalTimestamp = timestamp;
-
-    if ((finalValue === undefined || finalValue === null || finalValue === "") && providerKey === "apa_canal") {
-      const currentStateValue = control?.currentState?.state;
-      if (currentStateValue && !["unknown", "unavailable"].includes(String(currentStateValue))) {
-        finalValue = currentStateValue;
-      }
-    }
-
-    if (finalValue === undefined || finalValue === null || finalValue === "" || !finalTimestamp) {
+    const attrs = control?.currentState?.attributes || {};
+    const value = attrs.ultima_citire_transmisa;
+    const timestamp = attrs.ultima_citire_transmisa_la;
+    if (value === undefined || value === null || value === "" || !timestamp) {
       return null;
     }
-
-    const unit = this._normalizeReadingUnit(
-      this._firstDefined(
-        currentAttrs.unitate,
-        currentAttrs.unit,
-        currentAttrs.unit_of_measurement,
-        readingAttrs.unitate,
-        readingAttrs.unit,
-        readingAttrs.unit_of_measurement,
-        numberAttrs.unitate,
-        numberAttrs.unit,
-        numberAttrs.unit_of_measurement,
-        control?.unit
-      )
-    );
-
     return {
-      value: finalValue,
-      unit,
-      timestamp: finalTimestamp,
+      value,
+      unit: control?.unit || control?.currentState?.attributes?.unit_of_measurement || "",
+      timestamp,
     };
   }
+
   _getActionState(type, entityId) {
     return this._actionState[this._actionStateKey(type, entityId)] || { status: "idle", message: "" };
   }
@@ -889,7 +693,6 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
             data-id-contract="${this._escapeAttr(String(provider?.id_contract || ""))}"
             data-control-label="${this._escapeAttr(String(control.label || ""))}"
             data-current-value="${this._escapeAttr(String(control.currentValue ?? ""))}"
-            data-current-entity="${this._escapeAttr(control.currentEntityId || "")}"
             data-unit="${this._escapeAttr(String(control.unit || ""))}"
           >
             <div class="reading-control-header">
@@ -1051,10 +854,11 @@ _buildProviderRefreshButton(provider) {
     const status = this._providerEffectiveStatus(provider);
     const statusLabel = this._statusLabel(status);
     const issueDate = this._formatDate(provider.issue_date || provider.data_emitere);
-    const dueDate = this._formatDate(provider.due_date || provider.data_scadenta);
+    const dueDate = this._formatDate(provider.due_date || provider.data_scadenta || provider.scadenta || provider.dueDate);
     const tipServiciu = provider.tip_serviciu || "—";
     const numeCont = provider.nume_cont || "—";
     const readingData = this._getReadingData(location, provider);
+    const dueDateMeta = this._buildDueDateMeta(provider, status);
 
     const key = this._rowKey(location, provider, index);
     const expanded = this._isExpanded(key);
@@ -1077,7 +881,10 @@ _buildProviderRefreshButton(provider) {
             <div class="row-title">${this._escapeHtml(title)}</div>
           </div>
 
-          <div class="row-amount">${this._escapeHtml(amountFormatted)}</div>
+          <div class="row-amount-block">
+            <div class="row-amount">${this._escapeHtml(amountFormatted)}</div>
+            ${dueDateMeta}
+          </div>
 
           <div class="row-actions">
             ${this._buildProviderRefreshButton(provider)}
@@ -1541,8 +1348,6 @@ _buildProviderRefreshButton(provider) {
         const wrapper = event.target.closest(".reading-control");
         const numberEntityId = wrapper?.getAttribute("data-number-entity");
         const buttonEntityId = wrapper?.getAttribute("data-button-entity");
-        const currentEntityId = wrapper?.getAttribute("data-current-entity");
-        const providerKey = String(wrapper?.getAttribute("data-provider") || "").trim().toLowerCase();
         const input = wrapper?.querySelector(".reading-input");
         const value = String(input?.value ?? "").trim();
 
@@ -1603,40 +1408,10 @@ _buildProviderRefreshButton(provider) {
         this._render();
 
         try {
-          const numberStateBefore = this._hass?.states?.[numberEntityId];
-          const buttonStateBefore = this._hass?.states?.[buttonEntityId];
-
-          if (!numberStateBefore) {
-            throw new Error(`Entitatea number nu există în Home Assistant: ${numberEntityId}`);
-          }
-
-          if (!buttonStateBefore) {
-            throw new Error(`Entitatea button nu există în Home Assistant: ${buttonEntityId}`);
-          }
-
-          if (["unavailable", "unknown"].includes(String(buttonStateBefore.state || "").toLowerCase())) {
-            throw new Error(`Butonul de transmitere nu este disponibil: ${buttonEntityId}`);
-          }
-
-
           await this._hass.callService("number", "set_value", {
             entity_id: numberEntityId,
             value: numericValue,
           });
-
-          const valueSynced = await this._waitForNumberState(
-            numberEntityId,
-            numericValue,
-            providerKey === "eon" ? 15000 : 6000
-          );
-
-          if (!valueSynced) {
-            const currentState = this._hass?.states?.[numberEntityId]?.state ?? "necunoscut";
-            throw new Error(
-              `Valoarea introdusă nu a fost confirmată încă de Home Assistant pentru ${numberEntityId}. ` +
-              `Valoare curentă: ${currentState}. Reîncearcă după câteva secunde.`
-            );
-          }
 
           await this._hass.callService("button", "press", {
             entity_id: buttonEntityId,
@@ -1647,15 +1422,12 @@ _buildProviderRefreshButton(provider) {
             numberEntityId,
             buttonEntityId,
             this._findEntityId(),
-            currentEntityId,
           ]);
 
           this._readingCache.clear();
           this._setActionState("reading", buttonEntityId, {
             status: "success",
-            message: providerKey === "eon"
-              ? "Indexul a fost trimis către E.ON. Confirmarea apare și în notificările Home Assistant."
-              : "Indexul a fost trimis. Cardul se actualizează automat.",
+            message: "Indexul a fost trimis. Cardul se actualizează automat.",
           });
         } catch (err) {
           this._setActionState("reading", buttonEntityId, {
@@ -2062,9 +1834,29 @@ _buildProviderRefreshButton(provider) {
         white-space: nowrap;
       }
 
+      .row-amount-block {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+        min-width: max-content;
+      }
+
       .row-amount {
         font-weight: 600;
         white-space: nowrap;
+      }
+
+      .row-due {
+        font-size: 0.78rem;
+        font-weight: 500;
+        color: var(--primary-text-color);
+        white-space: nowrap;
+      }
+
+      .row-due-overdue {
+        color: var(--error-color);
+        font-weight: 700;
       }
 
       .details-btn {
@@ -2190,7 +1982,19 @@ _buildProviderRefreshButton(provider) {
           grid-template-columns: minmax(0, 1fr) auto;
         }
 
-        .details-btn {
+        .row-main {
+          grid-column: 1;
+          grid-row: 1;
+        }
+
+        .row-amount-block {
+          grid-column: 1;
+          grid-row: 2;
+          align-items: flex-start;
+          min-width: 0;
+        }
+
+        .row-actions {
           grid-column: 2;
           grid-row: 1 / span 2;
           align-self: center;
@@ -2198,6 +2002,10 @@ _buildProviderRefreshButton(provider) {
 
         .row-amount {
           font-size: 0.9rem;
+        }
+
+        .row-due {
+          white-space: normal;
         }
 
         .license-header,
