@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-import hashlib
 import logging
 import re
 import time
@@ -19,22 +18,7 @@ _LOGGER = logging.getLogger(__name__)
 
 URL_EBLOC = "https://www.e-bloc.ro"
 URL_API_EBLOC = "https://www.e-bloc.ro/ajax"
-URL_API_EBLOC_READ = "https://read.e-bloc.ro/ajax"
-
-CHEIE_APLICATIE_EBLOC = "58126855-ef70-4548-a35e-eca020c24570"
-VERSIUNE_APLICATIE_EBLOC = "8.90"
-VERSIUNE_ANDROID_EBLOC = "14"
-MARCA_DISPOZITIV_EBLOC = "samsung"
-MODEL_DISPOZITIV_EBLOC = "SM-S928B"
-TIP_DISPOZITIV_EBLOC = 1
-
 TIMEOUT_EBLOC = ClientTimeout(total=30)
-
-ANTETE_EBLOC = {
-    "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 14; SM-S928B Build/UP1A.231005.007)",
-    "Accept": "application/json",
-    "Accept-Language": "ro-RO,ro;q=0.9",
-}
 
 ANTETE_WEB_EBLOC = {
     "User-Agent": (
@@ -99,16 +83,6 @@ class ContorEbloc:
     date_brute: dict[str, Any]
 
 
-def _hash_parola(parola: str) -> str:
-    return hashlib.sha512(parola.encode("utf-8")).hexdigest().zfill(128)
-
-
-def _complexitate_parola(parola: str) -> int:
-    are_litere = any(caracter.isalpha() for caracter in parola)
-    are_cifre = any(caracter.isdigit() for caracter in parola)
-    return 2 if len(parola) >= 8 and are_litere and are_cifre else 1
-
-
 class ClientApiEbloc:
     def __init__(self, sesiune: ClientSession, utilizator: str, parola: str) -> None:
         self._sesiune = sesiune
@@ -122,51 +96,7 @@ class ClientApiEbloc:
         self._luna_curenta: str | None = None
         self._date_info: dict[str, Any] = {}
 
-    async def _cerere(
-        self,
-        endpoint: str,
-        parametri: dict[str, Any],
-        *,
-        foloseste_cache_read: bool = False,
-    ) -> dict[str, Any]:
-        baza = URL_API_EBLOC_READ if foloseste_cache_read else URL_API_EBLOC
-        parametri_curati = {k: v for k, v in parametri.items() if v is not None}
-        parametri_curati["debug"] = 0
-
-        try:
-            async with self._sesiune.get(
-                f"{baza}/{endpoint}",
-                params=parametri_curati,
-                headers=ANTETE_EBLOC,
-                timeout=TIMEOUT_EBLOC,
-            ) as raspuns:
-                text = await raspuns.text()
-                if raspuns.status in (401, 403):
-                    raise EroareAutentificareEbloc(f"HTTP {raspuns.status} pentru {endpoint}")
-                if raspuns.status >= 400:
-                    raise EroareConectareEbloc(f"HTTP {raspuns.status} pentru {endpoint}: {text[:300]}")
-                try:
-                    data = await raspuns.json(content_type=None)
-                except Exception as err:
-                    raise EroareRaspunsEbloc(f"Răspuns JSON invalid pentru {endpoint}: {text[:300]}") from err
-        except EroareApiEbloc:
-            raise
-        except (aiohttp.ClientError, TimeoutError) as err:
-            raise EroareConectareEbloc(f"Eroare de conectare la {endpoint}: {err}") from err
-
-        if not isinstance(data, dict):
-            raise EroareRaspunsEbloc(f"Răspuns neașteptat pentru {endpoint}: {type(data)}")
-
-        rezultat = str(data.get("result") or data.get("status") or "").lower()
-        if rezultat and rezultat not in {"ok", "success"}:
-            mesaj = str(data.get("message") or data.get("error") or rezultat)
-            if any(token in mesaj.lower() for token in ("login", "parol", "sesiune", "session", "auth")):
-                raise EroareAutentificareEbloc(mesaj)
-            raise EroareRaspunsEbloc(mesaj)
-
-        return data
-
-    async def _autentificare_web(self) -> None:
+    async def async_login(self) -> SesiuneEbloc:
         try:
             async with self._sesiune.post(
                 f"{URL_EBLOC}/index.php?profil=0",
@@ -181,18 +111,31 @@ class ClientApiEbloc:
                 allow_redirects=True,
             ) as raspuns:
                 text = await raspuns.text()
+                if raspuns.status in (401, 403):
+                    raise EroareAutentificareEbloc("Autentificare e-bloc.ro respinsă")
                 if raspuns.status >= 400:
-                    raise EroareConectareEbloc(f"HTTP {raspuns.status} la autentificarea web e-bloc.ro")
-                if "pUser" in text and "pPass" in text and "iesire" not in text.lower():
-                    _LOGGER.debug("Autentificarea web e-bloc.ro nu pare să fi intrat în cont; se continuă cu API-ul mobil.")
+                    raise EroareConectareEbloc(f"HTTP {raspuns.status} la autentificarea e-bloc.ro")
+                if "pUser" in text and "pPass" in text and "iesire" not in text.lower() and "logout" not in text.lower():
+                    raise EroareAutentificareEbloc("Datele de autentificare e-bloc.ro par să fie invalide")
+        except EroareApiEbloc:
+            raise
         except (aiohttp.ClientError, TimeoutError) as err:
-            _LOGGER.debug("Autentificarea web e-bloc.ro a eșuat: %s", err)
+            raise EroareConectareEbloc(f"Eroare de conectare la e-bloc.ro: {err}") from err
+
+        self._id_sesiune = "web"
+        self._id_utilizator = self._utilizator.lower()
+        return SesiuneEbloc(id_sesiune="web", id_utilizator=self._id_utilizator)
+
+    async def _asigura_sesiune(self) -> None:
+        if not self._id_sesiune:
+            await self.async_login()
 
     async def _cerere_web(
         self,
         endpoint: str,
         parametri: dict[str, Any],
     ) -> dict[str, Any]:
+        await self._asigura_sesiune()
         try:
             async with self._sesiune.post(
                 f"{URL_API_EBLOC}/{endpoint}",
@@ -207,6 +150,8 @@ class ClientApiEbloc:
                 timeout=TIMEOUT_EBLOC,
             ) as raspuns:
                 text = await raspuns.text()
+                if raspuns.status in (401, 403):
+                    raise EroareAutentificareEbloc(f"Sesiune web e-bloc.ro invalidă pentru {endpoint}")
                 if raspuns.status >= 400:
                     raise EroareConectareEbloc(f"HTTP {raspuns.status} pentru {endpoint}: {text[:300]}")
                 try:
@@ -221,6 +166,7 @@ class ClientApiEbloc:
         return data if isinstance(data, dict) else {"data": data}
 
     async def _pagina_web(self, cale: str, *, referer: str | None = None) -> str:
+        await self._asigura_sesiune()
         url = cale if cale.startswith("http") else f"{URL_EBLOC}/{cale.lstrip('/')}"
         try:
             async with self._sesiune.get(
@@ -234,96 +180,71 @@ class ClientApiEbloc:
                 allow_redirects=True,
             ) as raspuns:
                 text = await raspuns.text()
+                if raspuns.status in (401, 403):
+                    raise EroareAutentificareEbloc(f"Sesiune web e-bloc.ro invalidă pentru pagina {cale}")
                 if raspuns.status >= 400:
                     raise EroareConectareEbloc(f"HTTP {raspuns.status} pentru pagina {cale}")
                 return text
+        except EroareApiEbloc:
+            raise
         except (aiohttp.ClientError, TimeoutError) as err:
             raise EroareConectareEbloc(f"Eroare de conectare la pagina {cale}: {err}") from err
 
-    async def async_login(self) -> SesiuneEbloc:
-        data = await self._cerere(
-            "AppLogin.php",
-            {
-                "key": CHEIE_APLICATIE_EBLOC,
-                "user": self._utilizator,
-                "pass_sha": _hash_parola(self._parola),
-                "pass_complexity": _complexitate_parola(self._parola),
-                "app_version": VERSIUNE_APLICATIE_EBLOC,
-                "os_version": VERSIUNE_ANDROID_EBLOC,
-                "device_brand": MARCA_DISPOZITIV_EBLOC,
-                "device_model": MODEL_DISPOZITIV_EBLOC,
-                "device_type": TIP_DISPOZITIV_EBLOC,
-                "facebook_id": "",
-                "google_id": "",
-                "apple_id": "",
-                "nume_user": "",
-                "prenume_user": "",
-                "facebook_access_token": "",
-                "google_id_token": "",
-            },
-        )
-
-        id_sesiune = str(data.get("session_id") or "").strip()
-        id_utilizator = str(data.get("id_user") or "").strip()
-
-        if not id_sesiune:
-            raise EroareAutentificareEbloc("Autentificarea e-bloc.ro nu a returnat sesiune validă")
-
-        self._id_sesiune = id_sesiune
-        self._id_utilizator = id_utilizator
-        await self._autentificare_web()
-        return SesiuneEbloc(id_sesiune=id_sesiune, id_utilizator=id_utilizator)
-
-    async def _asigura_sesiune(self) -> None:
-        if not self._id_sesiune:
-            await self.async_login()
-
-    async def _cerere_autentificata(
-        self,
-        endpoint: str,
-        parametri: dict[str, Any] | None = None,
-        *,
-        foloseste_cache_read: bool = False,
-    ) -> dict[str, Any]:
-        await self._asigura_sesiune()
-        return await self._cerere(
-            endpoint,
-            {"session_id": self._id_sesiune, **(parametri or {})},
-            foloseste_cache_read=foloseste_cache_read,
-        )
-
     async def async_descopera_conturi(self) -> dict[str, Any]:
-        info = await self._cerere_autentificata("AppGetInfo.php")
-        self._date_info = info
-        self._asociatii = _lista(info.get("aInfoAsoc"))
+        await self._asigura_sesiune()
 
+        self._date_info = {"sursa": "portal_web"}
         self._drepturi = {
-            "acasa": bool(info.get("aAccesPageHome", True)),
-            "plati": bool(info.get("aAccesPageChitante", True)),
-            "facturi": bool(info.get("aAccesPageFacturi", info.get("aAccesPageCheltuieli", True))),
-            "avizier": bool(info.get("aAccesPageAvizier", False)),
-            "index": bool(info.get("aAccesPageIndex", True)),
-            "contact": bool(info.get("aAccesPageContact", True)),
+            "acasa": True,
+            "plati": True,
+            "facturi": True,
+            "avizier": True,
+            "index": True,
+            "contact": True,
         }
 
+        asociatii: list[dict[str, Any]] = []
         apartamente: dict[str, list[dict[str, Any]]] = {}
-        for asociatie in self._asociatii:
+
+        for cale in (
+            f"index.php?page=19&t={int(time.time())}",
+            f"index.php?page=10&t={int(time.time())}",
+            "index.php?page=11",
+        ):
+            pagina = await self._obtine_pagina_web_sigur(cale)
+            gasite_asoc, gasite_ap = _extrage_conturi_din_pagina_web(pagina)
+            asociatii = _imbina_liste_dupa_id(asociatii, gasite_asoc, "id_asoc")
+            for id_asociatie, lista in gasite_ap.items():
+                apartamente[id_asociatie] = _imbina_liste_dupa_id(apartamente.get(id_asociatie, []), lista, "id_ap")
+            if asociatii and any(apartamente.values()):
+                break
+
+        for asociatie in asociatii:
             id_asociatie = str(asociatie.get("id_asoc") or asociatie.get("id") or "").strip()
             if not id_asociatie:
                 continue
-            data_ap = await self._cerere_autentificata(
-                "AppHomeGetAp.php",
-                {"id_asoc": id_asociatie},
-                foloseste_cache_read=True,
-            )
-            lista_ap = _lista(data_ap.get("aInfoAp"))
-            apartamente[id_asociatie] = lista_ap
 
-            luna = _extrage_luna(data_ap)
+            info_asoc = await self._obtine_web_sigur("AjaxGetInfoAsoc.php", {"pIdAsoc": id_asociatie})
+            info_principal = _prima_intrare_dict(info_asoc)
+            if info_principal:
+                asociatie.update({k: v for k, v in info_principal.items() if v not in (None, "")})
+
+            data_ap = await self._obtine_web_sigur("AjaxGetHomeAp.php", {"pIdAsoc": id_asociatie})
+            lista_ap = _extrage_apartamente_din_web(data_ap, id_asociatie)
+            if lista_ap:
+                apartamente[id_asociatie] = _imbina_liste_dupa_id(apartamente.get(id_asociatie, []), lista_ap, "id_ap")
+
+            index_luni = await self._obtine_web_sigur("AjaxGetIndexLuni.php", {"pIdAsoc": id_asociatie})
+            luna = _extrage_luna_index_web(index_luni)
             if luna and not self._luna_curenta:
                 self._luna_curenta = luna
 
-        self._apartamente = apartamente
+        self._asociatii = asociatii
+        self._apartamente = {k: v for k, v in apartamente.items() if v}
+
+        if not self._asociatii or not any(self._apartamente.values()):
+            raise EroareRaspunsEbloc("Nu am putut identifica asociațiile și apartamentele din portalul web e-bloc.ro")
+
         return {
             "info": self._date_info,
             "asociatii": self._asociatii,
@@ -338,48 +259,53 @@ class ClientApiEbloc:
 
         date_apartamente: dict[str, dict[str, Any]] = {}
         for id_asociatie, apartamente in self._apartamente.items():
-            luna_index = await self._obtine_luna_index(id_asociatie) or self._luna_curenta
+            index_luni_web = await self._obtine_web_sigur("AjaxGetIndexLuni.php", {"pIdAsoc": id_asociatie})
+            luna_index = _extrage_luna_index_web(index_luni_web) or self._luna_curenta
+
             for apartament in apartamente:
                 id_apartament = str(apartament.get("id_ap") or apartament.get("id") or "").strip()
-                if not id_apartament:
+                if not id_apartament or id_apartament == "0":
                     continue
 
                 cheie = f"{id_asociatie}:{id_apartament}"
-
-                plata = await self._obtine_sigur(
-                    "AppPlatesteGetAp.php",
-                    {"id_asoc": id_asociatie, "id_ap": id_apartament},
-                )
-                istoric_plati = await self._obtine_sigur(
-                    "AppIstoricPlatiGetPlati.php",
-                    {"id_asoc": id_asociatie, "id_ap": id_apartament},
-                )
-                wallet = await self._obtine_sigur(
-                    "AppHomeGetWalletItems.php",
-                    {"id_asoc": id_asociatie, "id_ap": id_apartament},
-                )
-                persoane = await self._obtine_sigur(
-                    "AppHomeGetNrPers.php",
-                    {"id_asoc": id_asociatie, "id_ap": id_apartament},
-                )
-                lista_plata = await self._obtine_sigur(
-                    "AppFacturiGetData.php",
-                    {"id_asoc": id_asociatie, "id_ap": id_apartament, "luna": self._luna_curenta},
-                )
-                contoare = await self._obtine_sigur(
-                    "AppContoareGetIndex.php",
-                    {"id_asoc": id_asociatie, "id_ap": id_apartament, "luna": luna_index},
-                ) if luna_index else {}
 
                 home_info_web = await self._obtine_web_sigur(
                     "AjaxGetHomeApInfo.php",
                     {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
                 )
-
-                index_luni_web = await self._obtine_web_sigur(
-                    "AjaxGetIndexLuni.php",
+                home_stat_web = await self._obtine_web_sigur(
+                    "AjaxGetHomeStat.php",
+                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament, "pLuni": 12},
+                )
+                datorii_web = await self._obtine_web_sigur(
+                    "AjaxGetPlatiDatorii.php",
+                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
+                )
+                datorii_toti_web = await self._obtine_web_sigur(
+                    "AjaxGetPlatiDatoriiToti.php",
+                    {"pIdAsoc": id_asociatie, "pIdAp": -1},
+                )
+                plati_web = await self._obtine_web_sigur(
+                    "AjaxGetPlatiChitante.php",
+                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
+                )
+                plati_toti_web = await self._obtine_web_sigur(
+                    "AjaxGetPlatiChitanteToti.php",
+                    {"pIdAsoc": id_asociatie, "pIdAp": -1},
+                )
+                plati_ap_web = await self._obtine_web_sigur(
+                    "AjaxGetPlatiAp.php",
+                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
+                )
+                facturi_luni_web = await self._obtine_web_sigur(
+                    "AjaxGetFacturiLuni.php",
                     {"pIdAsoc": id_asociatie},
                 )
+                factura_luna = _extrage_luna_facturi_web(facturi_luni_web) or luna_index
+                facturi_plati_web = await self._obtine_web_sigur(
+                    "AjaxGetFacturiPlati.php",
+                    {"pIdAsoc": id_asociatie, "pLuna": factura_luna},
+                ) if factura_luna else {}
                 contoare_web_selectat = await self._obtine_web_sigur(
                     "AjaxGetIndexContoare.php",
                     {"pIdAsoc": id_asociatie, "pLuna": luna_index, "pIdAp": -1},
@@ -390,28 +316,19 @@ class ClientApiEbloc:
                 ) if luna_index else {}
                 pagina_contoare = await self._obtine_pagina_web_sigur(f"index.php?page=10&t={int(time.time())}")
 
-                datorii_web = await self._obtine_web_sigur(
-                    "AjaxGetPlatiDatorii.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
-                )
-                plati_web = await self._obtine_web_sigur(
-                    "AjaxGetPlatiChitante.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
-                )
-
                 date_apartamente[cheie] = {
                     "asociatie_id": id_asociatie,
                     "apartament_id": id_apartament,
                     "apartament": apartament,
-                    "plata": plata,
                     "home_info_web": home_info_web,
-                    "istoric_plati": istoric_plati,
+                    "home_stat_web": home_stat_web,
                     "datorii_web": datorii_web,
+                    "datorii_toti_web": datorii_toti_web,
                     "plati_web": plati_web,
-                    "wallet": wallet,
-                    "persoane": persoane,
-                    "lista_plata": lista_plata,
-                    "contoare": contoare,
+                    "plati_toti_web": plati_toti_web,
+                    "plati_ap_web": plati_ap_web,
+                    "facturi_luni_web": facturi_luni_web,
+                    "facturi_plati_web": facturi_plati_web,
                     "index_luni_web": index_luni_web,
                     "contoare_web_selectat": contoare_web_selectat,
                     "contoare_web_apartament": contoare_web_apartament,
@@ -427,23 +344,6 @@ class ClientApiEbloc:
             "luna_curenta": self._luna_curenta,
             "date_apartamente": date_apartamente,
         }
-
-    async def _obtine_luna_index(self, id_asociatie: str) -> str | None:
-        data = await self._obtine_sigur("AppContoareGetIndexLuni.php", {"id_asoc": id_asociatie})
-        luni = _lista(data.get("aLuni"))
-        if not luni:
-            return None
-        prima = luni[0]
-        if isinstance(prima, dict):
-            return str(prima.get("luna") or prima.get("id") or prima.get("value") or "").strip() or None
-        return str(prima).strip() or None
-
-    async def _obtine_sigur(self, endpoint: str, parametri: dict[str, Any]) -> dict[str, Any]:
-        try:
-            return await self._cerere_autentificata(endpoint, parametri, foloseste_cache_read=True)
-        except Exception as err:
-            _LOGGER.debug("Endpoint e-bloc.ro indisponibil %s: %s", endpoint, err)
-            return {}
 
     async def _obtine_web_sigur(self, endpoint: str, parametri: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -649,7 +549,11 @@ class ClientFurnizorEbloc(ClientFurnizor):
         for cheie, pachet in (date_brute.get("date_apartamente") or {}).items():
             id_cont = cheie.replace(":", "_")
             lista_plata = _construieste_lista_plata(pachet, date_brute.get("luna_curenta"))
-            plati = _extrage_plati_web(pachet.get("plati_web") or {}) or _extrage_plati(pachet.get("istoric_plati") or {})
+            plati = (
+                _extrage_plati_web(pachet.get("plati_web") or {})
+                or _extrage_plati_web(pachet.get("plati_ap_web") or {})
+                or _extrage_plati_web(pachet.get("plati_toti_web") or {})
+            )
             contoare = _extrage_contoare(
                 _alege_sursa_contoare(pachet),
                 pachet.get("luna_index"),
@@ -675,7 +579,7 @@ class ClientFurnizorEbloc(ClientFurnizor):
                     ConsumUtilitate("data_ultima_plata", ultima_plata.data_plata.isoformat() if ultima_plata and ultima_plata.data_plata else None, None, id_cont=id_cont, tip_utilitate="administrare_bloc", tip_serviciu="administrare_bloc"),
                     ConsumUtilitate("valoare_ultima_plata", ultima_plata.valoare if ultima_plata else None, "RON", id_cont=id_cont, tip_utilitate="administrare_bloc", tip_serviciu="administrare_bloc"),
                     ConsumUtilitate("numar_contoare", len(contoare), "buc", id_cont=id_cont, tip_utilitate="administrare_bloc", tip_serviciu="administrare_bloc"),
-                    ConsumUtilitate("perioada_citire", _prima_valoare([c.perioada_citire for c in contoare]), None, id_cont=id_cont, tip_utilitate="administrare_bloc", tip_serviciu="administrare_bloc"),
+                    ConsumUtilitate("perioada_citire", _prima_valoare([c.perioada_citire for c in contoare]) or _perioada_citire_lunara((pachet or {}).get("index_luni_web") or {}, pachet.get("luna_index")), None, id_cont=id_cont, tip_utilitate="administrare_bloc", tip_serviciu="administrare_bloc"),
                     ConsumUtilitate(
                         "citire_index_permisa",
                         "da" if _citire_index_permisa_din_luni((pachet or {}).get("index_luni_web") or {}, pachet.get("luna_index")) else "nu",
@@ -711,8 +615,147 @@ class ClientFurnizorEbloc(ClientFurnizor):
         return rezultate
 
 
+
+def _extrage_conturi_din_pagina_web(html: str) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    asociatii = _extrage_vector_js(html, "gInfoAsoc")
+    apartamente_lista = _extrage_vector_js(html, "gInfoAp")
+
+    asociatii_curate: list[dict[str, Any]] = []
+    for item in asociatii:
+        id_asociatie = str(item.get("id_asoc") or item.get("id") or "").strip()
+        if not id_asociatie:
+            continue
+        item.setdefault("id_asoc", id_asociatie)
+        asociatii_curate.append(item)
+
+    apartamente: dict[str, list[dict[str, Any]]] = {}
+    for item in apartamente_lista:
+        id_asociatie = str(item.get("id_asoc") or "").strip()
+        id_apartament = str(item.get("id_ap") or item.get("id") or "").strip()
+        if not id_asociatie or not id_apartament or id_apartament == "0":
+            continue
+        item.setdefault("id_ap", id_apartament)
+        apartamente.setdefault(id_asociatie, []).append(item)
+
+    return asociatii_curate, apartamente
+
+
+def _extrage_vector_js(html: str, nume_variabila: str) -> list[dict[str, Any]]:
+    if not html:
+        return []
+
+    rezultat: dict[str, dict[str, Any]] = {}
+    model = re.compile(
+        rf"{re.escape(nume_variabila)}\s*\[\s*(\d+)\s*\]\s*\[\s*[\"']([^\"']+)[\"']\s*\]\s*=\s*([\"'])(.*?)\3\s*;",
+        re.DOTALL,
+    )
+    for match in model.finditer(html):
+        index, cheie, _, valoare = match.groups()
+        rezultat.setdefault(index, {})[cheie] = _decodeaza_text_web(valoare)
+
+    return [rezultat[index] for index in sorted(rezultat, key=lambda v: int(v))]
+
+
+def _decodeaza_text_web(text: str) -> str:
+    return (
+        str(text or "")
+        .replace('\\"', '"')
+        .replace("\\'", "'")
+        .replace("\\/", "/")
+        .strip()
+    )
+
+
+def _imbina_liste_dupa_id(lista_initiala: list[dict[str, Any]], lista_noua: list[dict[str, Any]], cheie_id: str) -> list[dict[str, Any]]:
+    rezultat: list[dict[str, Any]] = []
+    pozitii: dict[str, dict[str, Any]] = {}
+
+    for item in [*lista_initiala, *lista_noua]:
+        if not isinstance(item, dict):
+            continue
+        ident = str(item.get(cheie_id) or item.get("id") or "").strip()
+        if not ident:
+            continue
+        if ident not in pozitii:
+            copie = dict(item)
+            copie.setdefault(cheie_id, ident)
+            pozitii[ident] = copie
+            rezultat.append(copie)
+        else:
+            pozitii[ident].update({k: v for k, v in item.items() if v not in (None, "")})
+
+    return rezultat
+
+
+def _extrage_apartamente_din_web(data: dict[str, Any], id_asociatie: str) -> list[dict[str, Any]]:
+    candidati = []
+    if isinstance(data, dict):
+        for cheie in ("aInfoAp", "apartamente", "ap", "data", "rows"):
+            valoare = data.get(cheie)
+            if isinstance(valoare, list):
+                candidati.extend([item for item in valoare if isinstance(item, dict)])
+        if not candidati:
+            for valoare in data.values():
+                if isinstance(valoare, dict) and any(k in valoare for k in ("id_ap", "ap", "apartament")):
+                    candidati.append(valoare)
+
+    rezultate: list[dict[str, Any]] = []
+    for item in candidati:
+        id_apartament = str(item.get("id_ap") or item.get("id") or "").strip()
+        if not id_apartament or id_apartament == "0":
+            continue
+        copie = dict(item)
+        copie.setdefault("id_asoc", id_asociatie)
+        copie.setdefault("id_ap", id_apartament)
+        rezultate.append(copie)
+    return rezultate
+
+
+def _extrage_luna_index_web(data: dict[str, Any]) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    for valoare in data.values():
+        if isinstance(valoare, dict):
+            luna = valoare.get("luna") or valoare.get("id") or valoare.get("value")
+            if luna not in (None, ""):
+                return str(luna).strip()
+        elif isinstance(valoare, list):
+            for item in valoare:
+                if isinstance(item, dict):
+                    luna = item.get("luna") or item.get("id") or item.get("value")
+                    if luna not in (None, ""):
+                        return str(luna).strip()
+    return _extrage_luna(data)
+
+
+def _extrage_luna_facturi_web(data: dict[str, Any]) -> str | None:
+    return _extrage_luna_index_web(data)
+
 def _lista(valoare: Any) -> list[Any]:
-    return valoare if isinstance(valoare, list) else []
+    if isinstance(valoare, list):
+        return valoare
+    if isinstance(valoare, dict):
+        if all(isinstance(v, dict) for v in valoare.values()):
+            return list(valoare.values())
+        return [valoare]
+    return []
+
+
+def _dicturi_din_structura(valoare: Any) -> list[dict[str, Any]]:
+    rezultate: list[dict[str, Any]] = []
+    if isinstance(valoare, dict):
+        if valoare and all(isinstance(v, dict) for v in valoare.values()):
+            for item in valoare.values():
+                rezultate.extend(_dicturi_din_structura(item))
+        else:
+            rezultate.append(valoare)
+            for item in valoare.values():
+                if isinstance(item, (dict, list)):
+                    rezultate.extend(_dicturi_din_structura(item))
+    elif isinstance(valoare, list):
+        for item in valoare:
+            rezultate.extend(_dicturi_din_structura(item))
+    return rezultate
 
 
 def _dict(valoare: Any) -> dict[str, Any]:
@@ -775,7 +818,7 @@ def _data_sigura(valoare: Any) -> date | None:
         if luna:
             return date(int(match.group(3)), luna, int(match.group(1)))
 
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%Y-%m-%dT%H:%M:%S"):
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S"):
         try:
             return datetime.strptime(text[:19], fmt).date()
         except ValueError:
@@ -843,19 +886,21 @@ def _prima_intrare_dict(data: Any) -> dict[str, Any]:
 def _are_lista_contoare(data: dict[str, Any]) -> bool:
     if not isinstance(data, dict):
         return False
-    for cheie in ("aInfoContoare", "contoare", "aContoare", "aIndex", "data", "rows"):
-        valoare = data.get(cheie)
-        if isinstance(valoare, list) and valoare:
+    for item in _dicturi_din_structura(data):
+        if str(item.get("id_contor") or item.get("id_index") or "").strip() not in ("", "0"):
             return True
+        for cheie in ("aInfoContoare", "contoare", "aContoare", "aIndex", "data", "rows"):
+            if _lista(item.get(cheie)):
+                return True
     return False
 
 
 def _alege_sursa_contoare(pachet: dict[str, Any]) -> dict[str, Any]:
-    for cheie in ("contoare_web_selectat", "contoare_web_apartament", "contoare"):
+    for cheie in ("contoare_web_apartament", "contoare_web_selectat"):
         data = pachet.get(cheie) or {}
         if _are_lista_contoare(data):
             return data
-    return pachet.get("contoare") or pachet.get("contoare_web_selectat") or pachet.get("contoare_web_apartament") or {}
+    return pachet.get("contoare_web_apartament") or pachet.get("contoare_web_selectat") or {}
 
 
 def _perioada_citire_din_home_info(home_info_web: dict[str, Any]) -> str | None:
@@ -880,9 +925,10 @@ def _permite_editare_persoane(pachet: dict[str, Any]) -> bool:
 def _extrage_sold_curent(pachet: dict[str, Any]) -> float | None:
     for sursa in (
         _prima_intrare_dict(pachet.get("home_info_web") or {}),
-        pachet.get("plata") or {},
+        _prima_intrare_dict(pachet.get("datorii_web") or {}),
+        _prima_intrare_dict(pachet.get("datorii_toti_web") or {}),
+        _prima_intrare_dict(pachet.get("plati_ap_web") or {}),
         pachet.get("apartament") or {},
-        pachet.get("wallet") or {},
     ):
         for cheie in (
             "suma_de_plata",
@@ -905,9 +951,7 @@ def _extrage_nr_persoane(pachet: dict[str, Any]) -> int | None:
     chei_persoane = ("nr_pers_afisat", "nr_pers", "nr_persoane", "numar_persoane", "persoane", "nrpers")
     for sursa in (
         _prima_intrare_dict(pachet.get("home_info_web") or {}),
-        pachet.get("persoane") or {},
         pachet.get("apartament") or {},
-        pachet.get("plata") or {},
     ):
         sursa = _dict(sursa)
         for cheie in chei_persoane:
@@ -973,13 +1017,12 @@ def _extrage_plati(istoric_plati: dict[str, Any]) -> list[PlataEbloc]:
 
 
 def _extrage_plati_web(data: dict[str, Any]) -> list[PlataEbloc]:
-    candidati = (
-        _lista(data.get("aChitante"))
-        or _lista(data.get("chitante"))
-        or _lista(data.get("plati"))
-        or _lista(data.get("data"))
-        or _lista(data.get("rows"))
-    )
+    candidati: list[dict[str, Any]] = []
+    for cheie in ("aChitante", "chitante", "plati", "data", "rows"):
+        candidati.extend([x for x in _lista(data.get(cheie)) if isinstance(x, dict)] if isinstance(data, dict) else [])
+
+    if not candidati:
+        candidati = [x for x in _dicturi_din_structura(data) if isinstance(x, dict)]
 
     rezultate: list[PlataEbloc] = []
     for item in candidati:
@@ -993,6 +1036,7 @@ def _extrage_plati_web(data: dict[str, Any]) -> list[PlataEbloc]:
             or item.get("numar")
             or item.get("numar_chitanta")
             or item.get("nr")
+            or item.get("serie")
             or ""
         ).strip()
 
@@ -1001,6 +1045,7 @@ def _extrage_plati_web(data: dict[str, Any]) -> list[PlataEbloc]:
             or item.get("data_chitanta")
             or item.get("data_plata")
             or item.get("date")
+            or item.get("data_doc")
         )
 
         valoare = _bani_sigur(
@@ -1010,7 +1055,11 @@ def _extrage_plati_web(data: dict[str, Any]) -> list[PlataEbloc]:
             or item.get("total_plata")
             or item.get("suma_platita")
             or item.get("amount")
+            or item.get("val")
         )
+
+        if data_plata is None and valoare is None and not id_plata:
+            continue
 
         if not id_plata:
             id_plata = f"{data_plata.isoformat() if data_plata else 'fara_data'}_{valoare or 'fara_suma'}"
@@ -1020,7 +1069,7 @@ def _extrage_plati_web(data: dict[str, Any]) -> list[PlataEbloc]:
                 id_plata=id_plata,
                 data_plata=data_plata,
                 valoare=valoare,
-                descriere=str(item.get("descriere") or item.get("detalii") or item.get("text") or "").strip() or None,
+                descriere=str(item.get("descriere") or item.get("detalii") or item.get("text") or item.get("explicatie") or "").strip() or None,
                 date_brute=item,
             )
         )
@@ -1110,17 +1159,23 @@ def _construieste_lista_plata(pachet: dict[str, Any], luna_curenta: str | None) 
     home_info = _prima_intrare_dict(pachet.get("home_info_web") or {})
     luna = (
         str(home_info.get("luna_afisata") or "").strip()
-        or _extrage_luna(pachet.get("lista_plata") or {})
-        or _extrage_luna(pachet.get("plata") or {})
+        or _extrage_luna(pachet.get("datorii_web") or {})
+        or _extrage_luna(pachet.get("facturi_plati_web") or {})
         or luna_curenta
     )
     nr_persoane = _extrage_nr_persoane(pachet)
 
-    valoare = _extrage_valoare_lista_din_structura(pachet.get("lista_plata") or {})
+    valoare = _extrage_valoare_lista_din_structura(pachet.get("datorii_web") or {})
     if valoare is None:
-        valoare = _extrage_valoare_lista_din_structura(pachet.get("plata") or {})
+        valoare = _extrage_valoare_lista_din_structura(pachet.get("facturi_plati_web") or {})
+    if valoare is None:
+        valoare = _extrage_valoare_lista_din_structura(pachet.get("home_info_web") or {})
 
-    plati = _extrage_plati_web(pachet.get("plati_web") or {}) or _extrage_plati(pachet.get("istoric_plati") or {})
+    plati = (
+        _extrage_plati_web(pachet.get("plati_web") or {})
+        or _extrage_plati_web(pachet.get("plati_ap_web") or {})
+        or _extrage_plati_web(pachet.get("plati_toti_web") or {})
+    )
     if valoare is None and plati:
         valoare = plati[0].valoare
 
@@ -1133,9 +1188,9 @@ def _construieste_lista_plata(pachet: dict[str, Any], luna_curenta: str | None) 
         sold_curent=sold_curent,
         nr_persoane=nr_persoane,
         date_brute={
-            "plata": pachet.get("plata") or {},
-            "lista_plata": pachet.get("lista_plata") or {},
-            "persoane": pachet.get("persoane") or {},
+            "home_info_web": pachet.get("home_info_web") or {},
+            "datorii_web": pachet.get("datorii_web") or {},
+            "facturi_plati_web": pachet.get("facturi_plati_web") or {},
         },
     )
 
@@ -1260,18 +1315,12 @@ def _perioada_citire_din_luni(index_luni_web: dict[str, Any], luna: str | None) 
     return None
 
 def _extrage_contoare(data: dict[str, Any], luna_index: str | None, pachet: dict[str, Any] | None = None) -> list[ContorEbloc]:
-    candidati = (
-        _lista(data.get("aInfoContoare"))
-        or _lista(data.get("contoare"))
-        or _lista(data.get("aContoare"))
-        or _lista(data.get("aIndex"))
-        or _lista(data.get("data"))
-        or _lista(data.get("rows"))
-    )
+    id_apartament = str((pachet or {}).get("apartament_id") or "").strip()
+    candidati = [x for x in _dicturi_din_structura(data) if isinstance(x, dict)]
 
     perioada = (
         _perioada_citire_din_home_info((pachet or {}).get("home_info_web") or {})
-        or _perioada_citire_din_luni((pachet or {}).get("index_luni_web") or {}, luna_index)
+        or _perioada_citire_lunara((pachet or {}).get("index_luni_web") or {}, luna_index)
         or _perioada_citire(
             data,
             luna_index,
@@ -1279,7 +1328,6 @@ def _extrage_contoare(data: dict[str, Any], luna_index: str | None, pachet: dict
                 (pachet or {}).get("index_luni_web") or {},
                 (pachet or {}).get("contoare_web_selectat") or {},
                 (pachet or {}).get("contoare_web_apartament") or {},
-                (pachet or {}).get("contoare") or {},
                 {"pagina_contoare": (pachet or {}).get("pagina_contoare") or ""},
             ],
         )
@@ -1287,11 +1335,15 @@ def _extrage_contoare(data: dict[str, Any], luna_index: str | None, pachet: dict
 
     rezultate: list[ContorEbloc] = []
     for item in candidati:
-        if not isinstance(item, dict):
+        item_id_ap = str(item.get("id_ap") or item.get("id_apartament") or "").strip()
+        if id_apartament and item_id_ap and item_id_ap not in {id_apartament, "0"}:
             continue
 
-        nume = str(item.get("nume") or item.get("denumire") or item.get("contor") or item.get("tip") or item.get("nume_contor") or "").strip()
-        id_contor = str(item.get("id_contor") or item.get("id") or item.get("id_index") or nume or "").strip()
+        id_contor = str(item.get("id_contor") or item.get("id_index") or item.get("id") or "").strip()
+        if id_contor in ("", "0"):
+            continue
+
+        nume = str(item.get("titlu") or item.get("nume") or item.get("denumire") or item.get("contor") or item.get("tip") or item.get("nume_contor") or "").strip()
         index_precedent = _float_sigur(item.get("index_precedent") or item.get("index_vechi") or item.get("index_old") or item.get("precedent") or item.get("indexPrec"))
         index_curent = _float_sigur(item.get("index_curent") or item.get("index_nou") or item.get("index") or item.get("valoare") or item.get("indexNou"))
         consum = _float_sigur(item.get("consum"))
@@ -1300,13 +1352,13 @@ def _extrage_contoare(data: dict[str, Any], luna_index: str | None, pachet: dict
 
         rezultate.append(
             ContorEbloc(
-                id_contor=id_contor or nume or "contor",
+                id_contor=id_contor,
                 nume=nume or id_contor or "Contor",
                 index_precedent=index_precedent,
                 index_curent=index_curent,
                 consum=consum,
                 unitate=str(item.get("unitate") or item.get("um") or "mc").strip() or None,
-                citire_permisa=_bool_sigur(item.get("citire_permisa") or item.get("editabil") or item.get("permite_citire")),
+                citire_permisa=_bool_sigur(item.get("citire_permisa") or item.get("editabil") or item.get("permite_citire") or item.get("flag")),
                 perioada_citire=perioada,
                 date_brute=item,
             )

@@ -11,6 +11,14 @@ Persistență token prin export_token_data / inject_token.
 
 from __future__ import annotations
 
+# Portions of this file are derived from open-source Home Assistant custom
+# integrations originally authored by Cristian Necrea and published under the MIT License.
+#
+# Copyright (c) Cristian Necrea
+# Copyright (c) Marius Onițiu
+#
+# Licensed under the MIT License. See the LICENSE file in this repository.
+
 import asyncio
 import base64
 import logging
