@@ -140,6 +140,6 @@ Anumite componente, în special logica de comunicare API pentru unii furnizori, 
 - https://github.com/cnecrea/hidroelectrica
 - https://github.com/cnecrea/myelectrica
 
-Codul derivat din aceste proiecte este utilizat cu respectarea licenței MIT, inclusiv păstrarea notificării de copyright originale.
+Componentele derivate din aceste proiecte sunt utilizate cu respectarea licenței MIT, inclusiv prin păstrarea notificărilor de copyright în fișierele relevante.
 
 Restul integrării, inclusiv structura unificată, agregarea facturilor, interfața de administrare, logica de licențiere, cardul Lovelace și adaptările specifice proiectului Utilități România, reprezintă contribuții proprii ale proiectului.

@@ -1,8 +1,12 @@
 MIT License
 
-Copyright (c) 2024 cnecrea
-Copyright (c) 2026 cnecrea
-Copyright (c) 2026 mariusonitiu
+Copyright (c) 2026 Marius Onițiu
+
+Portions of this software are derived from open-source Home Assistant custom
+integrations originally authored by Cristian Necrea and published under the MIT License.
+
+Copyright (c) 2024 Cristian Necrea
+Copyright (c) 2026 Cristian Necrea
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
