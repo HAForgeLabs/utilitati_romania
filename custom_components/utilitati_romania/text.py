@@ -6,6 +6,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import CONF_FURNIZOR, DOMENIU, FURNIZOR_ADMIN_GLOBAL
@@ -63,6 +64,54 @@ def _colecteaza_entitati_grupare(
     return entitati
 
 
+async def async_adauga_entitati_grupare_pentru_intrare(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> int:
+    """Adaugă dinamic entitățile lipsă pentru gruparea facturilor unui furnizor.
+
+    Entitățile de grupare sunt expuse pe intrarea globală „Administrare integrare”.
+    Când un furnizor nou este adăugat după ce administrarea este deja încărcată,
+    platforma text nu mai este recreată automat. De aceea păstrăm callback-ul
+    `async_add_entities` al platformei globale și îl folosim pentru a adăuga doar
+    entitățile lipsă, fără să dublăm entitățile existente.
+    """
+    data = hass.data.get(DOMENIU, {})
+    async_add_entities = data.get("_grupare_facturi_async_add_entities")
+    if async_add_entities is None:
+        return 0
+
+    coordonator = data.get(entry_id)
+    if not isinstance(coordonator, CoordonatorUtilitatiRomania):
+        return 0
+
+    registry = er.async_get(hass)
+    entitati: list[TextGrupareFacturi] = []
+
+    for cont in getattr(coordonator.data, "conturi", None) or []:
+        if not getattr(cont, "id_cont", None):
+            continue
+
+        entitate = TextGrupareFacturi(coordonator, cont)
+        if registry.async_get_entity_id("text", DOMENIU, entitate.unique_id):
+            continue
+
+        entitati.append(entitate)
+
+    if not entitati:
+        return 0
+
+    entitati.sort(
+        key=lambda entitate: (
+            str(entitate.provider_name).casefold(),
+            str(entitate.location_alias).casefold(),
+            str(entitate.id_cont).casefold(),
+        )
+    )
+    async_add_entities(entitati)
+    return len(entitati)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -70,6 +119,8 @@ async def async_setup_entry(
 ) -> None:
     if entry.data.get(CONF_FURNIZOR) != FURNIZOR_ADMIN_GLOBAL:
         return
+
+    hass.data.setdefault(DOMENIU, {})["_grupare_facturi_async_add_entities"] = async_add_entities
 
     entitati: list[TextEntity] = [TextCodLicentaNoua(entry)]
     entitati.extend(_colecteaza_entitati_grupare(hass))

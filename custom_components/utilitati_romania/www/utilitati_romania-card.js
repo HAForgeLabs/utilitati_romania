@@ -190,17 +190,28 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return diffDays > 0 ? diffDays : 0;
   }
 
+  _daysUntilDue(value) {
+    const date = this._parseDateLike(value);
+    if (!date) return null;
+
+    const diffMs = date.getTime() - this._todayDate().getTime();
+    return Math.ceil(diffMs / 86400000);
+  }
+
   _buildDueDateMeta(provider, status) {
     const rawDueDate = provider?.due_date || provider?.data_scadenta || provider?.scadenta || provider?.dueDate;
     const formattedDueDate = this._formatDate(rawDueDate);
     if (!rawDueDate || formattedDueDate === "—") return "";
 
     const daysPastDue = this._daysPastDue(rawDueDate);
+    const daysUntilDue = this._daysUntilDue(rawDueDate);
     const isOverdue = status === "unpaid" && Number.isFinite(daysPastDue) && daysPastDue > 0;
+    const isDueSoon = !isOverdue && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 3;
     const overdueText = daysPastDue === 1 ? "depășită cu 1 zi" : `depășită cu ${daysPastDue} zile`;
+    const dueClass = isOverdue ? "row-due-overdue" : (isDueSoon ? "row-due-soon" : "");
 
     return `
-      <div class="row-due ${isOverdue ? "row-due-overdue" : ""}">
+      <div class="row-due ${dueClass}">
         Scadentă: ${this._escapeHtml(formattedDueDate)}${isOverdue ? ` • ${this._escapeHtml(overdueText)}` : ""}
       </div>
     `;
@@ -931,6 +942,7 @@ _buildProviderRefreshButton(provider) {
       hidroelectrica: "App. Hidroelectrica",
       nova: "App. Nova",
       ebloc: "App. e-bloc",
+      orange: "App. Orange",
     };
     return labels[key] || "";
   }
@@ -1856,6 +1868,11 @@ _buildProviderRefreshButton(provider) {
 
       .row-due-overdue {
         color: var(--error-color);
+        font-weight: 700;
+      }
+
+      .row-due-soon {
+        color: var(--info-color, var(--primary-color));
         font-weight: 700;
       }
 

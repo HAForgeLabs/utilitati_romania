@@ -53,6 +53,7 @@ FURNIZOR_HIDROELECTRICA = "hidroelectrica"
 FURNIZOR_MYELECTRICA = "myelectrica"
 FURNIZOR_DEER = "deer"
 FURNIZOR_EBLOC = "ebloc"
+FURNIZOR_ORANGE = "orange"
 
 CONF_DATE_TOKEN_EON = "date_token_eon"
 

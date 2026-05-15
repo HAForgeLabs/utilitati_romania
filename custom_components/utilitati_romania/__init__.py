@@ -322,6 +322,13 @@ def _provider_open_target(provider: str | None) -> dict[str, str] | None:
             "fallback": "https://www.e-bloc.ro/",
         }
 
+    if key == "orange":
+        return {
+            "mode": "launch_app",
+            "package_name": "com.orange.contultauorange",
+            "fallback": "https://www.orange.ro/myaccount/",
+        }
+
     return None
 
 
@@ -654,6 +661,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _migrare_unique_ids(hass, entry, coordonator)
     hass.data[DOMENIU][entry.entry_id] = coordonator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORME)
+
+    # Entitățile pentru „Grupare facturi” aparțin intrării globale de administrare.
+    # Dacă un furnizor este adăugat după ce administrarea era deja încărcată,
+    # adăugăm dinamic doar entitățile de grupare lipsă pentru acel furnizor.
+    try:
+        from .text import async_adauga_entitati_grupare_pentru_intrare
+
+        await async_adauga_entitati_grupare_pentru_intrare(hass, entry.entry_id)
+    except Exception:
+        _LOGGER.exception(
+            "Nu am putut adăuga entitățile de grupare facturi pentru %s",
+            entry.title,
+        )
+
     if entry.data.get(CONF_FURNIZOR) == "ebloc":
         await _async_force_migrare_entity_ids_ebloc(hass, entry, coordonator)
     await _async_cleanup_admin_registry_links(hass)

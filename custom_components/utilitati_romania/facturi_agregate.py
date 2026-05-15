@@ -26,6 +26,7 @@ _PROVIDER_LABELS = {
     "hidroelectrica": "Hidroelectrica",
     "myelectrica": "myElectrica",
     "nova": "Nova",
+    "orange": "Orange",
 }
 
 _STATUS_PAID_TOKENS = {
@@ -618,10 +619,21 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             if item.get("status") == "credit":
                 continue
 
-            group_key = (
-                item["locatie_cheie"],
-                normalize_text(item["furnizor"]).lower(),
-            )
+            # Orange poate avea mai multe abonamente active în același cont și pe aceeași
+            # grupare manuală de facturi. Dacă am păstra cheia doar pe locație + furnizor,
+            # cardul ar afișa un singur număr Orange, pentru că facturile s-ar suprascrie
+            # între ele. Pentru Orange separăm explicit fiecare abonament după id_cont.
+            if item.get("furnizor") == "orange":
+                group_key = (
+                    item["locatie_cheie"],
+                    normalize_text(item["furnizor"]).lower(),
+                    normalize_text(item.get("id_cont") or item.get("invoice_id") or "").lower(),
+                )
+            else:
+                group_key = (
+                    item["locatie_cheie"],
+                    normalize_text(item["furnizor"]).lower(),
+                )
 
             current = grouped.get(group_key)
             if current is None or _sort_key_for_date(item.get("issue_date")) > _sort_key_for_date(current.get("issue_date")):
