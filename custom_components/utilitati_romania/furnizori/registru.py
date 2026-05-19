@@ -9,6 +9,7 @@ from .hidroelectrica import ClientFurnizorHidroelectrica
 from .myelectrica import ClientFurnizorMyElectrica
 from .deer import ClientFurnizorDeer
 from .nova import ClientFurnizorNova
+from .orange import ClientFurnizorOrange
 
 FURNIZORI: dict[str, type[ClientFurnizor]] = {
     ClientFurnizorNova.cheie_furnizor: ClientFurnizorNova,
@@ -19,6 +20,7 @@ FURNIZORI: dict[str, type[ClientFurnizor]] = {
     ClientFurnizorMyElectrica.cheie_furnizor: ClientFurnizorMyElectrica,
     ClientFurnizorDeer.cheie_furnizor: ClientFurnizorDeer,
     ClientFurnizorEbloc.cheie_furnizor: ClientFurnizorEbloc,
+    ClientFurnizorOrange.cheie_furnizor: ClientFurnizorOrange,
 }
 
 
