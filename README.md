@@ -67,7 +67,7 @@ Lista furnizorilor este în continuă extindere.
 2. Accesează `Integrations`
 3. Adaugă repository-ul custom:
 
-   `https://github.com/mariusonitiu/utilitati_romania`
+   `https://github.com/HAForgeLabs/utilitati_romania`
 
 4. Instalează integrarea
 5. Restart Home Assistant
@@ -136,7 +136,7 @@ După expirarea perioadei trial, integrarea continuă să funcționeze cu funcț
 
 Dacă integrarea îți este utilă și dorești să susții dezvoltarea și mentenanța proiectului:
 
-`https://buymeacoffee.com/mariusonitiu`
+`https://buymeacoffee.com/haforgelabs`
 
 ---
 
