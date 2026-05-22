@@ -1,11 +1,11 @@
 {
   "domain": "utilitati_romania",
   "name": "Utilitati Romania",
-  "version": "1.8.6b1",
-  "documentation": "https://github.com/mariusonitiu/utilitati_romania",
-  "issue_tracker": "https://github.com/mariusonitiu/utilitati_romania/issues",
+  "version": "1.8.7",
+  "documentation": "https://github.com/HAForgeLabs/utilitati_romania",
+  "issue_tracker": "https://github.com/HAForgeLabs/utilitati_romania/issues",
   "codeowners": [
-    "@mariusonitiu"
+    "@HAForgeLabs"
   ],
   "config_flow": true,
   "integration_type": "service",

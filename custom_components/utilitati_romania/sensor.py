@@ -885,8 +885,8 @@ async def async_setup_entry(
             SenzorAdminLicenta(entry, "utilizator", "Cont licență"),
             SenzorAdminLicenta(entry, "masked_key", "Cod licență mascat"),
             SenzorAdminLicenta(entry, "message", "Mesaj licență"),
-            SenzorAdminStatic(entry, "contact", "Contact dezvoltator", "GitHub: @mariusonitiu"),
-            SenzorAdminStatic(entry, "support", "Suport", "github.com/mariusonitiu/utilitati_romania/issues"),
+            SenzorAdminStatic(entry, "contact", "Contact dezvoltator", "GitHub: @HAForgeLabs"),
+            SenzorAdminStatic(entry, "support", "Suport", "github.com/HAForgeLabs/utilitati_romania/issues"),
             SenzorAdminFacturiAgregate(hass, entry),
         ])
         return
