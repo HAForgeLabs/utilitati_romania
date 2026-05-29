@@ -18,12 +18,14 @@ from homeassistant.helpers import entity_registry as er
 from .const import (
     CONF_FURNIZOR,
     CONF_PREMISE_LABEL,
+    CONF_MOBILE_NOTIFY_SERVICE,
     DOMENIU,
     PLATFORME,
     FURNIZOR_ADMIN_GLOBAL,
     SERVICIU_RELOAD_ALL,
     SERVICIU_OPEN_PROVIDER,
     SERVICIU_SET_INVOICE_STATUS,
+    SERVICIU_SUBMIT_READING,
 )
 from .coordonator import CoordonatorUtilitatiRomania
 from .grupare_facturi import async_incarca_grupari_facturi
@@ -37,6 +39,7 @@ from .hidro_device import alias_loc_consum, slug_loc_consum
 from .myelectrica_device import alias_loc_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, slug_loc_ebloc
 from .naming import build_provider_slug, extract_street_slug
+from .storage_citiri import async_salveaza_citire
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -361,9 +364,9 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
             )
             return
 
+        selected_notify_service = str(admin_entry.options.get(CONF_MOBILE_NOTIFY_SERVICE) or "").strip()
         select_entity_id = _admin_notify_select_entity_id(hass, admin_entry)
-        selected_notify_service = ""
-        if select_entity_id:
+        if (not selected_notify_service or selected_notify_service == "none") and select_entity_id:
             selected_state = hass.states.get(select_entity_id)
             selected_notify_service = str(selected_state.state if selected_state else "").strip()
 
@@ -471,9 +474,102 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
             blocking=False,
         )
 
+
+    async def _async_handle_submit_reading(call: ServiceCall) -> None:
+        provider = str(call.data.get("provider") or "").strip().lower()
+        entry_id = str(call.data.get("entry_id") or "").strip()
+        id_cont = str(call.data.get("id_cont") or "").strip()
+        id_contract = str(call.data.get("id_contract") or "").strip()
+        raw_value = call.data.get("value")
+
+        if provider not in {"apa_canal"}:
+            raise ValueError("Serviciul de transmitere directă acceptă momentan doar furnizorul Apă Canal Sibiu.")
+
+        try:
+            index_value = int(float(str(raw_value).replace(",", ".")))
+        except (TypeError, ValueError) as err:
+            raise ValueError("Valoarea indexului introdus nu este validă.") from err
+
+        if index_value < 0:
+            raise ValueError("Valoarea indexului introdus nu poate fi negativă.")
+
+        coordonator = None
+        for value in hass.data.get(DOMENIU, {}).values():
+            if not isinstance(value, CoordonatorUtilitatiRomania):
+                continue
+            data = getattr(value, "data", None)
+            if data is None or getattr(data, "furnizor", None) != provider:
+                continue
+            if entry_id and getattr(value.intrare, "entry_id", None) != entry_id:
+                continue
+            coordonator = value
+            break
+
+        if coordonator is None or getattr(coordonator, "data", None) is None:
+            raise ValueError("Nu am găsit intrarea Apă Canal Sibiu pentru transmiterea indexului.")
+
+        cont_selectat = None
+        for cont in getattr(coordonator.data, "conturi", []) or []:
+            cont_id = str(getattr(cont, "id_cont", "") or "").strip()
+            contract_id = str(getattr(cont, "id_contract", "") or "").strip()
+            if id_cont and cont_id == id_cont:
+                cont_selectat = cont
+                break
+            if id_contract and contract_id == id_contract:
+                cont_selectat = cont
+                break
+
+        if cont_selectat is None:
+            raise ValueError("Nu am găsit contractul Apă Canal Sibiu pentru transmiterea indexului.")
+
+        raw = getattr(cont_selectat, "date_brute", None) or {}
+        window = raw.get("meter_reading_window") or {}
+        registers = window.get("registers") or []
+        registru = registers[0] if registers else {}
+
+        contract_id = str(getattr(cont_selectat, "id_contract", None) or id_contract or "").strip()
+        device_id = str(registru.get("device_id") or "").strip()
+        register_id = str(registru.get("register_id") or "").strip()
+
+        if not contract_id or not device_id or not register_id:
+            raise ValueError("Nu am putut identifica datele tehnice necesare pentru transmiterea indexului Apă Canal Sibiu.")
+
+        rezultat = await coordonator.client.async_transmite_index(
+            contract_id,
+            device_id,
+            register_id,
+            index_value,
+        )
+        if not isinstance(rezultat, dict):
+            raise ValueError("Transmiterea indexului Apă Canal Sibiu nu a returnat un răspuns valid.")
+
+        await async_salveaza_citire(
+            hass,
+            "apa_canal",
+            getattr(cont_selectat, "id_cont", None),
+            float(index_value),
+            sursa="card",
+            extra={
+                "device_id": device_id,
+                "register_id": register_id,
+                "serie_contor": registru.get("serial_number"),
+                "unitate": registru.get("unit"),
+            },
+        )
+
+        persistent_notification.async_create(
+            hass,
+            f"Indexul **{index_value}** a fost transmis cu succes pentru **{getattr(cont_selectat, 'nume', None) or getattr(cont_selectat, 'adresa', None) or id_cont}**.",
+            title="Utilități România – Apă Canal Sibiu",
+            notification_id=f"utilitati_romania_apa_canal_trimite_index_{getattr(cont_selectat, 'id_cont', id_cont)}",
+        )
+
+        await coordonator.async_request_refresh()
+
     hass.services.async_register(DOMENIU, SERVICIU_RELOAD_ALL, _async_handle_reload_all)
     hass.services.async_register(DOMENIU, SERVICIU_OPEN_PROVIDER, _async_handle_open_provider)
     hass.services.async_register(DOMENIU, SERVICIU_SET_INVOICE_STATUS, _async_handle_set_invoice_status)
+    hass.services.async_register(DOMENIU, SERVICIU_SUBMIT_READING, _async_handle_submit_reading)
     hass.data[DOMENIU]["_services_registered"] = True
 
 
@@ -487,6 +583,8 @@ def _async_remove_services_if_unused(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMENIU, SERVICIU_OPEN_PROVIDER)
     if hass.services.has_service(DOMENIU, SERVICIU_SET_INVOICE_STATUS):
         hass.services.async_remove(DOMENIU, SERVICIU_SET_INVOICE_STATUS)
+    if hass.services.has_service(DOMENIU, SERVICIU_SUBMIT_READING):
+        hass.services.async_remove(DOMENIU, SERVICIU_SUBMIT_READING)
     hass.data[DOMENIU]["_services_registered"] = False
 
 

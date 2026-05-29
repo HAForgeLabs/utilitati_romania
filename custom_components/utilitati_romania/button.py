@@ -22,6 +22,7 @@ from .eon_device import alias_loc_eon, info_device_eon, slug_loc_eon
 from .furnizori.hidroelectrica_helper import build_usage_entity, safe_get
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
+from .naming import build_provider_slug
 
 from .storage_citiri import async_salveaza_citire
 
@@ -43,13 +44,29 @@ def _citire_permisa_curenta(coordonator: CoordonatorUtilitatiRomania, id_cont: s
     for consum in consumuri:
         if getattr(consum, "id_cont", None) != id_cont:
             continue
-        if getattr(consum, "cheie", None) != "citire_permisa":
+        if getattr(consum, "cheie", None) not in {"citire_permisa", "citire_index_permisa"}:
             continue
         valoare = getattr(consum, "valoare", None)
         if isinstance(valoare, str):
             return valoare.strip().lower() in {"da", "true", "1", "yes", "on"}
         return bool(valoare)
     return False
+
+
+def _fereastra_apa_canal(coordonator: CoordonatorUtilitatiRomania, id_cont: str) -> dict:
+    data = getattr(coordonator, "data", None)
+    conturi = getattr(data, "conturi", None) or []
+    for cont in conturi:
+        if getattr(cont, "id_cont", None) != id_cont:
+            continue
+        raw = getattr(cont, "date_brute", None) or {}
+        return raw.get("meter_reading_window") or {}
+    return {}
+
+
+def _primul_registru_apa_canal(coordonator: CoordonatorUtilitatiRomania, id_cont: str) -> dict:
+    registre = (_fereastra_apa_canal(coordonator, id_cont).get("registers") or [])
+    return registre[0] if registre else {}
 
 
 def _admin_license_text_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
@@ -93,6 +110,9 @@ async def async_setup_entry(
             are_contor = bool(contoare and (contoare[0].get("SerieContor") or ((contoare[0].get("to_Cadran") or [{}])[0].get("RegisterCode"))))
             if are_contor:
                 entitati.append(ButonTrimiteIndexMyElectrica(coordonator, cont))
+    elif coordonator.data and coordonator.data.furnizor == "apa_canal":
+        for cont in coordonator.data.conturi:
+            entitati.append(ButonTrimiteIndexApaCanal(coordonator, cont))
     elif coordonator.data and coordonator.data.furnizor == "ebloc":
         for cont in coordonator.data.conturi:
             entitati.append(ButonTrimiteNumarPersoaneEbloc(coordonator, cont))
@@ -427,6 +447,91 @@ class ButonTrimiteIndexMyElectrica(EntitateUtilitatiRomania, ButtonEntity):
         self.hass.components.persistent_notification.create(
             f"Indexul a fost transmis cu succes pentru {alias_loc_myelectrica(self.cont.nume, self.cont.adresa, self.cont.id_cont)}.",
             title="myElectrica",
+        )
+        await self.coordinator.async_request_refresh()
+
+
+class ButonTrimiteIndexApaCanal(EntitateUtilitatiRomania, ButtonEntity):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        alias = str(cont.nume or cont.adresa or cont.id_cont or "contract").strip()
+        eticheta = str(
+            coordonator.intrare.data.get("premise_label")
+            or coordonator.intrare.title
+            or alias
+        ).strip()
+        slug = build_provider_slug("apa_canal_sibiu", eticheta, eticheta)
+        self._alias = alias
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_apa_canal_{cont.id_cont}_trimite_index"
+        self._attr_name = f"Trimite index {alias}"
+        self._attr_icon = "mdi:send-circle"
+        self._attr_suggested_object_id = f"{slug}_trimite_index"
+        self.entity_id = f"button.{slug}_trimite_index"
+        self._entity_numar = f"number.{slug}_index_de_transmis"
+
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        return {
+            "furnizor": "apa_canal",
+            "id_cont": getattr(self.cont, "id_cont", None),
+            "id_contract": getattr(self.cont, "id_contract", None),
+        }
+
+    @property
+    def available(self) -> bool:
+        registru = _primul_registru_apa_canal(self.coordinator, self.cont.id_cont)
+        return _citire_permisa_curenta(self.coordinator, self.cont.id_cont) and bool(registru.get("device_id") and registru.get("register_id"))
+
+    async def async_press(self) -> None:
+        stare_numar = self.hass.states.get(self._entity_numar)
+        if not stare_numar:
+            raise HomeAssistantError(f"Nu există entitatea {self._entity_numar}.")
+
+        try:
+            index_value = int(float(stare_numar.state))
+        except (TypeError, ValueError) as err:
+            raise HomeAssistantError("Valoarea indexului introdus nu este validă.") from err
+
+        registru = _primul_registru_apa_canal(self.coordinator, self.cont.id_cont)
+        device_id = str(registru.get("device_id") or "").strip()
+        register_id = str(registru.get("register_id") or "").strip()
+        contract_id = str(getattr(self.cont, "id_contract", None) or "").strip()
+
+        if not contract_id or not device_id or not register_id:
+            raise HomeAssistantError(
+                "Nu am putut identifica datele tehnice necesare pentru transmiterea indexului Apă Canal Sibiu."
+            )
+
+        rezultat = await self.coordinator.client.async_transmite_index(
+            contract_id,
+            device_id,
+            register_id,
+            index_value,
+        )
+        if not isinstance(rezultat, dict):
+            raise HomeAssistantError("Transmiterea indexului Apă Canal Sibiu nu a returnat un răspuns valid.")
+
+        await async_salveaza_citire(
+            self.hass,
+            "apa_canal",
+            self.cont.id_cont,
+            float(index_value),
+            sursa="card",
+            extra={
+                "device_id": device_id,
+                "register_id": register_id,
+                "serie_contor": registru.get("serial_number"),
+                "unitate": registru.get("unit"),
+            },
+        )
+
+        persistent_notification.async_create(
+            self.hass,
+            f"Indexul **{index_value}** a fost transmis cu succes pentru **{self._alias}**.",
+            title="Utilități România – Apă Canal Sibiu",
+            notification_id=f"utilitati_romania_apa_canal_trimite_index_{self.cont.id_cont}",
         )
         await self.coordinator.async_request_refresh()
 

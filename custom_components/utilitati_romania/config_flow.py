@@ -40,6 +40,7 @@ from .const import (
     CONF_INTERVAL_ACTUALIZARE,
     CONF_PAROLA,
     CONF_PUNCTE_CONSUM_SELECTATE,
+    CONF_MOBILE_NOTIFY_SERVICE,
     CONF_PREMISE_LABEL,
     CONF_UTILIZATOR,
     DOMENIU,
@@ -1141,10 +1142,14 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
             else:
                 await async_salveaza_licenta_globala(self.hass, cheie_licenta, utilizator, rezultat_licenta)
                 if self._config_entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:
-                    return self.async_create_entry(title="", data={
+                    data = {
                         CONF_UTILIZATOR: utilizator,
                         CONF_CHEIE_LICENTA: cheie_licenta,
-                    })
+                    }
+                    dispozitiv_mobil = self._config_entry.options.get(CONF_MOBILE_NOTIFY_SERVICE)
+                    if dispozitiv_mobil:
+                        data[CONF_MOBILE_NOTIFY_SERVICE] = dispozitiv_mobil
+                    return self.async_create_entry(title="", data=data)
 
                 data = {
                     CONF_UTILIZATOR: utilizator,

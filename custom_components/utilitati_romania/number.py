@@ -12,6 +12,7 @@ from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import alias_loc_eon, info_device_eon, slug_loc_eon
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
+from .naming import build_provider_slug
 
 
 def _valoare_consum_curent(coordonator: CoordonatorUtilitatiRomania, id_cont: str, cheie: str) -> float | None:
@@ -36,13 +37,29 @@ def _citire_permisa_curenta(coordonator: CoordonatorUtilitatiRomania, id_cont: s
     for consum in consumuri:
         if getattr(consum, 'id_cont', None) != id_cont:
             continue
-        if getattr(consum, 'cheie', None) != 'citire_permisa':
+        if getattr(consum, 'cheie', None) not in {'citire_permisa', 'citire_index_permisa'}:
             continue
         valoare = getattr(consum, 'valoare', None)
         if isinstance(valoare, str):
             return valoare.strip().lower() in {'da', 'true', '1', 'yes', 'on'}
         return bool(valoare)
     return False
+
+
+def _fereastra_apa_canal(coordonator: CoordonatorUtilitatiRomania, id_cont: str) -> dict:
+    data = getattr(coordonator, 'data', None)
+    conturi = getattr(data, 'conturi', None) or []
+    for cont in conturi:
+        if getattr(cont, 'id_cont', None) != id_cont:
+            continue
+        raw = getattr(cont, 'date_brute', None) or {}
+        return raw.get('meter_reading_window') or {}
+    return {}
+
+
+def _primul_registru_apa_canal(coordonator: CoordonatorUtilitatiRomania, id_cont: str) -> dict:
+    registre = (_fereastra_apa_canal(coordonator, id_cont).get('registers') or [])
+    return registre[0] if registre else {}
 
 
 async def async_setup_entry(
@@ -76,6 +93,10 @@ async def async_setup_entry(
                 )
                 if are_contor:
                     entitati.append(NumarIndexMyElectrica(coordonator, cont))
+
+        elif coordonator.data.furnizor == "apa_canal":
+            for cont in coordonator.data.conturi:
+                entitati.append(NumarIndexApaCanal(coordonator, cont))
 
         elif coordonator.data.furnizor == "ebloc":
             for cont in coordonator.data.conturi:
@@ -195,6 +216,67 @@ class NumarIndexMyElectrica(EntitateUtilitatiRomania, RestoreNumber):
         ultima_stare = await self.async_get_last_number_data()
         if ultima_stare and ultima_stare.native_value is not None:
             self._attr_native_value = int(float(ultima_stare.native_value))
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._attr_native_value = int(float(value))
+        self.async_write_ha_state()
+
+
+class NumarIndexApaCanal(EntitateUtilitatiRomania, RestoreNumber):
+    _attr_native_min_value = 0
+    _attr_native_max_value = 99999999
+    _attr_native_step = 1
+    _attr_icon = "mdi:counter"
+    _attr_mode = "box"
+    _attr_native_unit_of_measurement = "m³"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        alias = str(cont.nume or cont.adresa or cont.id_cont or "contract").strip()
+        eticheta = str(
+            coordonator.intrare.data.get("premise_label")
+            or coordonator.intrare.title
+            or alias
+        ).strip()
+        slug = build_provider_slug("apa_canal_sibiu", eticheta, eticheta)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_apa_canal_{cont.id_cont}_index_de_transmis"
+        self._attr_name = f"Index de transmis {alias}"
+        self._attr_suggested_object_id = f"{slug}_index_de_transmis"
+        self.entity_id = f"number.{slug}_index_de_transmis"
+        self._attr_native_value = 0
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        ultima_stare = await self.async_get_last_number_data()
+        if ultima_stare and ultima_stare.native_value is not None:
+            self._attr_native_value = int(float(ultima_stare.native_value))
+            return
+
+        registru = _primul_registru_apa_canal(self.coordinator, self.cont.id_cont)
+        valoare_anterioara = _valoare_consum_curent(self.coordinator, self.cont.id_cont, 'index_de_transmis')
+        valoare = valoare_anterioara
+        if valoare is None:
+            try:
+                valoare = float(registru.get('previous_reading'))
+            except (TypeError, ValueError):
+                valoare = None
+        if valoare is not None:
+            self._attr_native_value = int(float(valoare))
+
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        return {
+            "furnizor": "apa_canal",
+            "id_cont": getattr(self.cont, "id_cont", None),
+            "id_contract": getattr(self.cont, "id_contract", None),
+        }
+
+    @property
+    def available(self) -> bool:
+        registru = _primul_registru_apa_canal(self.coordinator, self.cont.id_cont)
+        return _citire_permisa_curenta(self.coordinator, self.cont.id_cont) and bool(registru.get('device_id') and registru.get('register_id'))
 
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = int(float(value))

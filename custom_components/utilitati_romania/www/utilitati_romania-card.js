@@ -1,5 +1,6 @@
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
+    const rawConfig = config || {};
     this._config = {
       title: "Facturi utilități",
       entity: null,
@@ -8,7 +9,8 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       only_unpaid: false,
       show_paid: true,
       show_license: true,
-      ...config,
+      invoice_grouping: "location",
+      ...rawConfig,
     };
 
     if (!this._expanded) this._expanded = {};
@@ -17,6 +19,15 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (!this._actionState) this._actionState = {};
     if (!this._readingCache) this._readingCache = new Map();
     if (!this._lastHassStateVersion) this._lastHassStateVersion = 0;
+    if (typeof this._invoiceGroupingSelectActive !== "boolean") this._invoiceGroupingSelectActive = false;
+
+    const configuredGrouping = Object.prototype.hasOwnProperty.call(rawConfig, "invoice_grouping")
+      ? this._normalizeInvoiceGrouping(rawConfig.invoice_grouping)
+      : "";
+    const storedGrouping = this._normalizeInvoiceGrouping(this._loadInvoiceGroupingPreference());
+    if (!this._isValidInvoiceGrouping(this._invoiceGrouping)) {
+      this._invoiceGrouping = configuredGrouping || storedGrouping || "location";
+    }
 
     this._licenseInputEntityId = null;
     this._licenseApplyEntityId = null;
@@ -24,10 +35,16 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    if (this._isReadingInputActive() && !this._hasPendingReadingAction()) {
+    if ((this._isReadingInputActive() && !this._hasPendingReadingAction()) || this._isInvoiceGroupingSelectActive()) {
       return;
     }
     this._render();
+  }
+
+  _isInvoiceGroupingSelectActive() {
+    if (this._invoiceGroupingSelectActive) return true;
+    const activeElement = this.content?.querySelector?.(".invoice-grouping-select");
+    return !!activeElement && activeElement === this.ownerDocument?.activeElement;
   }
 
   getCardSize() {
@@ -206,7 +223,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const daysPastDue = this._daysPastDue(rawDueDate);
     const daysUntilDue = this._daysUntilDue(rawDueDate);
     const isOverdue = status === "unpaid" && Number.isFinite(daysPastDue) && daysPastDue > 0;
-    const isDueSoon = !isOverdue && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 3;
+    const isDueSoon = status === "unpaid" && !isOverdue && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 3;
     const overdueText = daysPastDue === 1 ? "depășită cu 1 zi" : `depășită cu ${daysPastDue} zile`;
     const dueClass = isOverdue ? "row-due-overdue" : (isDueSoon ? "row-due-soon" : "");
 
@@ -240,6 +257,334 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
         return { ...location, furnizori: filteredProviders };
       })
       .filter(Boolean);
+  }
+
+  _invoiceGroupingStorageKey() {
+    return "utilitati_romania_invoice_grouping";
+  }
+
+  _invoiceGroupingOptions() {
+    return [
+      { value: "location", label: "Locație / cont" },
+      { value: "due_date", label: "Scadență" },
+      { value: "urgency", label: "Urgență" },
+      { value: "status", label: "Status plată" },
+      { value: "provider", label: "Furnizor" },
+      { value: "amount", label: "Valoare" },
+    ];
+  }
+
+  _normalizeInvoiceGrouping(value) {
+    const text = String(value ?? "").trim().toLowerCase();
+    const aliases = {
+      locatie: "location",
+      locatii: "location",
+      cont: "location",
+      account: "location",
+      due: "due_date",
+      scadenta: "due_date",
+      scadență: "due_date",
+      data_scadenta: "due_date",
+      plata: "status",
+      status_plata: "status",
+      urgent: "urgency",
+      urgenta: "urgency",
+      urgență: "urgency",
+      valoare: "amount",
+      suma: "amount",
+      amount: "amount",
+      furnizor: "provider",
+      supplier: "provider",
+    };
+    return aliases[text] || text;
+  }
+
+  _isValidInvoiceGrouping(value) {
+    const normalized = this._normalizeInvoiceGrouping(value);
+    return this._invoiceGroupingOptions().some((option) => option.value === normalized);
+  }
+
+  _loadInvoiceGroupingPreference() {
+    try {
+      return window.localStorage?.getItem(this._invoiceGroupingStorageKey()) || "";
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  _saveInvoiceGroupingPreference(value) {
+    try {
+      window.localStorage?.setItem(this._invoiceGroupingStorageKey(), value);
+    } catch (_err) {
+      // Preferința de afișare este doar locală în card; dacă browserul nu permite salvarea, folosim valoarea din sesiunea curentă.
+    }
+  }
+
+  _getInvoiceGrouping() {
+    if (!this._isValidInvoiceGrouping(this._invoiceGrouping)) {
+      this._invoiceGrouping = "location";
+    }
+    return this._invoiceGrouping;
+  }
+
+  _setInvoiceGrouping(value) {
+    const normalized = this._normalizeInvoiceGrouping(value);
+    this._invoiceGrouping = this._isValidInvoiceGrouping(normalized) ? normalized : "location";
+    this._saveInvoiceGroupingPreference(this._invoiceGrouping);
+  }
+
+  _buildInvoiceGroupingSelector(grouping, invoiceCount) {
+    const options = this._invoiceGroupingOptions()
+      .map((option) => `
+        <option value="${this._escapeAttr(option.value)}" ${option.value === grouping ? "selected" : ""}>
+          ${this._escapeHtml(option.label)}
+        </option>
+      `)
+      .join("");
+
+    return `
+      <div class="invoice-toolbar">
+        <label class="invoice-grouping-label" for="ur-invoice-grouping">Afișare facturi</label>
+        <select id="ur-invoice-grouping" class="invoice-grouping-select">
+          ${options}
+        </select>
+        <div class="invoice-grouping-hint">${this._escapeHtml(invoiceCount)} ${invoiceCount === 1 ? "factură" : "facturi"}</div>
+      </div>
+    `;
+  }
+
+  _collectInvoiceEntries(locations) {
+    const entries = [];
+    for (const location of locations || []) {
+      const providers = Array.isArray(location.furnizori) ? location.furnizori : [];
+      providers.forEach((provider, index) => {
+        entries.push({
+          location,
+          provider,
+          index,
+          status: this._providerEffectiveStatus(provider),
+          supplier: provider?.furnizor_label || provider?.furnizor || "Furnizor",
+          dueDate: provider?.due_date || provider?.data_scadenta || provider?.scadenta || provider?.dueDate || "",
+          amount: this._toNumber(provider?.amount ?? provider?.suma ?? provider?.valoare),
+        });
+      });
+    }
+    return entries;
+  }
+
+  _invoiceDueTime(entry) {
+    const parsed = this._parseDateLike(entry?.dueDate);
+    return parsed ? parsed.getTime() : Number.POSITIVE_INFINITY;
+  }
+
+  _compareInvoiceEntries(a, b) {
+    const dueDiff = this._invoiceDueTime(a) - this._invoiceDueTime(b);
+    if (Number.isFinite(dueDiff) && dueDiff !== 0) return dueDiff;
+
+    const statusOrder = { unpaid: 0, unknown: 1, credit: 2, paid: 3 };
+    const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
+    if (statusDiff !== 0) return statusDiff;
+
+    const supplierDiff = String(a.supplier || "").localeCompare(String(b.supplier || ""), "ro");
+    if (supplierDiff !== 0) return supplierDiff;
+
+    return String(a.provider?.invoice_title || "").localeCompare(String(b.provider?.invoice_title || ""), "ro");
+  }
+
+  _invoiceStatusGroup(entry) {
+    const status = entry?.status || "unknown";
+    const order = { unpaid: 0, paid: 1, credit: 2, unknown: 3 };
+    return {
+      key: `status_${status}`,
+      title: this._statusLabel(status),
+      order: order[status] ?? 9,
+    };
+  }
+
+  _invoiceProviderGroup(entry) {
+    const supplier = entry?.supplier || "Furnizor";
+    return {
+      key: `provider_${this._normalizeText(supplier) || "furnizor"}`,
+      title: supplier,
+      order: 0,
+    };
+  }
+
+  _invoiceUrgencyGroup(entry) {
+    const daysPastDue = this._daysPastDue(entry?.dueDate);
+    const daysUntilDue = this._daysUntilDue(entry?.dueDate);
+
+    if (entry?.status === "unpaid" && Number.isFinite(daysPastDue) && daysPastDue > 0) {
+      return { key: "urgency_overdue", title: "Depășite", order: 0 };
+    }
+    if (entry?.status === "unpaid" && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 3) {
+      return { key: "urgency_soon", title: "Scadente în următoarele 3 zile", order: 1 };
+    }
+    if (entry?.status === "unpaid") {
+      return { key: "urgency_unpaid", title: "Neplătite", order: 2 };
+    }
+    if (entry?.status === "paid") {
+      return { key: "urgency_paid", title: "Plătite", order: 3 };
+    }
+    if (entry?.status === "credit") {
+      return { key: "urgency_credit", title: "Credit", order: 4 };
+    }
+    return { key: "urgency_unknown", title: "Necunoscute", order: 5 };
+  }
+
+  _invoiceAmountGroup(entry) {
+    const amount = this._toNumber(entry?.amount);
+    if (!amount) return { key: "amount_none", title: "Fără valoare", order: 99 };
+    if (amount >= 500) return { key: "amount_500", title: "Peste 500 lei", order: 0 };
+    if (amount >= 200) return { key: "amount_200_499", title: "200–499 lei", order: 1 };
+    if (amount >= 100) return { key: "amount_100_199", title: "100–199 lei", order: 2 };
+    return { key: "amount_under_100", title: "Sub 100 lei", order: 3 };
+  }
+
+  _invoiceDueDateGroup(entry) {
+    const date = this._parseDateLike(entry?.dueDate);
+    if (!date || !Number.isFinite(date.getTime())) {
+      return { key: "due_none", title: "Fără scadență", order: 50 };
+    }
+
+    const daysPastDue = this._daysPastDue(entry.dueDate);
+    const daysUntilDue = this._daysUntilDue(entry.dueDate);
+
+    if (entry.status === "unpaid" && Number.isFinite(daysPastDue) && daysPastDue > 0) {
+      return { key: "due_overdue", title: "Depășite", order: 0 };
+    }
+    if (Number.isFinite(daysUntilDue) && daysUntilDue === 0) {
+      return { key: "due_today", title: "Scadente astăzi", order: 1 };
+    }
+    if (Number.isFinite(daysUntilDue) && daysUntilDue > 0 && daysUntilDue <= 3) {
+      return { key: "due_soon", title: "Următoarele 3 zile", order: 2 };
+    }
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const title = (() => {
+      try {
+        return new Intl.DateTimeFormat("ro-RO", { month: "long", year: "numeric" }).format(date);
+      } catch (_err) {
+        return `${month}.${year}`;
+      }
+    })();
+
+    return {
+      key: `due_${year}_${month}`,
+      title: title.charAt(0).toUpperCase() + title.slice(1),
+      order: 10 + year * 12 + date.getMonth(),
+    };
+  }
+
+  _invoiceGroupForEntry(entry, grouping) {
+    if (grouping === "status") return this._invoiceStatusGroup(entry);
+    if (grouping === "provider") return this._invoiceProviderGroup(entry);
+    if (grouping === "due_date") return this._invoiceDueDateGroup(entry);
+    if (grouping === "urgency") return this._invoiceUrgencyGroup(entry);
+    if (grouping === "amount") return this._invoiceAmountGroup(entry);
+    return {
+      key: entry?.location?.locatie_cheie || entry?.location?.eticheta_locatie || "locatie",
+      title: entry?.location?.eticheta_locatie || entry?.location?.locatie_cheie || "Locație",
+      order: 0,
+    };
+  }
+
+  _buildInvoiceGroups(entries, grouping) {
+    const groups = new Map();
+
+    for (const entry of entries || []) {
+      const info = this._invoiceGroupForEntry(entry, grouping);
+      if (!groups.has(info.key)) {
+        groups.set(info.key, {
+          key: info.key,
+          title: info.title,
+          order: info.order,
+          entries: [],
+        });
+      }
+      groups.get(info.key).entries.push(entry);
+    }
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        entries: group.entries.sort((a, b) => {
+          if (grouping === "amount") {
+            const amountDiff = this._toNumber(b.amount) - this._toNumber(a.amount);
+            if (amountDiff !== 0) return amountDiff;
+          }
+          return this._compareInvoiceEntries(a, b);
+        }),
+      }))
+      .sort((a, b) => {
+        const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+        if (orderDiff !== 0) return orderDiff;
+        return String(a.title || "").localeCompare(String(b.title || ""), "ro");
+      });
+  }
+
+  _invoiceGroupSummary(entries) {
+    const providers = (entries || []).map((entry) => entry.provider);
+    const paid = (entries || []).filter((entry) => entry.status === "paid").length;
+    const unpaid = (entries || []).filter((entry) => entry.status === "unpaid").length;
+    const credit = (entries || []).filter((entry) => entry.status === "credit").length;
+    const totalUnpaid = providers
+      .filter((provider) => this._providerEffectiveStatus(provider) === "unpaid")
+      .reduce((sum, provider) => sum + this._toNumber(provider?.amount), 0);
+
+    const parts = [];
+    parts.push(`${providers.length} ${providers.length === 1 ? "factură" : "facturi"}`);
+    if (unpaid > 0) parts.push(`${unpaid} neplătite`);
+    if (paid > 0) parts.push(`${paid} plătite`);
+    if (credit > 0) parts.push(`${credit} credit`);
+    if (totalUnpaid > 0) parts.push(`total neplătit ${this._formatMoney(totalUnpaid)}`);
+
+    return parts.join(" • ");
+  }
+
+  _renderInvoicesByLocation(locations) {
+    return (locations || [])
+      .map((location) => {
+        const openReading = this._getAnyOpenReadingForLocation(location);
+        const hasUnpaid = (location.furnizori || []).some((p) => this._providerEffectiveStatus(p) === "unpaid");
+
+        return `
+          <div class="location ${hasUnpaid ? 'location-unpaid' : ''}">
+            <div class="location-heading">
+              <div class="location-title">${this._escapeHtml(location.eticheta_locatie || location.locatie_cheie || "Locație")}</div>
+              ${openReading?.badge ? this._buildReadingBadge(openReading.badge) : ""}
+            </div>
+            <div class="location-meta">${this._escapeHtml(this._locationSummary(location))}</div>
+            <div class="invoice-list">
+              ${(location.furnizori || []).map((provider, index) => this._buildProviderRow(location, provider, index)).join("")}
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  _renderInvoicesByGrouping(entries, grouping) {
+    return this._buildInvoiceGroups(entries, grouping)
+      .map((group) => {
+        const hasUnpaid = group.entries.some((entry) => entry.status === "unpaid");
+        const hasOpenReading = group.entries.some((entry) => this._getReadingData(entry.location, entry.provider).isOpen);
+
+        return `
+          <div class="location invoice-group ${hasUnpaid ? 'location-unpaid' : ''}">
+            <div class="location-heading">
+              <div class="location-title">${this._escapeHtml(group.title)}</div>
+              ${hasOpenReading ? this._buildReadingBadge("Citire deschisă") : ""}
+            </div>
+            <div class="location-meta">${this._escapeHtml(this._invoiceGroupSummary(group.entries))}</div>
+            <div class="invoice-list">
+              ${group.entries.map((entry) => this._buildProviderRow(entry.location, entry.provider, entry.index)).join("")}
+            </div>
+          </div>
+        `;
+      })
+      .join("");
   }
 
   _locationSummary(location) {
@@ -328,7 +673,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "eon", "myelectrica"].includes(providerKey)) {
+    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal"].includes(providerKey)) {
       return null;
     }
 
@@ -527,6 +872,64 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       return controls;
     }
 
+    if (providerKey === "apa_canal") {
+      const base = sensorObject.replace(/_citire_index_permisa$/, "").replace(/_citire_permisa$/, "");
+      const attrs = readingSensor.attributes || {};
+      const sensorIdCont = String(attrs.id_cont ?? provider?.id_cont ?? "").trim();
+      const sensorIdContract = String(attrs.id_contract ?? provider?.id_contract ?? "").trim();
+      const expectedNumberEntityId = `number.${base}_index_de_transmis`;
+      const expectedButtonEntityId = `button.${base}_trimite_index`;
+      const currentEntityId = `sensor.${base}_ultimul_index`;
+
+      const matchesApaCanalContext = (stateObj) => {
+        const stateAttrs = stateObj?.attributes || {};
+        const idCont = String(stateAttrs.id_cont ?? "").trim();
+        const idContract = String(stateAttrs.id_contract ?? "").trim();
+        if (sensorIdCont && idCont && idCont === sensorIdCont) return true;
+        if (sensorIdContract && idContract && idContract === sensorIdContract) return true;
+        const text = this._entityFriendlyText(stateObj);
+        return this._textMatchesAny(text, terms) || stateObj.entity_id.includes(base);
+      };
+
+      const numberFromAttr = attrs.number_entity_id && states[attrs.number_entity_id]
+        ? states[attrs.number_entity_id]
+        : null;
+      const buttonFromAttr = attrs.button_entity_id && states[attrs.button_entity_id]
+        ? states[attrs.button_entity_id]
+        : null;
+
+      const numberEntity = numberFromAttr || states[expectedNumberEntityId] || Object.values(states).find((stateObj) => {
+        if (!stateObj.entity_id.startsWith("number.")) return false;
+        const text = this._entityFriendlyText(stateObj);
+        return text.includes("index de transmis") && matchesApaCanalContext(stateObj);
+      });
+      const buttonEntity = buttonFromAttr || states[expectedButtonEntityId] || Object.values(states).find((stateObj) => {
+        if (!stateObj.entity_id.startsWith("button.")) return false;
+        const text = this._entityFriendlyText(stateObj);
+        return text.includes("trimite index") && matchesApaCanalContext(stateObj);
+      });
+      const currentEntity = states[currentEntityId] || Object.values(states).find((stateObj) => {
+        if (!stateObj.entity_id.startsWith("sensor.")) return false;
+        const text = this._entityFriendlyText(stateObj);
+        const stateAttrs = stateObj.attributes || {};
+        const idCont = String(stateAttrs.id_cont ?? "").trim();
+        const idContract = String(stateAttrs.id_contract ?? "").trim();
+        const sameContext = (sensorIdCont && idCont && idCont === sensorIdCont) || (sensorIdContract && idContract && idContract === sensorIdContract);
+        return (text.includes("ultimul index") || text.includes("index")) && (sameContext || this._textMatchesAny(text, terms) || stateObj.entity_id.includes(base));
+      });
+
+      if (numberEntity && buttonEntity) {
+        controls.push({
+          key: `${providerKey}_${provider.id_cont || sensorIdCont || base}`,
+          label: "Index de transmis",
+          numberEntityId: numberEntity.entity_id,
+          buttonEntityId: buttonEntity.entity_id,
+          currentEntityId: currentEntity?.entity_id || null,
+        });
+      }
+      return controls;
+    }
+
     return [];
   }
 
@@ -700,6 +1103,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
             data-number-entity="${this._escapeAttr(control.numberEntityId || "")}"
             data-button-entity="${this._escapeAttr(control.buttonEntityId || "")}"
             data-provider="${this._escapeAttr(String(provider?.furnizor || ""))}"
+            data-entry-id="${this._escapeAttr(String(provider?.entry_id || ""))}"
             data-id-cont="${this._escapeAttr(String(provider?.id_cont || ""))}"
             data-id-contract="${this._escapeAttr(String(provider?.id_contract || ""))}"
             data-control-label="${this._escapeAttr(String(control.label || ""))}"
@@ -940,6 +1344,7 @@ _buildProviderRefreshButton(provider) {
       digi: "App. Digi",
       eon: "App. E.ON",
       hidroelectrica: "App. Hidroelectrica",
+      myelectrica: "App. myElectrica",
       nova: "App. Nova",
       ebloc: "App. e-bloc",
       orange: "App. Orange",
@@ -1166,6 +1571,29 @@ _buildProviderRefreshButton(provider) {
   }
 
   _attachEvents(root) {
+    const groupingSelect = root.querySelector(".invoice-grouping-select");
+    if (groupingSelect) {
+      const markSelectActive = () => {
+        this._invoiceGroupingSelectActive = true;
+      };
+      const releaseSelectActive = () => {
+        window.setTimeout(() => {
+          this._invoiceGroupingSelectActive = false;
+        }, 250);
+      };
+
+      groupingSelect.addEventListener("pointerdown", markSelectActive);
+      groupingSelect.addEventListener("mousedown", markSelectActive);
+      groupingSelect.addEventListener("touchstart", markSelectActive, { passive: true });
+      groupingSelect.addEventListener("focus", markSelectActive);
+      groupingSelect.addEventListener("blur", releaseSelectActive);
+      groupingSelect.addEventListener("change", (event) => {
+        this._setInvoiceGrouping(event.target.value);
+        this._invoiceGroupingSelectActive = false;
+        window.setTimeout(() => this._render(), 0);
+      });
+    }
+
     root.querySelectorAll(".details-btn[data-key]").forEach((button) => {
       button.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -1416,18 +1844,40 @@ _buildProviderRefreshButton(provider) {
           }
         }
 
+        const numberStateObj = this._hass.states[numberEntityId];
+        const buttonStateObj = this._hass.states[buttonEntityId];
+        if (!numberStateObj || !buttonStateObj) {
+          this._setActionState("reading", buttonEntityId, {
+            status: "error",
+            message: "Entitățile pentru transmiterea indexului nu sunt disponibile. Repornește Home Assistant după update și verifică entitățile număr/buton ale furnizorului.",
+          });
+          this._render();
+          return;
+        }
+
         this._setActionState("reading", buttonEntityId, { status: "sending", message: "" });
         this._render();
 
         try {
-          await this._hass.callService("number", "set_value", {
-            entity_id: numberEntityId,
-            value: numericValue,
-          });
+          const providerKey = String(wrapper?.getAttribute("data-provider") || "").trim().toLowerCase();
+          if (providerKey === "apa_canal") {
+            await this._hass.callService("utilitati_romania", "submit_reading", {
+              provider: providerKey,
+              entry_id: String(wrapper?.getAttribute("data-entry-id") || ""),
+              id_cont: String(wrapper?.getAttribute("data-id-cont") || ""),
+              id_contract: String(wrapper?.getAttribute("data-id-contract") || ""),
+              value: numericValue,
+            });
+          } else {
+            await this._hass.callService("number", "set_value", {
+              entity_id: numberEntityId,
+              value: numericValue,
+            });
 
-          await this._hass.callService("button", "press", {
-            entity_id: buttonEntityId,
-          });
+            await this._hass.callService("button", "press", {
+              entity_id: buttonEntityId,
+            });
+          }
 
           await this._sleep(2000);
           await this._refreshEntities([
@@ -1482,6 +1932,9 @@ _buildProviderRefreshButton(provider) {
 
     const attrs = entity.attributes || {};
     const locations = this._filterLocations(Array.isArray(attrs.locatii) ? attrs.locatii : []);
+    const invoiceEntries = this._collectInvoiceEntries(locations);
+    const grouping = this._getInvoiceGrouping();
+    const invoiceCount = invoiceEntries.length;
 
     this.content.innerHTML = `
       <style>${this._styles()}</style>
@@ -1494,7 +1947,7 @@ _buildProviderRefreshButton(provider) {
                   <img class="ur-logo" src="/utilitati_romania/logo.png" />
                   <div class="title">${this._escapeHtml(this._config.title || entity.attributes.friendly_name || "Facturi utilități")}</div>
                 </div>
-                <div class="count">${locations.length} ${locations.length === 1 ? "adresă" : "adrese"}</div>
+                <div class="count">${invoiceCount} ${invoiceCount === 1 ? "factură" : "facturi"} • ${locations.length} ${locations.length === 1 ? "adresă" : "adrese"}</div>
               </div>
             `
             : ""
@@ -1504,32 +1957,14 @@ _buildProviderRefreshButton(provider) {
 
         ${this._config.show_summary ? this._buildSummary(attrs) : ""}
 
+        ${this._buildInvoiceGroupingSelector(grouping, invoiceCount)}
+
         <div class="locations">
           ${
-            locations.length
-              ? locations
-                  .map((location) => {
-                    const openReading = this._getAnyOpenReadingForLocation(location);
-
-                    const hasUnpaid = (location.furnizori || []).some((p) => {
-                      const status = this._providerEffectiveStatus(p);
-                      return status === "unpaid";
-                    });
-
-                    return `
-                      <div class="location ${hasUnpaid ? 'location-unpaid' : ''}">
-                        <div class="location-heading">
-                          <div class="location-title">${this._escapeHtml(location.eticheta_locatie || location.locatie_cheie || "Locație")}</div>
-                          ${openReading?.badge ? this._buildReadingBadge(openReading.badge) : ""}
-                        </div>
-                        <div class="location-meta">${this._escapeHtml(this._locationSummary(location))}</div>
-                        <div class="invoice-list">
-                          ${(location.furnizori || []).map((provider, index) => this._buildProviderRow(location, provider, index)).join("")}
-                        </div>
-                      </div>
-                    `;
-                  })
-                  .join("")
+            invoiceEntries.length
+              ? grouping === "location"
+                ? this._renderInvoicesByLocation(locations)
+                : this._renderInvoicesByGrouping(invoiceEntries, grouping)
               : `<div class="empty">Nu există facturi de afișat pentru filtrele selectate.</div>`
           }
         </div>
@@ -1711,6 +2146,46 @@ _buildProviderRefreshButton(provider) {
 
       .summary-value {
         font-weight: 600;
+      }
+
+      .invoice-toolbar {
+        display: grid;
+        grid-template-columns: auto minmax(160px, 1fr) auto;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 16px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .invoice-grouping-label {
+        color: var(--secondary-text-color);
+        font-size: 0.88rem;
+        white-space: nowrap;
+      }
+
+      .invoice-grouping-select {
+        width: 100%;
+        min-width: 0;
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--divider-color);
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        font: inherit;
+        outline: none;
+      }
+
+      .invoice-grouping-select:focus {
+        border-color: var(--primary-color);
+      }
+
+      .invoice-grouping-hint {
+        color: var(--secondary-text-color);
+        font-size: 0.82rem;
+        white-space: nowrap;
       }
 
       .locations {

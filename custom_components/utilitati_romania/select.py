@@ -8,7 +8,12 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL
+from .const import (
+    CONF_FURNIZOR,
+    CONF_MOBILE_NOTIFY_SERVICE,
+    DOMENIU,
+    FURNIZOR_ADMIN_GLOBAL,
+)
 
 
 _NOTIFY_OPTION_NONE = "none"
@@ -56,7 +61,11 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
         self._attr_name = "Dispozitiv mobil pentru deschidere furnizori"
         self._attr_device_info = _admin_device_info(entry)
         self._attr_options = _mobile_notify_service_names(hass)
-        self._attr_current_option = _NOTIFY_OPTION_NONE
+        self._attr_current_option = self._option_from_config_entry()
+
+    def _option_from_config_entry(self) -> str:
+        value = str(self._entry.options.get(CONF_MOBILE_NOTIFY_SERVICE) or "").strip()
+        return value or _NOTIFY_OPTION_NONE
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -64,10 +73,17 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
         options = _mobile_notify_service_names(self.hass)
         self._attr_options = options
 
+        stored_value = self._option_from_config_entry()
+        if stored_value in options:
+            self._attr_current_option = stored_value
+            self.async_write_ha_state()
+            return
+
         restored_state = await self.async_get_last_state()
         restored_value = str(restored_state.state).strip() if restored_state else ""
         if restored_value in options:
             self._attr_current_option = restored_value
+            await self._async_save_selected_option(restored_value)
         else:
             self._attr_current_option = _NOTIFY_OPTION_NONE
 
@@ -76,5 +92,15 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         options = _mobile_notify_service_names(self.hass)
         self._attr_options = options
-        self._attr_current_option = option if option in options else _NOTIFY_OPTION_NONE
+        selected_option = option if option in options else _NOTIFY_OPTION_NONE
+        self._attr_current_option = selected_option
+        await self._async_save_selected_option(selected_option)
         self.async_write_ha_state()
+
+    async def _async_save_selected_option(self, option: str) -> None:
+        current_options = dict(self._entry.options)
+        current_options[CONF_MOBILE_NOTIFY_SERVICE] = option
+        self.hass.config_entries.async_update_entry(
+            self._entry,
+            options=current_options,
+        )

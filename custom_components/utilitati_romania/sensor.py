@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.const import UnitOfVolume
 
@@ -663,6 +664,27 @@ class DescriereSenzorApaCanal(SensorEntityDescription):
 
 SENZORI_APA_CANAL: tuple[DescriereSenzorApaCanal, ...] = (
     DescriereSenzorApaCanal(
+        key="citire_index_permisa",
+        name="Citire index permisă",
+        native_unit_of_measurement=None,
+        icon="mdi:counter",
+        key_path=("meter_reading_window", "is_open"),
+    ),
+    DescriereSenzorApaCanal(
+        key="perioada_citire",
+        name="Perioadă citire index",
+        native_unit_of_measurement=None,
+        icon="mdi:calendar-clock",
+        key_path=("meter_reading_window", "period"),
+    ),
+    DescriereSenzorApaCanal(
+        key="index_de_transmis",
+        name="Index de transmis",
+        native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
+        icon="mdi:counter",
+        key_path=("meter_reading_window", "registers", "0", "previous_reading"),
+    ),
+    DescriereSenzorApaCanal(
         key="last_consumption",
         name="Ultimul consum",
         native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
@@ -709,6 +731,9 @@ class DescriereSenzorContDigi(SensorEntityDescription):
 
 
 APA_CANAL_OBJECT_KEY_MAP = {
+    "citire_index_permisa": "citire_index_permisa",
+    "perioada_citire": "perioada_citire",
+    "index_de_transmis": "index_de_transmis",
     "last_consumption": "ultimul_consum",
     "last_meter_reading": "ultimul_index",
     "current_balance": "sold_curent",
@@ -1572,14 +1597,59 @@ class SenzorApaCanal(EntitateUtilitatiRomania, SensorEntity):
         data = self.coordinator.data.extra if self.coordinator.data else {}
         value: Any = data
         for key in self.entity_description.key_path:
+            if isinstance(value, list):
+                try:
+                    value = value[int(key)]
+                except (TypeError, ValueError, IndexError):
+                    return None
+                continue
             if not isinstance(value, dict):
                 return None
             value = value.get(key)
+
+        if self.entity_description.key == "citire_index_permisa":
+            return "da" if value else "nu"
+        if self.entity_description.key == "perioada_citire":
+            return value or "Închisă"
         return value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         data = self.coordinator.data.extra if self.coordinator.data else {}
+
+        if self.entity_description.key in {"citire_index_permisa", "perioada_citire", "index_de_transmis"}:
+            item = data.get("meter_reading_window") or {}
+            registre = item.get("registers") or []
+            primul = registre[0] if registre else {}
+            cont = (self.coordinator.data.conturi or [None])[0] if self.coordinator.data else None
+            id_cont = getattr(cont, "id_cont", None)
+            id_contract = getattr(cont, "id_contract", None)
+            number_unique_id = f"{self._entry.entry_id}_apa_canal_{id_cont}_index_de_transmis" if id_cont else None
+            button_unique_id = f"{self._entry.entry_id}_apa_canal_{id_cont}_trimite_index" if id_cont else None
+            number_entity_id = None
+            button_entity_id = None
+            if self.hass and number_unique_id and button_unique_id:
+                registru_entitati = er.async_get(self.hass)
+                number_entity_id = registru_entitati.async_get_entity_id("number", DOMENIU, number_unique_id)
+                button_entity_id = registru_entitati.async_get_entity_id("button", DOMENIU, button_unique_id)
+            return {
+                "id_cont": id_cont,
+                "id_contract": id_contract,
+                "citire_permisa": "da" if item.get("is_open") else "nu",
+                "inceput_perioada": item.get("start_date"),
+                "sfarsit_perioada": item.get("end_date"),
+                "perioada_citire": item.get("period"),
+                "device_id": primul.get("device_id"),
+                "register_id": primul.get("register_id"),
+                "serial_number": primul.get("serial_number"),
+                "previous_reading": primul.get("previous_reading"),
+                "previous_reading_date": primul.get("previous_reading_date"),
+                "unit": primul.get("unit"),
+                "number_entity_id": number_entity_id,
+                "button_entity_id": button_entity_id,
+                "number_unique_id": number_unique_id,
+                "button_unique_id": button_unique_id,
+            }
 
         if self.entity_description.key == "last_consumption":
             item = data.get("last_consumption") or {}

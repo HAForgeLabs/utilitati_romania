@@ -11,3 +11,31 @@ open_provider:
       description: Cheia internă a furnizorului, de exemplu digi, hidroelectrica, eon.
       required: true
       example: digi
+
+
+submit_reading:
+  name: Transmite index
+  description: Transmite direct indexul către furnizor, fără a depinde de starea temporară a entității number.
+  fields:
+    provider:
+      name: Furnizor
+      description: Cheia internă a furnizorului. Momentan este acceptat apa_canal.
+      required: true
+      example: apa_canal
+    entry_id:
+      name: Intrare configurare
+      description: ID-ul intrării de configurare, dacă este disponibil în card.
+      required: false
+    id_cont:
+      name: Cont
+      description: Identificatorul contului/locului de consum.
+      required: false
+    id_contract:
+      name: Contract
+      description: Identificatorul contractului.
+      required: false
+    value:
+      name: Index
+      description: Valoarea indexului de transmis.
+      required: true
+      example: 622

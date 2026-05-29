@@ -7,7 +7,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -528,6 +528,17 @@ class ApiApaCanal:
         devices_data = self._batch_get(
             f"Contracts('{quote(contract_id, safe='')}')/ContractAllDevices?$format=json"
         )
+        try:
+            billing_period_data = self._batch_get(
+                f"GetCurrentBillingPeriod?ContractID='{quote(contract_id, safe='')}'"
+            )
+        except EroareApiApaCanal as err:
+            _LOGGER.debug(
+                "Nu am putut citi perioada curentă de transmitere index pentru Apă Canal Sibiu, contract=%s: %s",
+                contract_id,
+                err,
+            )
+            billing_period_data = {}
 
         balance_results = balance_data.get("d", {}).get("results", [])
         invoices = invoices_data.get("d", {}).get("results", [])
@@ -535,7 +546,8 @@ class ApiApaCanal:
         consumptions = consumption_data.get("d", {}).get("results", [])
         meter_results = meter_data.get("d", {}).get("results", [])
         devices = devices_data.get("d", {}).get("results", [])
-        reading_window = self._build_meter_reading_window(contract_id, devices)
+        billing_period = self._normalize_billing_period(billing_period_data)
+        reading_window = self._build_meter_reading_window(contract_id, devices, billing_period)
 
         sold_curent = None
         for item in balance_results:
@@ -565,9 +577,21 @@ class ApiApaCanal:
             "meter_reading_window": reading_window,
         }
 
-    def _build_meter_reading_window(self, contract_id: str, devices: list[dict[str, Any]]) -> dict[str, Any]:
+    def _build_meter_reading_window(
+        self,
+        contract_id: str,
+        devices: list[dict[str, Any]],
+        billing_period: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         registers: list[dict[str, Any]] = []
-        for device in devices:
+        installed_devices = [
+            device
+            for device in devices
+            if bool(device.get("CurrentlyInstalledFlag"))
+        ]
+        devices_to_check = installed_devices or devices
+
+        for device in devices_to_check:
             device_id = str(device.get("DeviceID") or "").strip()
             if not device_id:
                 continue
@@ -590,14 +614,34 @@ class ApiApaCanal:
 
         is_open = bool(registers)
         today = datetime.now(timezone.utc).date()
+        start_date = (billing_period or {}).get("start_date")
+        end_date = (billing_period or {}).get("end_date")
+        if is_open and not start_date:
+            start_date = today.isoformat()
+        if is_open and not end_date:
+            end_date = _last_day_of_month(today).isoformat()
+
+        period = None
+        if is_open:
+            period = _format_meter_reading_period(start_date, end_date)
+        elif start_date and end_date:
+            period = _format_meter_reading_period(start_date, end_date)
+
         return {
-            "available": is_open,
+            "available": bool(is_open or (start_date and end_date)),
             "is_open": is_open,
-            "start_date": today.isoformat() if is_open else None,
-            "end_date": (today + timedelta(days=5)).isoformat() if is_open else None,
-            "period": f"{today.isoformat()} - {(today + timedelta(days=5)).isoformat()}" if is_open else None,
+            "start_date": start_date,
+            "end_date": end_date,
+            "period": period,
             "contract_id": contract_id,
             "registers": registers,
+        }
+
+    def _normalize_billing_period(self, data: dict[str, Any]) -> dict[str, Any]:
+        item = (data.get("d") or {}).get("GetCurrentBillingPeriod") or {}
+        return {
+            "start_date": _sap_date_to_iso(item.get("StartDate")),
+            "end_date": _sap_date_to_iso(item.get("EndDate")),
         }
 
     def _normalize_register_to_read(self, item: dict[str, Any], device: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -722,6 +766,30 @@ class ApiApaCanal:
             "invoice_status": item.get("InvoiceStatus"),
             "serial_number": item.get("SerialNumber"),
         }
+
+
+def _last_day_of_month(value: date) -> date:
+    if value.month == 12:
+        return date(value.year, 12, 31)
+    return date(value.year, value.month + 1, 1) - timedelta(days=1)
+
+
+def _format_date_ro(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value).date()
+    except (TypeError, ValueError):
+        return value
+    return parsed.strftime("%d.%m.%Y")
+
+
+def _format_meter_reading_period(start_date: str | None, end_date: str | None) -> str | None:
+    start = _format_date_ro(start_date)
+    end = _format_date_ro(end_date)
+    if start and end:
+        return f"{start} - {end}"
+    return start or end
 
 
 class ClientFurnizorApaCanal(ClientFurnizor):
