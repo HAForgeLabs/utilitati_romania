@@ -54,6 +54,7 @@ Permite gestionarea facturilor, notificărilor și transmiterii indexului direct
 - Nova
 - Apă Canal Sibiu
 - e-bloc.ro
+- Orange Romania
 
 Lista furnizorilor este în continuă extindere.
 
