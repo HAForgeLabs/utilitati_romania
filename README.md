@@ -55,6 +55,7 @@ Permite gestionarea facturilor, notificărilor și transmiterii indexului direct
 - Apă Canal Sibiu
 - e-bloc.ro
 - Orange Romania
+- DEER (Distributie Energie Electrica Romania SA)
 
 Lista furnizorilor este în continuă extindere.
 
