@@ -247,7 +247,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const daysPastDue = this._daysPastDue(rawDueDate);
     const daysUntilDue = this._daysUntilDue(rawDueDate);
     const isOverdue = status === "unpaid" && Number.isFinite(daysPastDue) && daysPastDue > 0;
-    const isDueSoon = status === "unpaid" && !isOverdue && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 3;
+    const isDueSoon = status === "unpaid" && !isOverdue && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 5;
     const overdueText = daysPastDue === 1 ? "depășită cu 1 zi" : `depășită cu ${daysPastDue} zile`;
     const dueClass = isOverdue ? "row-due-overdue" : (isDueSoon ? "row-due-soon" : "");
 
@@ -441,8 +441,8 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (entry?.status === "unpaid" && Number.isFinite(daysPastDue) && daysPastDue > 0) {
       return { key: "urgency_overdue", title: "Depășite", order: 0 };
     }
-    if (entry?.status === "unpaid" && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 3) {
-      return { key: "urgency_soon", title: "Scadente în următoarele 3 zile", order: 1 };
+    if (entry?.status === "unpaid" && Number.isFinite(daysUntilDue) && daysUntilDue >= 0 && daysUntilDue <= 5) {
+      return { key: "urgency_soon", title: "Scadente în următoarele 5 zile", order: 1 };
     }
     if (entry?.status === "unpaid") {
       return { key: "urgency_unpaid", title: "Neplătite", order: 2 };
@@ -480,8 +480,8 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (Number.isFinite(daysUntilDue) && daysUntilDue === 0) {
       return { key: "due_today", title: "Scadente astăzi", order: 1 };
     }
-    if (Number.isFinite(daysUntilDue) && daysUntilDue > 0 && daysUntilDue <= 3) {
-      return { key: "due_soon", title: "Următoarele 3 zile", order: 2 };
+    if (Number.isFinite(daysUntilDue) && daysUntilDue > 0 && daysUntilDue <= 5) {
+      return { key: "due_soon", title: "Următoarele 5 zile", order: 2 };
     }
 
     const year = date.getFullYear();
