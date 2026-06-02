@@ -135,6 +135,30 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return 0;
   }
 
+  _readNumericState(entityId) {
+    const state = entityId ? this._hass?.states?.[entityId]?.state : null;
+    if (state === null || state === undefined || ["unknown", "unavailable"].includes(String(state))) {
+      return null;
+    }
+    const value = this._toNumber(state);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  async _waitForNumberState(entityId, expectedValue, timeoutMs = 15000) {
+    const expected = Number(expectedValue);
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt <= timeoutMs) {
+      const current = this._readNumericState(entityId);
+      if (current !== null && Math.abs(current - expected) < 0.000001) {
+        return true;
+      }
+      await this._sleep(300);
+    }
+
+    return false;
+  }
+
   _formatMoney(value, currency = "RON") {
     if (value === null || value === undefined || value === "") return "—";
     const amount = this._toNumber(value);
@@ -805,30 +829,95 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
     if (providerKey === "eon") {
       const base = sensorObject.replace(/_citire_permisa$/, "");
-      let numberEntity = Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("number.") && stateObj.entity_id.includes(`${base}_index`));
-      if (!numberEntity) {
-        numberEntity = Object.values(states).find((stateObj) => {
-          if (!stateObj.entity_id.startsWith("number.")) return false;
-          const text = this._entityFriendlyText(stateObj);
-          return this._textMatchesAny(text, terms) && (text.includes("index gaz") || text.includes("index energie") || text.includes("index"));
-        });
-      }
-      let currentEntity = Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("sensor.") && (stateObj.entity_id === `sensor.${base}_index_contor` || stateObj.entity_id === `sensor.${base}_index_energie_electrica` || stateObj.entity_id === `sensor.${base}_index_gaz`));
-      if (!currentEntity) {
-        currentEntity = Object.values(states).find((stateObj) => {
-          if (!stateObj.entity_id.startsWith("sensor.")) return false;
-          const text = this._entityFriendlyText(stateObj);
-          return this._textMatchesAny(text, terms) && (text.includes(" index ") || text.includes("index gaz") || text.includes("index energie") || text.includes("index contor"));
-        });
-      }
-      const buttonEntity = Object.values(states).find((stateObj) => {
-        if (!stateObj.entity_id.startsWith("button.")) return false;
+      const idCont = String(provider?.id_cont || "").trim();
+      const tipServiciu = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
+      const wantsGas = tipServiciu.includes("gaz");
+      const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie");
+
+      const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
-        return text.includes("trimite index") && (this._textMatchesAny(text, terms) || text.includes(readingText));
-      });
+        const entityId = String(stateObj?.entity_id || "").toLowerCase();
+        return (
+          entityId.includes("hidro") ||
+          entityId.includes("hidroelectrica") ||
+          entityId.includes("myelectrica") ||
+          entityId.includes("apa_canal") ||
+          entityId.includes("apacanal") ||
+          entityId.includes("ebloc") ||
+          text.includes("hidro") ||
+          text.includes("hidroelectrica") ||
+          text.includes("myelectrica") ||
+          text.includes("apa canal") ||
+          text.includes("ebloc")
+        );
+      };
+
+      const scoreEonEntity = (stateObj, kind) => {
+        if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
+        if (isOtherProviderEntity(stateObj)) return -1;
+
+        const entityId = String(stateObj.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        const attrs = stateObj.attributes || {};
+        let score = 0;
+
+        if (entityId.includes("eon")) score += 160;
+        if (text.includes("eon")) score += 80;
+        if (idCont && entityId.includes(idCont)) score += 160;
+        if (idCont && String(attrs.id_cont ?? "").trim() === idCont) score += 180;
+        if (entityId.includes(base)) score += 120;
+        if (this._textMatchesAny(text, terms)) score += 90;
+        if (this._textMatchesAny(entityId, terms)) score += 50;
+
+        if (kind === "number") {
+          if (text.includes("index gaz") || entityId.includes("index_gaz")) score += wantsGas ? 120 : 40;
+          if (text.includes("index energie") || entityId.includes("index_energie")) score += wantsElectric ? 120 : 40;
+          if (text.includes("index") || entityId.includes("index")) score += 40;
+        }
+
+        if (kind === "button") {
+          if (!text.includes("trimite index") && !entityId.includes("trimite_index")) return -1;
+          if (text.includes("gaz") || entityId.includes("gaz")) score += wantsGas ? 120 : 30;
+          if (text.includes("energie") || text.includes("electric") || entityId.includes("energie") || entityId.includes("electric")) score += wantsElectric ? 120 : 30;
+          if (entityId.includes("eon")) score += 160;
+        }
+
+        if (kind === "sensor") {
+          if (text.includes("index gaz") || entityId.includes("index_gaz")) score += wantsGas ? 90 : 30;
+          if (text.includes("index energie") || entityId.includes("index_energie")) score += wantsElectric ? 90 : 30;
+          if (text.includes("index") || entityId.includes("index")) score += 30;
+        }
+
+        return score;
+      };
+
+      const bestEntity = (kind, minimumScore) => {
+        let best = null;
+        let bestScore = -1;
+        for (const stateObj of Object.values(states)) {
+          const score = scoreEonEntity(stateObj, kind);
+          if (score > bestScore) {
+            best = stateObj;
+            bestScore = score;
+          }
+        }
+        return bestScore >= minimumScore ? best : null;
+      };
+
+      const exactNumber = states[`number.${base}_index`] || states[`number.${base}_index_gaz`] || states[`number.${base}_index_energie_electrica`] || null;
+      const numberEntity = exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : bestEntity("number", 120);
+
+      let currentEntity = states[`sensor.${base}_index_contor`] || states[`sensor.${base}_index_energie_electrica`] || states[`sensor.${base}_index_gaz`] || null;
+      if (currentEntity && isOtherProviderEntity(currentEntity)) currentEntity = null;
+      if (!currentEntity) currentEntity = bestEntity("sensor", 120);
+
+      const exactButton = states[`button.${base}_trimite_index`] || states[`button.${base}_trimite_index_gaz`] || states[`button.${base}_trimite_index_energie_electrica`] || null;
+      const buttonEntity = exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120);
+
       if (numberEntity && buttonEntity) {
         controls.push({
           key: `${providerKey}_${provider.id_cont || base}`,
+          providerKey,
           label: "Index de transmis",
           numberEntityId: numberEntity.entity_id,
           buttonEntityId: buttonEntity.entity_id,
@@ -1108,6 +1197,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
             data-id-contract="${this._escapeAttr(String(provider?.id_contract || ""))}"
             data-control-label="${this._escapeAttr(String(control.label || ""))}"
             data-current-value="${this._escapeAttr(String(control.currentValue ?? ""))}"
+            data-current-entity="${this._escapeAttr(control.currentEntityId || "")}"
             data-unit="${this._escapeAttr(String(control.unit || ""))}"
           >
             <div class="reading-control-header">
@@ -1788,6 +1878,7 @@ _buildProviderRefreshButton(provider) {
         const wrapper = event.target.closest(".reading-control");
         const numberEntityId = wrapper?.getAttribute("data-number-entity");
         const buttonEntityId = wrapper?.getAttribute("data-button-entity");
+        const currentEntityId = wrapper?.getAttribute("data-current-entity");
         const input = wrapper?.querySelector(".reading-input");
         const value = String(input?.value ?? "").trim();
 
@@ -1869,10 +1960,31 @@ _buildProviderRefreshButton(provider) {
               value: numericValue,
             });
           } else {
+            if (providerKey === "eon") {
+              const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apacanal|ebloc)/i;
+              if (wrongProviderPattern.test(String(numberEntityId)) || wrongProviderPattern.test(String(buttonEntityId))) {
+                throw new Error("Cardul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina sau actualizează integrarea.");
+              }
+            }
+
             await this._hass.callService("number", "set_value", {
               entity_id: numberEntityId,
               value: numericValue,
             });
+
+            const valueSynced = await this._waitForNumberState(
+              numberEntityId,
+              numericValue,
+              providerKey === "eon" ? 15000 : 6000
+            );
+
+            if (!valueSynced) {
+              const currentState = this._hass?.states?.[numberEntityId]?.state ?? "necunoscut";
+              throw new Error(
+                `Valoarea introdusă nu a fost confirmată încă de Home Assistant pentru ${numberEntityId}. ` +
+                `Valoare curentă: ${currentState}. Reîncearcă după câteva secunde.`
+              );
+            }
 
             await this._hass.callService("button", "press", {
               entity_id: buttonEntityId,
@@ -1884,12 +1996,15 @@ _buildProviderRefreshButton(provider) {
             numberEntityId,
             buttonEntityId,
             this._findEntityId(),
+            currentEntityId,
           ]);
 
           this._readingCache.clear();
           this._setActionState("reading", buttonEntityId, {
             status: "success",
-            message: "Indexul a fost trimis. Cardul se actualizează automat.",
+            message: providerKey === "eon"
+              ? "Indexul a fost trimis către E.ON. Confirmarea apare și în notificările Home Assistant."
+              : "Indexul a fost trimis. Cardul se actualizează automat.",
           });
         } catch (err) {
           this._setActionState("reading", buttonEntityId, {

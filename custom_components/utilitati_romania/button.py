@@ -381,13 +381,17 @@ class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
                     "API-ul E.ON nu a returnat un răspuns valid."
                 )
 
+            if isinstance(rezultat, dict) and rezultat.get("success") is False:
+                raise ValueError(f"E.ON a refuzat transmiterea indexului: {rezultat}")
+
             persistent_notification.async_create(
                 self.hass,
                 (
-                    f"Indexul de **{tip_label}** pentru **{self._alias}** a fost trimis cu succes.\n\n"
+                    f"Indexul de **{tip_label}** pentru **{self._alias}** a fost confirmat de E.ON.\n\n"
                     f"- Contract: `{self.cont.id_cont}`\n"
                     f"- Valoare transmisă: **{index_value}**\n"
-                    f"- ID contor intern: `{ablbelnr}`"
+                    f"- ID contor intern: `{ablbelnr}`\n"
+                    f"- Răspuns E.ON: `{rezultat}`"
                 ),
                 title="Utilități România – E.ON",
                 notification_id=notif_id,

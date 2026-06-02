@@ -609,7 +609,16 @@ class EonApiClient:
                 response_text = await resp.text()
 
                 if resp.status == 200:
-                    return json.loads(response_text)
+                    try:
+                        data = json.loads(response_text) if response_text else {}
+                    except (json.JSONDecodeError, ValueError):
+                        _LOGGER.error("[%s] Răspuns 200 fără JSON valid la transmiterea indexului: %s", label, response_text[:1000])
+                        return None
+                    if isinstance(data, dict) and data.get("success") is False:
+                        _LOGGER.error("[%s] E.ON a refuzat transmiterea indexului: %s", label, response_text[:1000])
+                        return None
+                    _LOGGER.debug("[%s] Răspuns transmitere index E.ON: HTTP=200, Body=%s", label, response_text[:1000])
+                    return data
 
                 if resp.status == 401:
                     if self._token_generation != gen_before:
@@ -628,7 +637,17 @@ class EonApiClient:
                     ) as resp_retry:
                         response_text_retry = await resp_retry.text()
                         if resp_retry.status == 200:
-                            return json.loads(response_text_retry)
+                            try:
+                                data_retry = json.loads(response_text_retry) if response_text_retry else {}
+                            except (json.JSONDecodeError, ValueError):
+                                _LOGGER.error("[%s] Răspuns 200 fără JSON valid la retry transmitere index: %s", label, response_text_retry[:1000])
+                                return None
+                            if isinstance(data_retry, dict) and data_retry.get("success") is False:
+                                _LOGGER.error("[%s] E.ON a refuzat transmiterea indexului la retry: %s", label, response_text_retry[:1000])
+                                return None
+                            _LOGGER.debug("[%s] Răspuns retry transmitere index E.ON: HTTP=200, Body=%s", label, response_text_retry[:1000])
+                            return data_retry
+                        _LOGGER.error("[%s] Eroare HTTP=%s la retry transmitere index. Body=%s", label, resp_retry.status, response_text_retry[:1000])
                         return None
 
                 _LOGGER.error("[%s] Eroare HTTP=%s, Body=%s", label, resp.status, response_text)
