@@ -165,6 +165,8 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
         slug = slug_loc_eon(cont.id_cont, alias, cont.adresa)
         tip = cont.tip_serviciu or cont.tip_utilitate or "curent"
 
+        self._alias = alias
+        self._tip = tip
         self._attr_native_unit_of_measurement = "m³" if tip == "gaz" else "kWh"
         self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{cont.id_cont}_index"
         self._attr_name = (
@@ -174,6 +176,16 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
         self._attr_suggested_object_id = f"eon_{cont.id_cont}_{slug}_index"
         self.entity_id = f"number.eon_{cont.id_cont}_{slug}_index"
         self._attr_native_value = 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        return {
+            "furnizor": "eon",
+            "id_cont": getattr(self.cont, "id_cont", None),
+            "id_contract": getattr(self.cont, "id_contract", None),
+            "tip_serviciu": self._tip,
+            "alias_locatie": self._alias,
+        }
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
