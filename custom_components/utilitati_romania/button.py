@@ -29,17 +29,6 @@ from .storage_citiri import async_salveaza_citire
 _LOGGER = logging.getLogger(__name__)
 
 
-
-
-def _entity_attr_provider(state) -> str:
-    attrs = getattr(state, "attributes", {}) or {}
-    return str(attrs.get("furnizor") or "").strip().lower()
-
-
-def _entity_attr_id_cont(state) -> str:
-    attrs = getattr(state, "attributes", {}) or {}
-    return str(attrs.get("id_cont") or "").strip()
-
 def _cont_curent_dupa_id(coordonator: CoordonatorUtilitatiRomania, id_cont: str | None):
     data = getattr(coordonator, "data", None)
     conturi = getattr(data, "conturi", None) or []
@@ -327,44 +316,22 @@ class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
         self._attr_icon = "mdi:send-circle"
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
 
-    @property
-    def extra_state_attributes(self) -> dict[str, str | None]:
-        return {
-            "furnizor": "eon",
-            "id_cont": getattr(self.cont, "id_cont", None),
-            "id_contract": getattr(self.cont, "id_contract", None),
-            "tip_serviciu": self._tip,
-            "alias_locatie": self._alias,
-        }
-
     async def async_press(self) -> None:
         tip_label = "gaz" if self._tip == "gaz" else "energie electrică"
         notif_id = f"utilitati_romania_eon_trimite_index_{self.cont.id_cont}"
 
         try:
             text_cautat = "index gaz" if self._tip == "gaz" else "index energie electrică"
-            id_cont = str(getattr(self.cont, "id_cont", "") or "").strip()
 
             numar = next(
                 (
                     state
                     for state in self.hass.states.async_all("number")
-                    if _entity_attr_provider(state) == "eon"
-                    and _entity_attr_id_cont(state) == id_cont
+                    if text_cautat in str(state.attributes.get("friendly_name", "")).lower()
+                    and self._alias.lower() in str(state.attributes.get("friendly_name", "")).lower()
                 ),
                 None,
             )
-
-            if not numar:
-                numar = next(
-                    (
-                        state
-                        for state in self.hass.states.async_all("number")
-                        if text_cautat in str(state.attributes.get("friendly_name", "")).lower()
-                        and self._alias.lower() in str(state.attributes.get("friendly_name", "")).lower()
-                    ),
-                    None,
-                )
 
             if not numar:
                 raise ValueError(
@@ -372,7 +339,7 @@ class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
                 )
 
             try:
-                index_value = int(float(str(numar.state).replace(",", ".")))
+                index_value = int(float(numar.state))
             except (TypeError, ValueError):
                 raise ValueError(
                     f"Valoarea indexului introdusă pentru „{self._alias}” nu este validă: {numar.state}"

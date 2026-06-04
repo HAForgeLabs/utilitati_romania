@@ -1,0 +1,1263 @@
+class UtilitatiRomaniaPanel extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._hass = null;
+    this._panel = null;
+    this._activeTab = "overview";
+    this._expandedLocations = new Set();
+    this._readingCache = new Map();
+    this._actions = new Map();
+    this._readingDrafts = new Map();
+    this._invoiceGrouping = this._loadInvoiceGroupingPreference() || "location";
+    this._licenseDraft = "";
+    this._interactiveUntil = 0;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._readingCache.clear();
+    if (this._shouldDelayRenderForInteraction()) return;
+    this._render();
+  }
+
+  set panel(panel) {
+    this._panel = panel;
+    this._render();
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _shouldDelayRenderForInteraction() {
+    if (!this.shadowRoot) return false;
+    if (Date.now() < this._interactiveUntil) return true;
+    const active = this.shadowRoot.activeElement;
+    if (!active) return false;
+    return !!active.closest?.("[data-invoice-grouping], .reading-input, #license-input");
+  }
+
+  _holdRenderBriefly(ms = 3500) {
+    this._interactiveUntil = Date.now() + ms;
+  }
+
+  _summaryEntityId() {
+    const configured = this._panel?.config?.summary_entity;
+    if (configured && this._hass?.states?.[configured]) return configured;
+    if (this._hass?.states?.["sensor.administrare_integrare_facturi_utilitati"]) {
+      return "sensor.administrare_integrare_facturi_utilitati";
+    }
+    return Object.keys(this._hass?.states || {}).find((entityId) => {
+      const attrs = this._hass.states[entityId]?.attributes || {};
+      return entityId.startsWith("sensor.") && Array.isArray(attrs.locatii);
+    }) || null;
+  }
+
+  _summary() {
+    const entityId = this._summaryEntityId();
+    const state = entityId ? this._hass?.states?.[entityId] : null;
+    return {
+      entityId,
+      state,
+      attrs: state?.attributes || {},
+      locations: Array.isArray(state?.attributes?.locatii) ? state.attributes.locatii : [],
+    };
+  }
+
+  _escape(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  _normalizeText(value) {
+    return String(value ?? "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  _num(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+    if (typeof value === "string") {
+      const parsed = Number(value.replace(/\s/g, "").replace(",", "."));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return 0;
+  }
+
+  _money(value, currency = "RON") {
+    if (value === null || value === undefined || value === "") return "—";
+    try {
+      return new Intl.NumberFormat("ro-RO", {
+        style: "currency",
+        currency,
+        maximumFractionDigits: 2,
+      }).format(this._num(value));
+    } catch (_err) {
+      return `${this._num(value).toFixed(2)} ${currency}`;
+    }
+  }
+
+  _date(value) {
+    if (!value || value === "-") return "—";
+    const text = String(value).trim();
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(text)) return text;
+    const parsed = new Date(text);
+    if (!Number.isNaN(parsed.getTime())) {
+      try {
+        return new Intl.DateTimeFormat("ro-RO").format(parsed);
+      } catch (_err) {
+        return text;
+      }
+    }
+    return text || "—";
+  }
+
+  _parseDateLike(value) {
+    if (!value) return null;
+    if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+    const text = String(value).trim();
+    let parsed = null;
+    if (/^\d{2}\.\d{2}\.\d{4}$/.test(text)) {
+      const [dd, mm, yyyy] = text.split(".");
+      parsed = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+    } else if (/^\d{4}-\d{2}-\d{2}/.test(text)) {
+      parsed = new Date(text);
+    } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(text)) {
+      const [dd, mm, yyyy] = text.split("/");
+      parsed = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
+    } else {
+      parsed = new Date(text);
+    }
+    return parsed && !Number.isNaN(parsed.getTime()) ? parsed : null;
+  }
+
+  _todayDate() {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  }
+
+  _daysUntil(value) {
+    const parsed = this._parseDateLike(value);
+    if (!parsed) return null;
+    const due = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+    return Math.round((due.getTime() - this._todayDate().getTime()) / 86400000);
+  }
+
+  _makeKey(...parts) {
+    return parts.map((part) => String(part ?? "").trim()).join("__");
+  }
+
+  _entityFriendlyText(stateObj) {
+    const friendly = stateObj?.attributes?.friendly_name || "";
+    return this._normalizeText(`${stateObj?.entity_id || ""} ${friendly}`);
+  }
+
+  _textMatchesAny(text, terms) {
+    const hay = this._normalizeText(text || "");
+    return (terms || []).some((term) => term && hay.includes(term));
+  }
+
+  _providerName(provider) {
+    return provider?.furnizor_label || provider?.furnizor || provider?.provider || "Furnizor";
+  }
+
+  _providerKey(provider) {
+    return String(provider?.furnizor || provider?.provider || this._providerName(provider)).trim().toLowerCase();
+  }
+
+  _status(provider) {
+    const raw = String(provider?.status || provider?.payment_status || provider?.status_raw || "unknown").toLowerCase();
+    if (["paid", "platita", "plătită", "credit"].includes(raw)) return raw === "credit" ? "credit" : "paid";
+    if (["unpaid", "neplatita", "neplătită", "restanta", "restanță", "de_plata"].includes(raw)) return "unpaid";
+    return "unknown";
+  }
+
+  _statusLabel(status) {
+    if (status === "paid") return "Plătită";
+    if (status === "unpaid") return "De plată";
+    if (status === "credit") return "Credit";
+    return "Necunoscut";
+  }
+
+  _providerAmount(provider) {
+    return provider?.amount ?? provider?.suma ?? provider?.valoare ?? provider?.total ?? provider?.unpaid_amount ?? null;
+  }
+
+  _providerDue(provider) {
+    return provider?.due_date || provider?.scadenta || provider?.data_scadenta || provider?.invoice_due_date || null;
+  }
+
+  _providerInvoice(provider) {
+    return provider?.invoice_title || provider?.invoice_id || provider?.last_invoice || provider?.ultima_factura || "Factura curentă";
+  }
+
+  _allProviders(locations) {
+    return locations.flatMap((location) => {
+      const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
+      return providers.map((provider) => ({ location, provider }));
+    });
+  }
+
+  _soonProviders(locations) {
+    return this._allProviders(locations)
+      .filter(({ provider }) => this._status(provider) === "unpaid")
+      .map((item) => ({ ...item, days: this._daysUntil(this._providerDue(item.provider)) }))
+      .filter((item) => item.days !== null)
+      .sort((a, b) => a.days - b.days)
+      .slice(0, 6);
+  }
+
+  _renderHero(attrs) {
+    const unpaid = this._num(attrs.numar_neplatite);
+    const totalUnpaid = attrs.total_neplatit_formatat || this._money(attrs.total_neplatit, attrs.moneda || "RON");
+    const statusClass = unpaid > 0 ? "attention" : "ok";
+    return `
+      <section class="hero">
+        <div class="hero-content">
+          <span class="forge-lockup"><img class="forge-logo" src="/utilitati_romania/haforge-logo.png" alt="HAForge Labs"><span>HAForge Labs</span></span>
+          <div class="brand-row">
+            <img class="utility-logo" src="/utilitati_romania/logo.png" alt="Utilități România">
+            <div class="brand-meta">
+              <h1>Utilități România</h1>
+            </div>
+          </div>
+          <p>Toate facturile, indexurile și locurile de consum într-un panou unic, construit pentru verificare rapidă și administrare clară.</p>
+        </div>
+        <div class="hero-card ${statusClass}">
+          <span class="hero-card-label">Total de plată</span>
+          <strong>${this._escape(totalUnpaid)}</strong>
+          <small>${unpaid ? `${unpaid} facturi necesită atenție` : "Nu sunt facturi restante în datele agregate"}</small>
+        </div>
+      </section>
+    `;
+  }
+
+  _renderMetrics(attrs, locations) {
+    const providersCount = attrs.numar_facturi ?? this._allProviders(locations).length;
+    const unpaid = attrs.numar_neplatite ?? 0;
+    return `
+      <section class="metrics">
+        ${this._metric("Locații", locations.length, "mdi:map-marker-radius")}
+        ${this._metric("Furnizori", providersCount, "mdi:office-building")}
+        ${this._metric("Neplătite", unpaid, "mdi:alert-circle", this._num(unpaid) > 0 ? "warn" : "")}
+        ${this._metric("Plătite", attrs.numar_platite ?? 0, "mdi:check-circle", "ok")}
+      </section>
+    `;
+  }
+
+  _metric(label, value, icon, tone = "") {
+    return `
+      <article class="metric ${tone}">
+        <ha-icon icon="${icon}"></ha-icon>
+        <span>${this._escape(label)}</span>
+        <strong>${this._escape(value)}</strong>
+      </article>
+    `;
+  }
+
+  _renderTabs() {
+    const tabs = [
+      ["overview", "Prezentare", "mdi:view-dashboard"],
+      ["invoices", "Facturi", "mdi:file-document-outline"],
+      ["readings", "Indexuri", "mdi:gauge"],
+      ["license", "Licență", "mdi:shield-check"],
+      ["diagnostics", "Diagnostic", "mdi:tools"],
+    ];
+    return `<nav class="tabs">${tabs.map(([id, label, icon]) => `
+      <button class="tab ${this._activeTab === id ? "active" : ""}" data-tab="${id}">
+        <ha-icon icon="${icon}"></ha-icon><span>${label}</span>
+      </button>`).join("")}</nav>`;
+  }
+
+  _renderOverview(attrs, locations) {
+    const soon = this._soonProviders(locations);
+    return `
+      <div class="grid two">
+        <section class="panel-card">
+          <div class="card-head"><div><span class="eyebrow">scadențe</span><h2>Următoarele facturi</h2></div></div>
+          ${soon.length ? soon.map((item) => this._dueItem(item)).join("") : `<div class="empty">Nu există scadențe apropiate în datele disponibile.</div>`}
+        </section>
+        <section class="panel-card">
+          <div class="card-head"><div><span class="eyebrow">locații</span><h2>Sumar pe locuri de consum</h2></div></div>
+          ${locations.length ? locations.map((location, index) => this._locationCompact(location, index)).join("") : `<div class="empty">Nu există încă date agregate. Verifică dacă există cel puțin un furnizor configurat.</div>`}
+        </section>
+      </div>
+      <section class="panel-card wide">
+        <div class="card-head"><div><span class="eyebrow">status</span><h2>Imagine generală</h2></div></div>
+        <div class="summary-strip">
+          <div><strong>${this._escape(attrs.numar_facturi ?? 0)}</strong><span>facturi / furnizori</span></div>
+          <div><strong>${this._escape(attrs.numar_necunoscute ?? 0)}</strong><span>status necunoscut</span></div>
+          <div><strong>${this._escape(attrs.ultima_eroare || "fără erori")}</strong><span>ultima eroare agregare</span></div>
+        </div>
+      </section>
+    `;
+  }
+
+  _dueItem({ location, provider, days }) {
+    const dueTone = days < 0 ? "late" : days <= 3 ? "soon" : "normal";
+    const dueText = days < 0 ? `întârziată cu ${Math.abs(days)} zile` : days === 0 ? "scadentă azi" : `${days} zile rămase`;
+    return `
+      <article class="due ${dueTone}">
+        <div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(location?.eticheta_locatie || location?.nume || "Locație")}</span></div>
+        <div class="due-right"><b>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</b><small>${this._escape(dueText)}</small></div>
+      </article>
+    `;
+  }
+
+  _locationCompact(location, index) {
+    const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
+    const unpaid = providers.filter((provider) => this._status(provider) === "unpaid").length;
+    return `
+      <article class="location-compact">
+        <div class="location-icon">${index + 1}</div>
+        <div><strong>${this._escape(location?.eticheta_locatie || location?.nume || "Locație")}</strong><span>${providers.length} furnizori · ${unpaid} neplătite</span></div>
+        <b>${this._escape(location?.total_neplatit_formatat || this._money(location?.total_neplatit, "RON"))}</b>
+      </article>
+    `;
+  }
+
+
+  _invoiceGroupingStorageKey() {
+    return "utilitati_romania_panel_invoice_grouping";
+  }
+
+  _invoiceGroupingOptions() {
+    return [
+      { value: "location", label: "Locație / cont" },
+      { value: "due_date", label: "Scadență" },
+      { value: "urgency", label: "Urgență" },
+      { value: "status", label: "Status plată" },
+      { value: "provider", label: "Furnizor" },
+      { value: "amount", label: "Valoare" },
+    ];
+  }
+
+  _loadInvoiceGroupingPreference() {
+    try { return window.localStorage?.getItem(this._invoiceGroupingStorageKey()) || ""; } catch (_err) { return ""; }
+  }
+
+  _saveInvoiceGroupingPreference(value) {
+    try { window.localStorage?.setItem(this._invoiceGroupingStorageKey(), value); } catch (_err) {}
+  }
+
+  _isValidInvoiceGrouping(value) {
+    return this._invoiceGroupingOptions().some((option) => option.value === value);
+  }
+
+  _setInvoiceGrouping(value) {
+    this._invoiceGrouping = this._isValidInvoiceGrouping(value) ? value : "location";
+    this._saveInvoiceGroupingPreference(this._invoiceGrouping);
+  }
+
+  _daysPastDue(value) {
+    const days = this._daysUntil(value);
+    return days !== null && days < 0 ? Math.abs(days) : null;
+  }
+
+  _collectInvoiceEntries(locations) {
+    const entries = [];
+    for (const location of locations || []) {
+      const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
+      providers.forEach((provider, index) => {
+        entries.push({
+          location,
+          provider,
+          index,
+          status: this._status(provider),
+          supplier: this._providerName(provider),
+          dueDate: this._providerDue(provider),
+          amount: this._num(this._providerAmount(provider)),
+        });
+      });
+    }
+    return entries;
+  }
+
+  _invoiceDueTime(entry) {
+    const parsed = this._parseDateLike(entry?.dueDate);
+    return parsed ? parsed.getTime() : Number.POSITIVE_INFINITY;
+  }
+
+  _compareInvoiceEntries(a, b) {
+    const dueDiff = this._invoiceDueTime(a) - this._invoiceDueTime(b);
+    if (Number.isFinite(dueDiff) && dueDiff !== 0) return dueDiff;
+    const statusOrder = { unpaid: 0, unknown: 1, credit: 2, paid: 3 };
+    const statusDiff = (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9);
+    if (statusDiff !== 0) return statusDiff;
+    const supplierDiff = String(a.supplier || "").localeCompare(String(b.supplier || ""), "ro");
+    if (supplierDiff !== 0) return supplierDiff;
+    return String(a.provider?.invoice_title || "").localeCompare(String(b.provider?.invoice_title || ""), "ro");
+  }
+
+  _invoiceStatusGroup(entry) {
+    const status = entry?.status || "unknown";
+    const order = { unpaid: 0, paid: 1, credit: 2, unknown: 3 };
+    return { key: `status_${status}`, title: this._statusLabel(status), order: order[status] ?? 9 };
+  }
+
+  _invoiceProviderGroup(entry) {
+    const supplier = entry?.supplier || "Furnizor";
+    return { key: `provider_${this._normalizeText(supplier) || "furnizor"}`, title: supplier, order: 0 };
+  }
+
+  _invoiceUrgencyGroup(entry) {
+    const past = this._daysPastDue(entry?.dueDate);
+    const until = this._daysUntil(entry?.dueDate);
+    if (entry?.status === "unpaid" && Number.isFinite(past) && past > 0) return { key: "urgency_overdue", title: "Depășite", order: 0 };
+    if (entry?.status === "unpaid" && Number.isFinite(until) && until >= 0 && until <= 5) return { key: "urgency_soon", title: "Scadente în următoarele 5 zile", order: 1 };
+    if (entry?.status === "unpaid") return { key: "urgency_unpaid", title: "Neplătite", order: 2 };
+    if (entry?.status === "paid") return { key: "urgency_paid", title: "Plătite", order: 3 };
+    if (entry?.status === "credit") return { key: "urgency_credit", title: "Credit", order: 4 };
+    return { key: "urgency_unknown", title: "Necunoscute", order: 5 };
+  }
+
+  _invoiceAmountGroup(entry) {
+    const amount = this._num(entry?.amount);
+    if (!amount) return { key: "amount_none", title: "Fără valoare", order: 99 };
+    if (amount >= 500) return { key: "amount_500", title: "Peste 500 lei", order: 0 };
+    if (amount >= 200) return { key: "amount_200_499", title: "200–499 lei", order: 1 };
+    if (amount >= 100) return { key: "amount_100_199", title: "100–199 lei", order: 2 };
+    return { key: "amount_under_100", title: "Sub 100 lei", order: 3 };
+  }
+
+  _invoiceDueDateGroup(entry) {
+    const date = this._parseDateLike(entry?.dueDate);
+    if (!date) return { key: "due_none", title: "Fără scadență", order: 50 };
+    const past = this._daysPastDue(entry.dueDate);
+    const until = this._daysUntil(entry.dueDate);
+    if (entry.status === "unpaid" && Number.isFinite(past) && past > 0) return { key: "due_overdue", title: "Depășite", order: 0 };
+    if (Number.isFinite(until) && until === 0) return { key: "due_today", title: "Scadente astăzi", order: 1 };
+    if (Number.isFinite(until) && until > 0 && until <= 5) return { key: "due_soon", title: "Următoarele 5 zile", order: 2 };
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    let title = `${month}.${year}`;
+    try { title = new Intl.DateTimeFormat("ro-RO", { month: "long", year: "numeric" }).format(date); } catch (_err) {}
+    return { key: `due_${year}_${month}`, title: title.charAt(0).toUpperCase() + title.slice(1), order: 10 + year * 12 + date.getMonth() };
+  }
+
+  _invoiceGroupForEntry(entry, grouping) {
+    if (grouping === "status") return this._invoiceStatusGroup(entry);
+    if (grouping === "provider") return this._invoiceProviderGroup(entry);
+    if (grouping === "due_date") return this._invoiceDueDateGroup(entry);
+    if (grouping === "urgency") return this._invoiceUrgencyGroup(entry);
+    if (grouping === "amount") return this._invoiceAmountGroup(entry);
+    return { key: entry?.location?.locatie_cheie || entry?.location?.eticheta_locatie || "locatie", title: entry?.location?.eticheta_locatie || entry?.location?.locatie_cheie || "Locație", order: 0 };
+  }
+
+  _buildInvoiceGroups(entries, grouping) {
+    const groups = new Map();
+    for (const entry of entries || []) {
+      const info = this._invoiceGroupForEntry(entry, grouping);
+      if (!groups.has(info.key)) groups.set(info.key, { key: info.key, title: info.title, order: info.order, entries: [] });
+      groups.get(info.key).entries.push(entry);
+    }
+    return Array.from(groups.values()).map((group) => ({
+      ...group,
+      entries: group.entries.sort((a, b) => {
+        if (grouping === "amount") {
+          const amountDiff = this._num(b.amount) - this._num(a.amount);
+          if (amountDiff !== 0) return amountDiff;
+        }
+        return this._compareInvoiceEntries(a, b);
+      }),
+    })).sort((a, b) => {
+      const orderDiff = (a.order ?? 0) - (b.order ?? 0);
+      if (orderDiff !== 0) return orderDiff;
+      return String(a.title || "").localeCompare(String(b.title || ""), "ro");
+    });
+  }
+
+  _invoiceGroupSummary(entries) {
+    const paid = (entries || []).filter((entry) => entry.status === "paid").length;
+    const unpaid = (entries || []).filter((entry) => entry.status === "unpaid").length;
+    const credit = (entries || []).filter((entry) => entry.status === "credit").length;
+    const totalUnpaid = (entries || []).filter((entry) => entry.status === "unpaid").reduce((sum, entry) => sum + this._num(entry.amount), 0);
+    const parts = [];
+    if (unpaid) parts.push(`${unpaid} neplătite`);
+    if (paid) parts.push(`${paid} plătite`);
+    if (credit) parts.push(`${credit} credit`);
+    if (totalUnpaid > 0) parts.push(`total neplătit ${this._money(totalUnpaid, "RON")}`);
+    return parts.join(" · ") || `${entries.length} facturi`;
+  }
+
+  _renderInvoiceToolbar(grouping, count) {
+    const options = this._invoiceGroupingOptions().map((option) => `<option value="${this._escape(option.value)}" ${option.value === grouping ? "selected" : ""}>${this._escape(option.label)}</option>`).join("");
+    return `<section class="invoice-toolbar panel-card compact"><label for="ur-panel-invoice-grouping">Afișare facturi</label><select id="ur-panel-invoice-grouping" data-invoice-grouping>${options}</select><span>${this._escape(count)} ${count === 1 ? "factură" : "facturi"}</span></section>`;
+  }
+
+  _findRefreshButton(provider) {
+    const states = Object.values(this._hass?.states || {});
+    const providerKey = this._providerKey(provider);
+    const providerName = this._normalizeText(this._providerName(provider));
+    const idCont = String(provider?.id_cont ?? "").trim();
+    let best = null;
+    let bestScore = -1;
+    for (const stateObj of states) {
+      if (!stateObj?.entity_id?.startsWith("button.")) continue;
+      const text = this._entityFriendlyText(stateObj);
+      const entityId = String(stateObj.entity_id || "").toLowerCase();
+      if (!text.includes("actualizeaza") && !entityId.includes("actualizare")) continue;
+      let score = 0;
+      if (providerKey && entityId.includes(providerKey)) score += 120;
+      if (providerKey && text.includes(providerKey.replace(/_/g, " "))) score += 80;
+      if (providerName && text.includes(providerName)) score += 80;
+      if (idCont && (entityId.includes(idCont) || String(stateObj.attributes?.id_cont ?? "") === idCont)) score += 40;
+      if (score > bestScore) {
+        best = stateObj;
+        bestScore = score;
+      }
+    }
+    return bestScore >= 70 ? best.entity_id : null;
+  }
+
+  _renderRefreshButton(provider) {
+    const entityId = this._findRefreshButton(provider);
+    const key = `refresh__${entityId || this._providerKey(provider)}__${provider?.id_cont || ""}`;
+    const action = this._actions.get(key);
+    if (!entityId) return `<button class="row-action disabled" disabled title="Butonul de actualizare nu a fost găsit"><ha-icon icon="mdi:refresh-off"></ha-icon></button>`;
+    return `<button class="row-action ${action?.status === "busy" ? "busy" : ""}" data-refresh-entity="${this._escape(entityId)}" data-action-key="${this._escape(key)}" title="Actualizează acest furnizor"><ha-icon icon="mdi:refresh"></ha-icon></button>`;
+  }
+
+  _renderInvoices(locations) {
+    if (!locations.length) return `<section class="panel-card"><div class="empty">Nu există facturi în senzorul agregat.</div></section>`;
+    const grouping = this._isValidInvoiceGrouping(this._invoiceGrouping) ? this._invoiceGrouping : "location";
+    const entries = this._collectInvoiceEntries(locations);
+    const groups = this._buildInvoiceGroups(entries, grouping);
+    return `
+      ${this._renderInvoiceToolbar(grouping, entries.length)}
+      ${groups.map((group) => `
+        <section class="panel-card location-card">
+          <div class="location-title static">
+            <div><span class="eyebrow">${this._escape(grouping === "location" ? "loc de consum" : "grupare")}</span><h2>${this._escape(group.title)}</h2></div>
+            <div class="location-total"><strong>${this._escape(this._invoiceGroupSummary(group.entries))}</strong></div>
+          </div>
+          <div class="invoice-list">${group.entries.map((entry) => this._invoiceRow(entry.location, entry.provider)).join("")}</div>
+        </section>
+      `).join("")}
+    `;
+  }
+
+  _invoiceRow(location, provider) {
+    const status = this._status(provider);
+    const due = this._providerDue(provider);
+    const days = this._daysUntil(due);
+    const warning = status === "unpaid" && days !== null && days <= 5;
+    return `
+      <article class="invoice-row ${status} ${warning ? "warning" : ""}">
+        <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
+        <div class="invoice-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._providerInvoice(provider))}</span></div>
+        <div class="invoice-meta"><span>Scadență</span><strong>${this._escape(this._date(due))}</strong></div>
+        <div class="invoice-meta amount"><span>Valoare</span><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong></div>
+        <span class="pill ${status}">${this._escape(this._statusLabel(status))}</span>
+        ${this._renderRefreshButton(provider)}
+      </article>
+    `;
+  }
+
+  _readingTerms(location, provider) {
+    const values = [location?.eticheta_locatie, provider?.nume_cont, provider?.adresa_originala, provider?.invoice_title, provider?.id_cont, provider?.id_contract];
+    const normalized = values.map((value) => this._normalizeText(value)).filter(Boolean);
+    const extra = [];
+    for (const value of normalized) {
+      const noNumbers = value.replace(/\b\d+\b/g, " ").replace(/\s+/g, " ").trim();
+      if (noNumbers && noNumbers !== value) extra.push(noNumbers);
+    }
+    return Array.from(new Set([...normalized, ...extra])).filter((value) => value.length >= 3);
+  }
+
+  _findReadingSensor(location, provider) {
+    const providerKey = this._providerKey(provider);
+    const targetIdCont = String(provider?.id_cont ?? "").trim();
+    const targetIdContract = String(provider?.id_contract ?? "").trim();
+    const terms = this._readingTerms(location, provider);
+    const normalizedProvider = providerKey.replace(/_/g, " ");
+
+    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal"].includes(providerKey)) return null;
+
+    const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
+      if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
+      const entityId = stateObj.entity_id;
+      const attrs = stateObj.attributes || {};
+      const text = this._entityFriendlyText(stateObj);
+      const looksLikeReadingSensor = !!(
+        entityId.includes("citire_permisa") ||
+        entityId.includes("citire_index_permisa") ||
+        text.includes("citire permisa") ||
+        attrs.inceput_perioada || attrs.sfarsit_perioada || attrs["Perioadă start"] || attrs["Perioadă sfârșit"]
+      );
+      if (!looksLikeReadingSensor) return false;
+      return entityId.includes(providerKey) || text.includes(normalizedProvider);
+    });
+
+    let best = null;
+    let bestScore = -1;
+    for (const stateObj of candidates) {
+      const entityId = stateObj.entity_id;
+      const attrs = stateObj.attributes || {};
+      const text = this._entityFriendlyText(stateObj);
+      let score = 50;
+      const attrIdCont = String(attrs.id_cont ?? "").trim();
+      if (targetIdCont && attrIdCont) {
+        if (attrIdCont === targetIdCont) score += 120;
+        else continue;
+      }
+      const attrContract = String(attrs.id_contract ?? attrs.cod_contract ?? "").trim();
+      if (targetIdContract && attrContract) {
+        if (attrContract === targetIdContract) score += 100;
+        else continue;
+      }
+      const attrAddress = this._normalizeText(attrs.adresa || attrs["Adresă"] || attrs.apartament || attrs.nume_cont || "");
+      if (attrAddress && this._textMatchesAny(attrAddress, terms)) score += 70;
+      if (this._textMatchesAny(text, terms)) score += 80;
+      if (targetIdCont && entityId.includes(targetIdCont)) score += 60;
+      if (score > bestScore) {
+        best = stateObj;
+        bestScore = score;
+      }
+    }
+    return bestScore >= 50 ? best : null;
+  }
+
+  _extractWindowInfo(sensorState) {
+    if (!sensorState) return { isOpen: false, start: null, end: null };
+    const attrs = sensorState.attributes || {};
+    const startRaw = attrs.inceput_perioada || attrs["inceput_perioada"] || attrs["Perioadă start"] || attrs.StartDatePAC || attrs.start_date || null;
+    const endRaw = attrs.sfarsit_perioada || attrs["sfarsit_perioada"] || attrs["Perioadă sfârșit"] || attrs.EndDatePAC || attrs.end_date || null;
+    const startDate = this._parseDateLike(startRaw);
+    const endDate = this._parseDateLike(endRaw);
+    const today = this._todayDate();
+    let openByRange = false;
+    if (startDate && endDate) {
+      openByRange = today >= new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate()) && today <= new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+    }
+    const stateText = this._normalizeText(sensorState.state);
+    const truthyState = ["da", "yes", "true", "on", "activ", "disponibil", "permisa", "permis"].includes(stateText);
+    return { isOpen: openByRange || truthyState, start: startRaw || null, end: endRaw || null };
+  }
+
+  _deriveControlsFromReadingSensor(location, provider, readingSensor) {
+    if (!readingSensor) return [];
+    const providerKey = this._providerKey(provider);
+    const sensorEntityId = readingSensor.entity_id || "";
+    const sensorObject = sensorEntityId.replace(/^sensor\./, "");
+    const states = this._hass?.states || {};
+    const readingText = this._entityFriendlyText(readingSensor);
+    const terms = this._readingTerms(location, provider);
+    const controls = [];
+
+    if (providerKey === "hidroelectrica") {
+      const base = sensorObject.replace(/_citire_permisa$/, "");
+      controls.push({ key: `${providerKey}_${provider.id_cont || base}`, label: "Index de transmis", numberEntityId: `number.${base}_index_energie_electrica`, buttonEntityId: `button.${base}_trimite_index`, currentEntityId: `sensor.${base}_index_energie_electrica` });
+      return controls;
+    }
+
+    if (providerKey === "eon") {
+      const base = sensorObject.replace(/_citire_permisa$/, "");
+      const idCont = String(provider?.id_cont || "").trim();
+      const tipServiciu = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
+      const wantsGas = tipServiciu.includes("gaz");
+      const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie");
+      const isOtherProviderEntity = (stateObj) => {
+        const text = this._entityFriendlyText(stateObj);
+        const entityId = String(stateObj?.entity_id || "").toLowerCase();
+        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("ebloc");
+      };
+      const scoreEonEntity = (stateObj, kind) => {
+        if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
+        if (isOtherProviderEntity(stateObj)) return -1;
+        const entityId = String(stateObj.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        const attrs = stateObj.attributes || {};
+        let score = 0;
+        if (entityId.includes("eon")) score += 160;
+        if (text.includes("eon")) score += 80;
+        if (idCont && entityId.includes(idCont)) score += 160;
+        if (idCont && String(attrs.id_cont ?? "").trim() === idCont) score += 180;
+        if (entityId.includes(base)) score += 120;
+        if (this._textMatchesAny(text, terms)) score += 90;
+        if (this._textMatchesAny(entityId, terms)) score += 50;
+        if (kind === "number") {
+          if (text.includes("index gaz") || entityId.includes("index_gaz")) score += wantsGas ? 120 : 40;
+          if (text.includes("index energie") || entityId.includes("index_energie")) score += wantsElectric ? 120 : 40;
+          if (text.includes("index") || entityId.includes("index")) score += 40;
+        }
+        if (kind === "button") {
+          if (!text.includes("trimite index") && !entityId.includes("trimite_index")) return -1;
+          if (text.includes("gaz") || entityId.includes("gaz")) score += wantsGas ? 120 : 30;
+          if (text.includes("energie") || text.includes("electric") || entityId.includes("energie") || entityId.includes("electric")) score += wantsElectric ? 120 : 30;
+          if (entityId.includes("eon")) score += 160;
+        }
+        if (kind === "sensor") {
+          if (text.includes("index gaz") || entityId.includes("index_gaz")) score += wantsGas ? 90 : 30;
+          if (text.includes("index energie") || entityId.includes("index_energie")) score += wantsElectric ? 90 : 30;
+          if (text.includes("index") || entityId.includes("index")) score += 30;
+        }
+        return score;
+      };
+      const bestEntity = (kind, minimumScore) => {
+        let best = null;
+        let bestScore = -1;
+        for (const stateObj of Object.values(states)) {
+          const score = scoreEonEntity(stateObj, kind);
+          if (score > bestScore) { best = stateObj; bestScore = score; }
+        }
+        return bestScore >= minimumScore ? best : null;
+      };
+      const exactNumber = states[`number.${base}_index`] || states[`number.${base}_index_gaz`] || states[`number.${base}_index_energie_electrica`] || null;
+      const numberEntity = exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : bestEntity("number", 120);
+      let currentEntity = states[`sensor.${base}_index_contor`] || states[`sensor.${base}_index_energie_electrica`] || states[`sensor.${base}_index_gaz`] || null;
+      if (currentEntity && isOtherProviderEntity(currentEntity)) currentEntity = null;
+      if (!currentEntity) currentEntity = bestEntity("sensor", 120);
+      const exactButton = states[`button.${base}_trimite_index`] || states[`button.${base}_trimite_index_gaz`] || states[`button.${base}_trimite_index_energie_electrica`] || null;
+      const buttonEntity = exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120);
+      if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}`, providerKey, label: "Index de transmis", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
+      return controls;
+    }
+
+    if (providerKey === "myelectrica") {
+      const parts = sensorObject.split("_");
+      const slug = parts.slice(3, -1).join("_");
+      const numberEntityId = `number.utilitati_romania_myelectrica_${slug}_index_contor`;
+      const numberEntity = states[numberEntityId] || null;
+      let currentEntity = Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("sensor.") && String(stateObj.attributes?.id_cont ?? "") === String(provider.id_cont ?? "") && (stateObj.entity_id.includes("index_contor") || this._entityFriendlyText(stateObj).includes("index contor")));
+      if (!currentEntity) currentEntity = Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("sensor.") && this._textMatchesAny(this._entityFriendlyText(stateObj), terms) && (this._entityFriendlyText(stateObj).includes("index contor") || stateObj.entity_id.includes("index")));
+      const buttonEntity = Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("button.") && this._entityFriendlyText(stateObj).includes("trimite index") && this._textMatchesAny(this._entityFriendlyText(stateObj), terms));
+      if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || slug}`, label: "Index de transmis", numberEntityId, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
+      return controls;
+    }
+
+    if (providerKey === "apa_canal") {
+      const base = sensorObject.replace(/_citire_index_permisa$/, "").replace(/_citire_permisa$/, "");
+      const attrs = readingSensor.attributes || {};
+      const sensorIdCont = String(attrs.id_cont ?? provider?.id_cont ?? "").trim();
+      const sensorIdContract = String(attrs.id_contract ?? provider?.id_contract ?? "").trim();
+      const expectedNumberEntityId = `number.${base}_index_de_transmis`;
+      const expectedButtonEntityId = `button.${base}_trimite_index`;
+      const currentEntityId = `sensor.${base}_ultimul_index`;
+      const matchesApaCanalContext = (stateObj) => {
+        const stateAttrs = stateObj?.attributes || {};
+        const idCont = String(stateAttrs.id_cont ?? "").trim();
+        const idContract = String(stateAttrs.id_contract ?? "").trim();
+        if (sensorIdCont && idCont && idCont === sensorIdCont) return true;
+        if (sensorIdContract && idContract && idContract === sensorIdContract) return true;
+        const text = this._entityFriendlyText(stateObj);
+        return this._textMatchesAny(text, terms) || stateObj.entity_id.includes(base);
+      };
+      const numberEntity = (attrs.number_entity_id && states[attrs.number_entity_id]) || states[expectedNumberEntityId] || Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("number.") && this._entityFriendlyText(stateObj).includes("index de transmis") && matchesApaCanalContext(stateObj));
+      const buttonEntity = (attrs.button_entity_id && states[attrs.button_entity_id]) || states[expectedButtonEntityId] || Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("button.") && this._entityFriendlyText(stateObj).includes("trimite index") && matchesApaCanalContext(stateObj));
+      const currentEntity = states[currentEntityId] || Object.values(states).find((stateObj) => {
+        if (!stateObj.entity_id.startsWith("sensor.")) return false;
+        const text = this._entityFriendlyText(stateObj);
+        const stateAttrs = stateObj.attributes || {};
+        const idCont = String(stateAttrs.id_cont ?? "").trim();
+        const idContract = String(stateAttrs.id_contract ?? "").trim();
+        const sameContext = (sensorIdCont && idCont && idCont === sensorIdCont) || (sensorIdContract && idContract && idContract === sensorIdContract);
+        return (text.includes("ultimul index") || text.includes("index")) && (sameContext || this._textMatchesAny(text, terms) || stateObj.entity_id.includes(base));
+      });
+      if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || sensorIdCont || base}`, label: "Index de transmis", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
+      return controls;
+    }
+    return [];
+  }
+
+  _getReadingData(location, provider) {
+    const cacheKey = this._makeKey(location.locatie_cheie, provider.furnizor, provider.id_cont, provider.id_contract);
+    if (this._readingCache.has(cacheKey)) return this._readingCache.get(cacheKey);
+    const providerKey = this._providerKey(provider);
+
+    if (providerKey === "ebloc" && provider?.reading_available) {
+      const isOpen = provider.reading_is_open === true || this._normalizeText(provider.reading_is_open) === "da";
+      const days = Number(provider.reading_days_until);
+      const result = { available: true, isOpen, controls: [], start: null, end: null, period: provider.reading_period || null, daysUntil: Number.isFinite(days) ? days : null, badge: isOpen ? "Citire deschisă" : Number.isFinite(days) && days > 0 ? `Citire în ${days} zile` : null };
+      this._readingCache.set(cacheKey, result);
+      return result;
+    }
+
+    const readingSensor = this._findReadingSensor(location, provider);
+    if (!readingSensor) {
+      const empty = { available: false, isOpen: false, controls: [], start: null, end: null, period: null, badge: null };
+      this._readingCache.set(cacheKey, empty);
+      return empty;
+    }
+    const windowInfo = this._extractWindowInfo(readingSensor);
+    const controls = this._deriveControlsFromReadingSensor(location, provider, readingSensor).map((control) => {
+      const numberState = control.numberEntityId ? this._hass.states[control.numberEntityId] : null;
+      const currentState = control.currentEntityId ? this._hass.states[control.currentEntityId] : null;
+      return { ...control, numberState, currentState, unit: numberState?.attributes?.unit_of_measurement || currentState?.attributes?.unit_of_measurement || "", currentValue: currentState ? currentState.state : null };
+    });
+    const result = { available: true, isOpen: !!windowInfo.isOpen, start: windowInfo.start, end: windowInfo.end, period: windowInfo.start && windowInfo.end ? `${this._date(windowInfo.start)} - ${this._date(windowInfo.end)}` : null, badge: windowInfo.isOpen ? "Citire deschisă" : "În afara perioadei", readingSensorEntityId: readingSensor.entity_id, controls };
+    this._readingCache.set(cacheKey, result);
+    return result;
+  }
+
+  _readingPeriodLabel(data) {
+    if (!data?.available) return "Nu există entități de citire detectate";
+    if (data.period) return data.period;
+    if (data.start && data.end) return `${this._date(data.start)} - ${this._date(data.end)}`;
+    return data.isOpen ? "Perioada de transmitere este activă" : "În afara perioadei de transmitere";
+  }
+
+  _readingSortValue(item) {
+    const data = this._getReadingData(item.location, item.provider);
+    const start = this._parseDateLike(data.start) || this._parseDateLike(String(data.period || "").split("-")[0]);
+    const days = Number(data.daysUntil);
+    let group = 3;
+    if (data.isOpen) group = 0;
+    else if (Number.isFinite(days) && days >= 0) group = 1;
+    else if (start) group = 1;
+    else if (data.available) group = 2;
+    return { group, time: start ? start.getTime() : Number.POSITIVE_INFINITY, name: `${this._providerName(item.provider)} ${item.location?.eticheta_locatie || ""}` };
+  }
+
+  _renderReadings(locations) {
+    const providers = this._allProviders(locations).sort((a, b) => {
+      const aa = this._readingSortValue(a);
+      const bb = this._readingSortValue(b);
+      if (aa.group !== bb.group) return aa.group - bb.group;
+      if (aa.time !== bb.time) return aa.time - bb.time;
+      return aa.name.localeCompare(bb.name, "ro");
+    });
+    return `
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">indexuri</span><h2>Perioade de transmitere</h2></div></div>
+        <div class="feature-note">
+          <ha-icon icon="mdi:gauge"></ha-icon>
+          <div><strong>Detectare din entitățile reale ale furnizorilor</strong><p>Panoul folosește aceeași logică de identificare ca în card pentru perioada de citire și entitățile de index. Acolo unde perioada de transmitere este deschisă și integrarea expune entitățile necesare, poți introduce indexul nou și îl poți transmite direct din acest panou.</p></div>
+        </div>
+        <div class="reading-list">
+          ${providers.length ? providers.map(({ location, provider }) => this._readingRow(location, provider)).join("") : `<div class="empty">Nu există furnizori disponibili pentru indexuri.</div>`}
+        </div>
+      </section>
+    `;
+  }
+
+  _readingRow(location, provider) {
+    const data = this._getReadingData(location, provider);
+    const controls = data.controls || [];
+    const current = controls.map((control) => control.currentValue !== null && control.currentValue !== undefined ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}` : null).filter(Boolean).join(" / ") || "—";
+    const tone = data.isOpen ? "open" : data.available ? "closed" : "missing";
+    const submitControls = data.isOpen && controls.length ? `<div class="reading-controls">${controls.map((control) => this._renderReadingControl(location, provider, control)).join("")}</div>` : "";
+    return `
+      <article class="reading-row ${tone}">
+        <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
+        <div class="reading-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(location?.eticheta_locatie || "Locație")}</span></div>
+        <div class="reading-period"><span>Perioadă</span><strong>${this._escape(this._readingPeriodLabel(data))}</strong></div>
+        <div class="reading-current"><span>Index curent</span><strong>${this._escape(current)}</strong></div>
+        <span class="pill ${tone}">${this._escape(data.badge || (data.available ? "Închisă" : "Nedetectat"))}</span>
+        ${submitControls}
+      </article>
+    `;
+  }
+
+  _renderReadingControl(location, provider, control) {
+    const key = control.buttonEntityId || control.numberEntityId || control.key;
+    const action = this._actions.get(`reading__${key}`);
+    const draft = this._readingDrafts.get(key) || "";
+    const unit = control.unit || "";
+    return `
+      <div class="reading-control" data-reading-control data-provider="${this._escape(this._providerKey(provider))}" data-entry-id="${this._escape(provider?.entry_id || provider?.config_entry_id || "")}" data-id-cont="${this._escape(provider?.id_cont || "")}" data-id-contract="${this._escape(provider?.id_contract || "")}" data-number-entity="${this._escape(control.numberEntityId || "")}" data-button-entity="${this._escape(control.buttonEntityId || "")}" data-current-entity="${this._escape(control.currentEntityId || "")}" data-current-value="${this._escape(control.currentValue ?? "")}" data-unit="${this._escape(unit)}">
+        <label>${this._escape(control.label || "Index de transmis")}</label>
+        <input class="reading-input" type="number" inputmode="decimal" step="any" placeholder="Index nou${unit ? ` (${unit})` : ""}" value="${this._escape(draft)}">
+        <button class="primary dark reading-submit" data-reading-submit ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se trimite..." : "Trimite index"}</button>
+        ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  _findEntityByEntityId(entityId) {
+    const stateObj = this._hass?.states?.[entityId];
+    if (!stateObj) return null;
+    const state = String(stateObj.state ?? "").trim().toLowerCase();
+    if (["unknown", "unavailable"].includes(state)) return null;
+    return stateObj;
+  }
+
+  _findEntityByFriendlyName(domain, friendlyNames) {
+    const wanted = (friendlyNames || []).map((name) => this._normalizeText(name)).filter(Boolean);
+    if (!wanted.length || !this._hass?.states) return null;
+    for (const stateObj of Object.values(this._hass.states)) {
+      if (!stateObj?.entity_id?.startsWith(`${domain}.`)) continue;
+      const friendly = this._normalizeText(stateObj?.attributes?.friendly_name || "");
+      if (!friendly) continue;
+      const belongsToUtilities = stateObj.entity_id.includes("utilitati_romania") || stateObj.entity_id.includes("administrare_integrare") || friendly.includes("utilitati") || friendly.includes("facturi");
+      if (!belongsToUtilities) continue;
+      if (wanted.some((name) => friendly.includes(name))) return stateObj;
+    }
+    return null;
+  }
+
+  _resolveEntity(domain, entityIds, friendlyNames) {
+    for (const entityId of entityIds || []) {
+      const stateObj = this._findEntityByEntityId(entityId);
+      if (stateObj) return stateObj;
+    }
+    return this._findEntityByFriendlyName(domain, friendlyNames);
+  }
+
+  _licenseStates() {
+    const statusEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_status_licenta", "sensor.administrare_integrare_status_licenta", "sensor.status_licenta"], ["status licenta", "status licență"]);
+    const planEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_plan_licenta", "sensor.administrare_integrare_plan_licenta", "sensor.plan_licenta"], ["plan licenta", "plan licență"]);
+    const checkedEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_ultima_verificare_licenta", "sensor.administrare_integrare_ultima_verificare_licenta", "sensor.ultima_verificare_licenta"], ["ultima verificare licenta", "ultima verificare licență"]);
+    const accountEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_cont_licenta", "sensor.administrare_integrare_cont_licenta", "sensor.cont_licenta", "sensor.utilitati_romania_utilizator_licenta"], ["cont licenta", "cont licență"]);
+    const messageEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_mesaj_licenta", "sensor.administrare_integrare_mesaj_licenta", "sensor.mesaj_licenta"], ["mesaj licenta", "mesaj licență"]);
+    return {
+      status: statusEntity?.state || "necunoscut",
+      plan: planEntity?.state || "—",
+      account: accountEntity?.state || "—",
+      checked: checkedEntity?.state || "—",
+      message: messageEntity?.state || "—",
+    };
+  }
+
+  _licenseEntities() {
+    const textEntity = this._resolveEntity("text", ["text.utilitati_romania_cod_licenta_noua", "text.administrare_integrare_cod_licenta_noua", "text.cod_licenta_noua"], ["cod licenta nou", "licenta noua", "cod licență nou", "licență nouă", "cod licenta", "cod licență"]);
+    const buttonEntity = this._resolveEntity("button", ["button.utilitati_romania_aplica_licenta", "button.administrare_integrare_aplica_licenta", "button.aplica_licenta"], ["aplica licenta", "aplică licență"]);
+    return {
+      text: textEntity?.entity_id || "text.utilitati_romania_cod_licenta_noua",
+      button: buttonEntity?.entity_id || "button.utilitati_romania_aplica_licenta",
+      currentCode: textEntity?.state && !["unknown", "unavailable"].includes(String(textEntity.state).toLowerCase()) ? textEntity.state : "",
+    };
+  }
+
+  _renderLicense() {
+    const lic = this._licenseStates();
+    const entities = this._licenseEntities();
+    const licenseValue = this._licenseDraft || entities.currentCode || "";
+    const active = String(lic.status).toLowerCase().includes("active") || String(lic.status).toLowerCase().includes("trial");
+    const action = this._actions.get("license");
+    return `
+      <section class="panel-card license-card ${active ? "ok" : "warn"}">
+        <div class="license-shield"><ha-icon icon="mdi:shield-check"></ha-icon></div>
+        <div><span class="eyebrow">licență</span><h2>${this._escape(lic.status)}</h2><p>${this._escape(lic.message || "Statusul licenței este citit din entitățile de administrare ale integrării.")}</p></div>
+      </section>
+      <section class="panel-card">
+        <div class="details-grid">
+          <div><span>Plan</span><strong>${this._escape(lic.plan)}</strong></div>
+          <div><span>Cont</span><strong>${this._escape(lic.account)}</strong></div>
+          <div><span>Ultima verificare</span><strong>${this._escape(this._date(lic.checked))}</strong></div>
+        </div>
+      </section>
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">actualizare</span><h2>Introdu licență nouă</h2></div></div>
+        <div class="license-form">
+          <input id="license-input" type="text" autocomplete="off" placeholder="Cod licență" value="${this._escape(licenseValue)}">
+          <button class="primary dark" data-apply-license ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se verifică..." : "Aplică licența"}</button>
+        </div>
+        ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
+      </section>
+    `;
+  }
+
+  _renderDiagnostics(summary) {
+    const entities = Object.keys(this._hass?.states || {}).filter((id) => id.includes("utilitati") || id.includes("licenta")).length;
+    return `
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">diagnostic</span><h2>Stare integrare</h2></div></div>
+        <div class="details-grid">
+          <div><span>Senzor agregat</span><strong>${this._escape(summary.entityId || "nedetectat")}</strong></div>
+          <div><span>Disponibilitate</span><strong>${summary.state ? this._escape(summary.state.state) : "indisponibil"}</strong></div>
+          <div><span>Entități relevante</span><strong>${entities}</strong></div>
+          <div><span>Ultima eroare</span><strong>${this._escape(summary.attrs.ultima_eroare || "fără erori")}</strong></div>
+        </div>
+      </section>
+      <section class="panel-card"><div class="feature-note subtle"><ha-icon icon="mdi:information-outline"></ha-icon><div><strong>Panoul nu modifică dashboard-urile utilizatorului</strong><p>Este încărcat ca pagină separată în sidebar și citește datele deja publicate de integrare.</p></div></div></section>
+    `;
+  }
+
+  _renderContent(summary) {
+    const attrs = summary.attrs;
+    const locations = summary.locations;
+    if (this._activeTab === "invoices") return this._renderInvoices(locations);
+    if (this._activeTab === "readings") return this._renderReadings(locations);
+    if (this._activeTab === "license") return this._renderLicense();
+    if (this._activeTab === "diagnostics") return this._renderDiagnostics(summary);
+    return this._renderOverview(attrs, locations);
+  }
+
+  _styles() {
+    return `
+      :host { display:block; min-height:100vh; background:radial-gradient(circle at -70px -90px,#07111f 0,#10223d 250px,transparent 252px),radial-gradient(circle at 100% 0,rgba(78,161,255,.15),transparent 420px),linear-gradient(180deg,#eef4fb 0%,#f7f9fc 42%,#eef3f8 100%); color:#142033; font-family:var(--paper-font-body1_-_font-family, Roboto, Arial, sans-serif); }
+      * { box-sizing:border-box; }
+      .wrap { max-width:1280px; margin:0 auto; padding:28px clamp(16px,4vw,42px) 48px; }
+      .hero { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:24px; align-items:stretch; margin-bottom:16px; }
+      .hero-content { min-height:245px; padding:34px; border-radius:32px; background:radial-gradient(circle at top right,rgba(58,141,255,.52),transparent 36%),linear-gradient(135deg,#14233a,#213752 64%,#2e5f9e); border:1px solid rgba(255,255,255,.26); box-shadow:0 24px 80px rgba(0,0,0,.18); color:#fff; overflow:hidden; position:relative; }
+      .hero-content::after { content:""; position:absolute; width:230px; height:230px; border-radius:50%; background:rgba(255,255,255,.09); right:-80px; bottom:-120px; }
+      .brand-row { position:relative; z-index:1; display:flex; align-items:center; gap:18px; padding-right:190px; min-height:96px; }
+      .utility-logo { width:86px; height:86px; object-fit:contain; border-radius:24px; background:rgba(255,255,255,.12); padding:10px; border:1px solid rgba(255,255,255,.16); flex:0 0 auto; }
+      .brand-meta { display:flex; align-items:center; min-width:0; }
+      .forge-lockup { position:absolute; top:30px; right:34px; z-index:2; display:inline-flex; align-items:center; gap:8px; color:#8cc4ff; font-size:11px; text-transform:uppercase; letter-spacing:.13em; font-weight:900; white-space:nowrap; }
+      .forge-logo { width:34px; height:34px; border-radius:11px; object-fit:cover; box-shadow:0 0 24px rgba(0,210,255,.4); }
+      .eyebrow { display:block; text-transform:uppercase; letter-spacing:.13em; font-size:11px; font-weight:800; color:#5fa8ff; margin-bottom:6px; }
+      .hero-content .eyebrow { color:#8cc4ff; }
+      h1 { font-size:clamp(36px,5.2vw,60px); line-height:.95; margin:0; letter-spacing:-.055em; color:#fff; text-shadow:0 2px 18px rgba(0,0,0,.28); }
+      h2 { font-size:22px; margin:0; letter-spacing:-.025em; }
+      p { margin:0; line-height:1.55; }
+      .hero-content p { position:relative; z-index:1; max-width:760px; color:rgba(255,255,255,.86); font-size:16px; margin-top:20px; }
+      button { font:inherit; cursor:pointer; }
+      .primary { border:0; border-radius:999px; padding:12px 18px; font-weight:800; background:#4ea1ff; color:#fff; box-shadow:0 12px 30px rgba(78,161,255,.35); }
+      .primary.dark { background:#112033; box-shadow:0 12px 30px rgba(17,32,51,.2); }
+      .primary:disabled { opacity:.62; cursor:default; }
+      .hero-card { padding:28px; border-radius:32px; background:#fff; color:#142033; display:flex; flex-direction:column; justify-content:center; box-shadow:0 24px 70px rgba(0,0,0,.14); position:relative; overflow:hidden; }
+      .hero-card::before { content:""; position:absolute; inset:auto -60px -60px auto; width:180px; height:180px; border-radius:50%; background:rgba(78,161,255,.14); }
+      .hero-card.attention::before { background:rgba(255,146,69,.18); }
+      .hero-card-label { color:#6b7b90; font-weight:800; text-transform:uppercase; letter-spacing:.1em; font-size:12px; }
+      .hero-card strong { font-size:38px; letter-spacing:-.05em; margin:12px 0 6px; }
+      .hero-card small { color:#6b7b90; font-weight:700; }
+      .tabs { position:sticky; top:0; z-index:5; display:flex; gap:8px; padding:10px; margin:0 0 14px; background:rgba(255,255,255,.8); border:1px solid rgba(17,32,51,.08); border-radius:22px; backdrop-filter:blur(16px); box-shadow:0 14px 40px rgba(18,32,54,.08); overflow:auto; }
+      .tab { border:0; background:transparent; color:#526276; border-radius:16px; padding:11px 14px; display:flex; gap:8px; align-items:center; font-weight:800; white-space:nowrap; }
+      .tab.active { background:#112033; color:#fff; box-shadow:0 10px 24px rgba(17,32,51,.22); }
+      .metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin-bottom:18px; }
+      .metric { background:rgba(255,255,255,.94); border:1px solid rgba(17,32,51,.07); border-radius:22px; padding:18px; box-shadow:0 10px 30px rgba(18,32,54,.08); display:grid; gap:6px; min-width:0; }
+      .metric ha-icon { color:#4ea1ff; }
+      .metric span { color:#6b7b90; font-size:13px; font-weight:700; overflow:hidden; text-overflow:ellipsis; }
+      .metric strong { font-size:26px; }
+      .metric.warn ha-icon { color:#ff914d; }
+      .metric.ok ha-icon { color:#34a853; }
+      .grid.two { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+      .panel-card { background:rgba(255,255,255,.96); border:1px solid rgba(17,32,51,.07); border-radius:26px; padding:22px; margin-bottom:18px; box-shadow:0 16px 45px rgba(18,32,54,.08); }
+      .wide { grid-column:1 / -1; }
+      .card-head { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:16px; }
+      .due,.location-compact,.invoice-row,.reading-row { display:flex; align-items:center; gap:14px; padding:14px; border-radius:18px; background:#f7f9fc; margin-top:10px; }
+      .due { justify-content:space-between; border-left:5px solid #d8e2ef; }
+      .due.soon { border-left-color:#ff914d; }
+      .due.late { border-left-color:#e5484d; }
+      .due span,.location-compact span,.invoice-main span,.invoice-meta span,.reading-main span,.reading-period span,.reading-current span { display:block; color:#6b7b90; font-size:13px; margin-top:3px; }
+      .due-right { text-align:right; }
+      .due-right small { color:#6b7b90; font-weight:800; }
+      .location-compact { justify-content:space-between; }
+      .location-icon,.provider-badge { width:42px; height:42px; border-radius:14px; display:grid; place-items:center; background:#e8f2ff; color:#2369bb; font-weight:900; flex:0 0 auto; }
+      .summary-strip,.details-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+      .summary-strip div,.details-grid div { padding:16px; border-radius:18px; background:#f7f9fc; min-width:0; }
+      .summary-strip strong,.details-grid strong { display:block; overflow-wrap:anywhere; }
+      .summary-strip span,.details-grid span { color:#6b7b90; font-size:12px; text-transform:uppercase; letter-spacing:.08em; font-weight:800; }
+      .location-title { width:100%; border:0; background:transparent; padding:0; display:flex; align-items:center; justify-content:space-between; text-align:left; color:inherit; }
+      .location-title.static { cursor:default; }
+      .location-total { display:flex; gap:8px; align-items:center; }
+      .invoice-list,.reading-list { margin-top:16px; display:grid; gap:10px; }
+      .invoice-toolbar.compact { display:flex; align-items:center; gap:12px; padding:14px 18px; border-radius:22px; }
+      .invoice-toolbar label { color:#6b7b90; font-size:12px; text-transform:uppercase; letter-spacing:.08em; font-weight:900; }
+      .invoice-toolbar select { border:1px solid rgba(17,32,51,.10); border-radius:14px; padding:10px 36px 10px 12px; background:#f7f9fc; color:#142033; font-weight:800; }
+      .invoice-toolbar span { margin-left:auto; color:#6b7b90; font-weight:800; }
+      .invoice-row { display:grid; grid-template-columns:42px minmax(160px,1fr) 130px 130px auto 42px; }
+      .invoice-row.warning { background:#fff5ec; }
+      .reading-row { display:grid; grid-template-columns:42px minmax(150px,1fr) minmax(210px,1.1fr) 110px auto; }
+      .reading-controls { grid-column:2 / -1; display:grid; gap:10px; margin-top:2px; }
+      .reading-control { display:grid; grid-template-columns:minmax(120px,1fr) minmax(120px,180px) auto; gap:10px; align-items:center; padding:12px; border-radius:16px; background:rgba(255,255,255,.72); border:1px solid rgba(17,32,51,.06); }
+      .reading-control label { font-weight:900; }
+      .reading-input { width:100%; border:1px solid rgba(17,32,51,.12); border-radius:14px; padding:11px 12px; font:inherit; background:#fff; color:#142033; outline:none; }
+      .reading-input:focus { border-color:#4ea1ff; box-shadow:0 0 0 3px rgba(78,161,255,.16); }
+      .reading-control .action-message { grid-column:1 / -1; margin-top:0; }
+      .pill { padding:7px 10px; border-radius:999px; font-size:12px; font-weight:900; text-align:center; white-space:nowrap; }
+      .pill.paid,.pill.credit,.pill.open { background:#e9f8ee; color:#14783c; }
+      .pill.unpaid,.pill.closed { background:#fff0e6; color:#b55415; }
+      .pill.unknown,.pill.missing { background:#edf1f7; color:#526276; }
+      .row-action { width:38px; height:38px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#fff; display:grid; place-items:center; color:#112033; }
+      .row-action.busy ha-icon { animation:spin 1s linear infinite; }
+      .row-action.disabled { color:#9aa7b7; background:#edf1f7; cursor:default; }
+      @keyframes spin { to { transform:rotate(360deg); } }
+      .feature-note { display:flex; gap:16px; align-items:flex-start; padding:18px; border-radius:20px; background:#eef6ff; color:#23415f; }
+      .feature-note ha-icon { color:#4ea1ff; flex:0 0 auto; }
+      .feature-note p { color:#526276; margin-top:6px; }
+      .feature-note.subtle { background:#f7f9fc; }
+      .license-card { display:flex; gap:20px; align-items:center; background:linear-gradient(135deg,#ffffff,#edf7ff); }
+      .license-shield { width:74px; height:74px; border-radius:24px; display:grid; place-items:center; background:#112033; color:#fff; }
+      .license-shield ha-icon { width:34px; height:34px; }
+      .license-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; }
+      .license-form input { width:100%; border:1px solid rgba(17,32,51,.12); border-radius:18px; padding:14px 16px; font:inherit; background:#f7f9fc; color:#142033; outline:none; }
+      .license-form input:focus { border-color:#4ea1ff; box-shadow:0 0 0 3px rgba(78,161,255,.16); }
+      .action-message { margin-top:14px; border-radius:16px; padding:12px 14px; font-weight:700; }
+      .action-message.ok { background:#e9f8ee; color:#14783c; }
+      .action-message.error { background:#fff0e6; color:#b55415; }
+      .empty { color:#6b7b90; background:#f7f9fc; border-radius:18px; padding:18px; }
+      @media (max-width: 900px) { .hero,.grid.two { grid-template-columns:1fr; } .invoice-row { grid-template-columns:42px 1fr 42px; } .invoice-meta,.pill { grid-column:2; justify-self:start; } .row-action { grid-column:3; grid-row:1; } .reading-row { grid-template-columns:42px 1fr; } .reading-period,.reading-current,.reading-row .pill,.reading-controls { grid-column:2; justify-self:stretch; } .reading-control { grid-template-columns:1fr; } .summary-strip,.details-grid { grid-template-columns:1fr; } }
+      @media (max-width: 560px) { :host { background:radial-gradient(circle at -80px -120px,#07111f 0,#10223d 210px,transparent 212px),linear-gradient(180deg,#eef4fb 0%,#f7f9fc 100%); } .wrap { padding:12px 10px 28px; } .hero-content,.hero-card,.panel-card { border-radius:22px; padding:18px; } .hero { gap:12px; } .brand-row { align-items:center; gap:10px; padding-right:0; min-height:70px; } .forge-lockup { top:14px; right:16px; } .forge-lockup span { display:none; } .utility-logo { width:58px; height:58px; border-radius:18px; } .forge-logo { width:32px; height:32px; border-radius:10px; } h1 { font-size:34px; padding-right:42px; } .tabs { margin-top:4px; } .tab { padding:10px 12px; } .tab span { display:none; } .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; } .metric { padding:10px 8px; border-radius:16px; min-height:82px; } .metric ha-icon { width:20px; height:20px; } .metric span { font-size:10px; } .metric strong { font-size:20px; } .license-form { grid-template-columns:1fr; } }
+    `;
+  }
+
+
+  _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  _parsePositiveNumber(value) {
+    const parsed = Number(String(value ?? "").trim().replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+
+  async _waitForNumberState(entityId, expectedValue, timeoutMs = 7000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const current = this._parsePositiveNumber(this._hass?.states?.[entityId]?.state);
+      if (Number.isFinite(current) && Math.abs(current - expectedValue) < 0.0001) return true;
+      await this._sleep(350);
+    }
+    return false;
+  }
+
+  async _submitReading(wrapper) {
+    const providerKey = String(wrapper?.getAttribute("data-provider") || "").trim().toLowerCase();
+    const numberEntityId = wrapper?.getAttribute("data-number-entity") || "";
+    const buttonEntityId = wrapper?.getAttribute("data-button-entity") || "";
+    const currentValue = wrapper?.getAttribute("data-current-value") || "";
+    const input = wrapper?.querySelector(".reading-input");
+    const valueText = String(input?.value || "").trim();
+    const actionKey = `reading__${buttonEntityId || numberEntityId}`;
+    const numericValue = this._parsePositiveNumber(valueText);
+
+    if (!valueText || !Number.isFinite(numericValue) || numericValue <= 0) {
+      this._actions.set(actionKey, { status: "error", message: "Introdu o valoare numerică validă pentru index." });
+      this._render();
+      return;
+    }
+
+    const currentNumeric = this._parsePositiveNumber(currentValue);
+    if (Number.isFinite(currentNumeric) && currentNumeric > 0 && numericValue < currentNumeric) {
+      this._actions.set(actionKey, { status: "error", message: `Valoarea introdusă este mai mică decât indexul curent (${currentNumeric}).` });
+      this._render();
+      return;
+    }
+
+    this._actions.set(actionKey, { status: "busy", message: "" });
+    this._render();
+
+    try {
+      if (providerKey === "apa_canal") {
+        await this._hass.callService("utilitati_romania", "submit_reading", {
+          provider: providerKey,
+          entry_id: String(wrapper?.getAttribute("data-entry-id") || ""),
+          id_cont: String(wrapper?.getAttribute("data-id-cont") || ""),
+          id_contract: String(wrapper?.getAttribute("data-id-contract") || ""),
+          value: numericValue,
+        });
+      } else {
+        if (!numberEntityId || !buttonEntityId) throw new Error("Entitățile pentru transmiterea indexului nu sunt disponibile.");
+        if (providerKey === "eon") {
+          const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apacanal|ebloc)/i;
+          if (wrongProviderPattern.test(numberEntityId) || wrongProviderPattern.test(buttonEntityId)) throw new Error("Panoul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina și verifică entitățile.");
+        }
+        await this._hass.callService("number", "set_value", { entity_id: numberEntityId, value: numericValue });
+        const synced = await this._waitForNumberState(numberEntityId, numericValue, providerKey === "eon" ? 15000 : 7000);
+        if (!synced) throw new Error(`Valoarea introdusă nu a fost confirmată încă de Home Assistant pentru ${numberEntityId}. Reîncearcă după câteva secunde.`);
+        await this._hass.callService("button", "press", { entity_id: buttonEntityId });
+      }
+      this._readingDrafts.delete(buttonEntityId || numberEntityId);
+      this._actions.set(actionKey, { status: "ok", message: "Indexul a fost transmis spre procesare." });
+    } catch (err) {
+      this._actions.set(actionKey, { status: "error", message: err?.message || "Transmiterea indexului a eșuat." });
+    }
+    this._render();
+  }
+
+  _bindEvents() {
+    this.shadowRoot.querySelectorAll("[data-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this._activeTab = button.getAttribute("data-tab") || "overview";
+        this._render();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-toggle-location]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.getAttribute("data-toggle-location");
+        if (this._expandedLocations.has(key)) this._expandedLocations.delete(key);
+        else this._expandedLocations.add(key);
+        this._render();
+      });
+    });
+    const invoiceGrouping = this.shadowRoot.querySelector("[data-invoice-grouping]");
+    if (invoiceGrouping) {
+      ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => {
+        invoiceGrouping.addEventListener(eventName, () => this._holdRenderBriefly(4500));
+      });
+      invoiceGrouping.addEventListener("change", (event) => {
+        this._setInvoiceGrouping(event.target.value);
+        this._interactiveUntil = 0;
+        this._render();
+      });
+    }
+    this.shadowRoot.querySelectorAll("[data-reading-control]").forEach((wrapper) => {
+      const input = wrapper.querySelector(".reading-input");
+      const buttonEntityId = wrapper.getAttribute("data-button-entity") || wrapper.getAttribute("data-number-entity") || "";
+      if (input && buttonEntityId) {
+        input.addEventListener("focus", () => this._holdRenderBriefly(4500));
+        input.addEventListener("input", (event) => { this._holdRenderBriefly(4500); this._readingDrafts.set(buttonEntityId, event.target.value || ""); });
+        input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); this._submitReading(wrapper); } });
+      }
+      const submit = wrapper.querySelector("[data-reading-submit]");
+      if (submit) submit.addEventListener("click", (event) => { event.stopPropagation(); this._submitReading(wrapper); });
+    });
+    this.shadowRoot.querySelectorAll("[data-refresh-entity]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const entityId = button.getAttribute("data-refresh-entity");
+        const key = button.getAttribute("data-action-key") || `refresh__${entityId}`;
+        if (!entityId) return;
+        this._actions.set(key, { status: "busy" });
+        this._render();
+        try {
+          await this._hass.callService("button", "press", { entity_id: entityId });
+          this._actions.set(key, { status: "ok" });
+        } catch (err) {
+          this._actions.set(key, { status: "error", message: err?.message || "Actualizarea a eșuat." });
+        }
+        this._render();
+      });
+    });
+    const licenseInput = this.shadowRoot.querySelector("#license-input");
+    if (licenseInput) {
+      licenseInput.addEventListener("focus", () => this._holdRenderBriefly(4500));
+      licenseInput.addEventListener("input", (event) => { this._holdRenderBriefly(4500); this._licenseDraft = event.target.value || ""; });
+    }
+    const applyLicense = this.shadowRoot.querySelector("[data-apply-license]");
+    if (applyLicense) {
+      applyLicense.addEventListener("click", async () => {
+        const code = String(this.shadowRoot.querySelector("#license-input")?.value || this._licenseDraft || "").trim();
+        if (!code) {
+          this._actions.set("license", { status: "error", message: "Introdu mai întâi codul de licență." });
+          this._render();
+          return;
+        }
+        const entities = this._licenseEntities();
+        this._actions.set("license", { status: "busy", message: "" });
+        this._render();
+        try {
+          await this._hass.callService("text", "set_value", { entity_id: entities.text, value: code });
+          await this._hass.callService("button", "press", { entity_id: entities.button });
+          this._licenseDraft = "";
+          this._actions.set("license", { status: "ok", message: "Licența a fost trimisă spre validare. Datele se vor actualiza după verificare." });
+        } catch (err) {
+          this._actions.set("license", { status: "error", message: err?.message || "Aplicarea licenței a eșuat." });
+        }
+        this._render();
+      });
+    }
+  }
+
+  _render() {
+    if (!this.shadowRoot) return;
+    if (!this._hass) {
+      this.shadowRoot.innerHTML = `<style>${this._styles()}</style><div class="wrap"><section class="panel-card"><div class="empty">Se încarcă datele...</div></section></div>`;
+      return;
+    }
+    const summary = this._summary();
+    this.shadowRoot.innerHTML = `
+      <style>${this._styles()}</style>
+      <div class="wrap">
+        ${this._renderHero(summary.attrs)}
+        ${this._renderTabs()}
+        ${this._renderMetrics(summary.attrs, summary.locations)}
+        <main>${this._renderContent(summary)}</main>
+      </div>
+    `;
+    this._bindEvents();
+  }
+}
+
+customElements.define("utilitati-romania-panel", UtilitatiRomaniaPanel);

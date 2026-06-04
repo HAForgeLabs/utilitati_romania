@@ -664,27 +664,6 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return this._normalizeText(`${stateObj?.entity_id || ""} ${friendly}`);
   }
 
-  _entityProviderKey(stateObj) {
-    const attrs = stateObj?.attributes || {};
-    const explicit = this._normalizeText(attrs.furnizor || attrs.provider || attrs.furnizor_key || "");
-    if (explicit) {
-      if (explicit.includes("eon")) return "eon";
-      if (explicit.includes("hidroelectrica") || explicit.includes("hidro")) return "hidroelectrica";
-      if (explicit.includes("myelectrica")) return "myelectrica";
-      if (explicit.includes("apa canal") || explicit.includes("apacanal")) return "apa_canal";
-      if (explicit.includes("ebloc")) return "ebloc";
-    }
-
-    const text = this._entityFriendlyText(stateObj);
-    const entityId = String(stateObj?.entity_id || "").toLowerCase();
-    if (entityId.includes("eon") || text.includes("eon")) return "eon";
-    if (entityId.includes("hidro") || text.includes("hidroelectrica") || text.includes("hidro")) return "hidroelectrica";
-    if (entityId.includes("myelectrica") || text.includes("myelectrica")) return "myelectrica";
-    if (entityId.includes("apa_canal") || entityId.includes("apacanal") || text.includes("apa canal")) return "apa_canal";
-    if (entityId.includes("ebloc") || text.includes("ebloc")) return "ebloc";
-    return "";
-  }
-
   _textMatchesAny(text, terms) {
     const hay = this._normalizeText(text || "");
     return (terms || []).some((term) => term && hay.includes(term));
@@ -851,14 +830,26 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (providerKey === "eon") {
       const base = sensorObject.replace(/_citire_permisa$/, "");
       const idCont = String(provider?.id_cont || "").trim();
-      const idContract = String(provider?.id_contract || provider?.cod_contract || "").trim();
       const tipServiciu = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
       const wantsGas = tipServiciu.includes("gaz");
       const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie");
 
       const isOtherProviderEntity = (stateObj) => {
-        const providerFromEntity = this._entityProviderKey(stateObj);
-        return !!providerFromEntity && providerFromEntity !== "eon";
+        const text = this._entityFriendlyText(stateObj);
+        const entityId = String(stateObj?.entity_id || "").toLowerCase();
+        return (
+          entityId.includes("hidro") ||
+          entityId.includes("hidroelectrica") ||
+          entityId.includes("myelectrica") ||
+          entityId.includes("apa_canal") ||
+          entityId.includes("apacanal") ||
+          entityId.includes("ebloc") ||
+          text.includes("hidro") ||
+          text.includes("hidroelectrica") ||
+          text.includes("myelectrica") ||
+          text.includes("apa canal") ||
+          text.includes("ebloc")
+        );
       };
 
       const scoreEonEntity = (stateObj, kind) => {
@@ -873,9 +864,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
         if (entityId.includes("eon")) score += 160;
         if (text.includes("eon")) score += 80;
         if (idCont && entityId.includes(idCont)) score += 160;
-        if (idCont && String(attrs.id_cont ?? "").trim() === idCont) score += 220;
-        if (idContract && String(attrs.id_contract ?? attrs.cod_contract ?? "").trim() === idContract) score += 120;
-        if (this._entityProviderKey(stateObj) === "eon") score += 220;
+        if (idCont && String(attrs.id_cont ?? "").trim() === idCont) score += 180;
         if (entityId.includes(base)) score += 120;
         if (this._textMatchesAny(text, terms)) score += 90;
         if (this._textMatchesAny(entityId, terms)) score += 50;
@@ -915,34 +904,15 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
         return bestScore >= minimumScore ? best : null;
       };
 
-      const entityByAttributes = (kind) => {
-        if (!idCont) return null;
-        return Object.values(states).find((stateObj) => {
-          if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return false;
-          const attrs = stateObj.attributes || {};
-          if (String(attrs.furnizor || "").trim().toLowerCase() !== "eon") return false;
-          if (String(attrs.id_cont || "").trim() !== idCont) return false;
-          if (kind === "button") {
-            const text = this._entityFriendlyText(stateObj);
-            return text.includes("trimite index") || stateObj.entity_id.includes("trimite_index");
-          }
-          if (kind === "number") {
-            const text = this._entityFriendlyText(stateObj);
-            return text.includes("index") || stateObj.entity_id.includes("index");
-          }
-          return true;
-        }) || null;
-      };
-
       const exactNumber = states[`number.${base}_index`] || states[`number.${base}_index_gaz`] || states[`number.${base}_index_energie_electrica`] || null;
-      const numberEntity = entityByAttributes("number") || (exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : bestEntity("number", 120));
+      const numberEntity = exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : bestEntity("number", 120);
 
       let currentEntity = states[`sensor.${base}_index_contor`] || states[`sensor.${base}_index_energie_electrica`] || states[`sensor.${base}_index_gaz`] || null;
       if (currentEntity && isOtherProviderEntity(currentEntity)) currentEntity = null;
       if (!currentEntity) currentEntity = bestEntity("sensor", 120);
 
       const exactButton = states[`button.${base}_trimite_index`] || states[`button.${base}_trimite_index_gaz`] || states[`button.${base}_trimite_index_energie_electrica`] || null;
-      const buttonEntity = entityByAttributes("button") || (exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120));
+      const buttonEntity = exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120);
 
       if (numberEntity && buttonEntity) {
         controls.push({
@@ -1221,7 +1191,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
             class="reading-control"
             data-number-entity="${this._escapeAttr(control.numberEntityId || "")}"
             data-button-entity="${this._escapeAttr(control.buttonEntityId || "")}"
-            data-provider="${this._escapeAttr(String(control.providerKey || provider?.furnizor || ""))}"
+            data-provider="${this._escapeAttr(String(provider?.furnizor || ""))}"
             data-entry-id="${this._escapeAttr(String(provider?.entry_id || ""))}"
             data-id-cont="${this._escapeAttr(String(provider?.id_cont || ""))}"
             data-id-contract="${this._escapeAttr(String(provider?.id_contract || ""))}"
@@ -1990,16 +1960,9 @@ _buildProviderRefreshButton(provider) {
               value: numericValue,
             });
           } else {
-            const numberProvider = this._entityProviderKey(numberStateObj);
-            const buttonProvider = this._entityProviderKey(buttonStateObj);
-            const effectiveProviderKey = providerKey || numberProvider || buttonProvider;
-
-            if (numberProvider && buttonProvider && numberProvider !== buttonProvider) {
-              throw new Error(`Cardul a identificat entități din furnizori diferiți: ${numberEntityId} și ${buttonEntityId}. Reîncarcă pagina sau actualizează integrarea.`);
-            }
-
-            if (effectiveProviderKey === "eon") {
-              if ((numberProvider && numberProvider !== "eon") || (buttonProvider && buttonProvider !== "eon")) {
+            if (providerKey === "eon") {
+              const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apacanal|ebloc)/i;
+              if (wrongProviderPattern.test(String(numberEntityId)) || wrongProviderPattern.test(String(buttonEntityId))) {
                 throw new Error("Cardul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina sau actualizează integrarea.");
               }
             }

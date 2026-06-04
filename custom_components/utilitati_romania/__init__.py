@@ -44,6 +44,7 @@ from .storage_citiri import async_salveaza_citire
 _LOGGER = logging.getLogger(__name__)
 
 _LOVELACE_RESOURCE_URL = "/utilitati_romania/utilitati_romania-card.js"
+_PANEL_RESOURCE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_NOTIFICATION_ID = "utilitati_romania_card_resource"
 _ADMIN_PLATFORME = [Platform.SENSOR, Platform.BUTTON, Platform.TEXT, Platform.SELECT]
 
@@ -110,6 +111,39 @@ async def _async_register_static_paths(hass: HomeAssistant) -> None:
     )
 
     hass.data[DOMENIU]["_static_paths_registered"] = True
+
+
+def _async_register_dashboard_panel(hass: HomeAssistant) -> None:
+    hass.data.setdefault(DOMENIU, {})
+    if hass.data[DOMENIU].get("_dashboard_panel_registered"):
+        return
+
+    try:
+        from homeassistant.components.frontend import async_register_built_in_panel
+    except Exception:
+        _LOGGER.exception("Nu am putut importa funcția de înregistrare a panoului frontend")
+        return
+
+    try:
+        async_register_built_in_panel(
+            hass,
+            component_name="custom",
+            sidebar_title="Utilități România",
+            sidebar_icon="mdi:flash",
+            frontend_url_path="utilitati-romania",
+            require_admin=False,
+            config={
+                "_panel_custom": {
+                    "name": "utilitati-romania-panel",
+                    "module_url": _PANEL_RESOURCE_URL,
+                },
+                "domain": DOMENIU,
+                "summary_entity": "sensor.administrare_integrare_facturi_utilitati",
+            },
+        )
+        hass.data[DOMENIU]["_dashboard_panel_registered"] = True
+    except Exception:
+        _LOGGER.exception("Nu am putut înregistra panoul Utilități România")
 
 
 async def _extract_lovelace_resource_urls_from_storage(hass: HomeAssistant) -> set[str]:
@@ -729,6 +763,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await async_incarca_grupari_facturi(hass)
     await async_incarca_statusuri_facturi_manuale(hass)
     await _async_register_static_paths(hass)
+    _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
     return True
 
@@ -739,6 +774,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_incarca_grupari_facturi(hass)
     await async_incarca_statusuri_facturi_manuale(hass)
     await _async_register_static_paths(hass)
+    _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
 
     if entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:

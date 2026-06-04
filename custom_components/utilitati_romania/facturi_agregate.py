@@ -580,6 +580,100 @@ def _build_eon_fallback_item(
 
 
 
+def _build_hidroelectrica_fallback_item(
+    coordonator: CoordonatorUtilitatiRomania,
+    instantaneu: InstantaneuFurnizor,
+    cont: ContUtilitate,
+) -> dict[str, Any] | None:
+    id_cont = getattr(cont, "id_cont", None)
+    if not id_cont:
+        return None
+
+    cont_raw = cont.date_brute if isinstance(cont.date_brute, dict) else {}
+
+    factura_id = (
+        _consum_value(instantaneu, "id_ultima_factura", id_cont)
+        or cont_raw.get("ultima_factura_id")
+        or cont_raw.get("last_invoice_id")
+    )
+    valoare = _to_float(
+        _consum_value(instantaneu, "valoare_ultima_factura", id_cont)
+        or cont_raw.get("valoare_ultima_factura")
+        or cont_raw.get("last_invoice_amount")
+    )
+    data_scadenta = (
+        _consum_value(instantaneu, "urmatoarea_scadenta", id_cont)
+        or cont_raw.get("urmatoarea_scadenta")
+        or cont_raw.get("next_due_date")
+    )
+    sold_factura = _to_float(
+        _consum_value(instantaneu, "sold_factura", id_cont)
+        or _consum_value(instantaneu, "sold_curent", id_cont)
+        or cont_raw.get("sold_factura")
+        or cont_raw.get("rembalance")
+    )
+    factura_restanta = (
+        _consum_value(instantaneu, "factura_restanta", id_cont)
+        or cont_raw.get("factura_restanta")
+    )
+
+    if factura_id in (None, "") and valoare is None and data_scadenta in (None, ""):
+        return None
+
+    restanta_text = normalize_text(factura_restanta).lower()
+    if restanta_text in {"da", "yes", "true", "1"} or (sold_factura is not None and sold_factura > 0):
+        status = "unpaid"
+        is_paid = False
+        unpaid_amount = sold_factura if sold_factura is not None and sold_factura > 0 else valoare
+    elif restanta_text in {"nu", "no", "false", "0"} or sold_factura is not None:
+        status = "paid"
+        is_paid = True
+        unpaid_amount = 0.0
+    else:
+        status = "unknown"
+        is_paid = None
+        unpaid_amount = None
+
+    factura_id_text = str(factura_id or "").strip()
+    location_key, location_label, manual_group_label = _location_fields(
+        coordonator,
+        instantaneu,
+        cont,
+        cont,
+    )
+
+    return {
+        "entry_id": coordonator.intrare.entry_id,
+        "entry_title": coordonator.intrare.title,
+        "furnizor": instantaneu.furnizor,
+        "furnizor_label": _provider_label(instantaneu.furnizor),
+        "locatie_cheie": location_key,
+        "eticheta_locatie": location_label,
+        "adresa_originala": getattr(cont, "adresa", None),
+        "eticheta_grupare_manuala": manual_group_label,
+        "id_cont": id_cont,
+        "id_contract": getattr(cont, "id_contract", None),
+        "nume_cont": getattr(cont, "nume", None),
+        "tip_utilitate": getattr(cont, "tip_utilitate", None),
+        "tip_serviciu": getattr(cont, "tip_serviciu", None),
+        "invoice_id": factura_id_text or f"hidroelectrica_{id_cont}_ultima",
+        "invoice_title": factura_id_text or "Ultima factură",
+        "issue_date": None,
+        "due_date": _format_date(data_scadenta),
+        "amount": valoare,
+        "currency": "RON",
+        "status_raw": factura_restanta,
+        "status": status,
+        "payment_status": status,
+        "is_paid": is_paid,
+        "unpaid_amount": unpaid_amount,
+        "pdf_url": None,
+        "refresh_button_entity_id": _refresh_button_entity_id(coordonator),
+        "can_refresh": _refresh_button_entity_id(coordonator) is not None,
+    }
+
+
+
 def _money_to_lei(value: Any) -> float | None:
     parsed = _to_float(value)
     if parsed is None:
@@ -673,6 +767,43 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                         current["due_date"] = fallback_item.get("due_date")
                     if fallback_item.get("issue_date"):
                         current["issue_date"] = fallback_item.get("issue_date")
+                    if fallback_item.get("amount") is not None:
+                        current["amount"] = fallback_item.get("amount")
+                    if fallback_item.get("invoice_id"):
+                        current["invoice_id"] = fallback_item.get("invoice_id")
+                    if fallback_item.get("invoice_title"):
+                        current["invoice_title"] = fallback_item.get("invoice_title")
+
+        # 3. Fallback Hidroelectrica din senzorii de cont.
+        # Uneori istoricul de facturi nu mai întoarce o factură utilizabilă,
+        # dar coordonatorul are în continuare ultima valoare, scadența și statusul.
+        if instantaneu.furnizor == "hidroelectrica":
+            for cont in instantaneu.conturi or []:
+                fallback_item = _apply_manual_invoice_status(
+                    hass,
+                    _build_hidroelectrica_fallback_item(maybe_coord, instantaneu, cont),
+                )
+                if fallback_item is None:
+                    continue
+
+                group_key = (
+                    fallback_item["locatie_cheie"],
+                    normalize_text(fallback_item["furnizor"]).lower(),
+                )
+
+                current = grouped.get(group_key)
+                if current is None:
+                    grouped[group_key] = fallback_item
+                    continue
+
+                if fallback_item.get("status") == "unpaid" and not current.get("manual_status_override"):
+                    current["status_raw"] = fallback_item.get("status_raw")
+                    current["status"] = "unpaid"
+                    current["payment_status"] = "unpaid"
+                    current["is_paid"] = False
+                    current["unpaid_amount"] = fallback_item.get("unpaid_amount")
+                    if fallback_item.get("due_date"):
+                        current["due_date"] = fallback_item.get("due_date")
                     if fallback_item.get("amount") is not None:
                         current["amount"] = fallback_item.get("amount")
                     if fallback_item.get("invoice_id"):
