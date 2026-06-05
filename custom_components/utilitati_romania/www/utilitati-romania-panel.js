@@ -77,6 +77,36 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .replace(/'/g, "&#039;");
   }
 
+  _maskEmail(value) {
+    const text = String(value ?? "").trim();
+    if (!text || text === "—" || !text.includes("@")) return text || "—";
+    const [user, domain] = text.split("@");
+    if (!domain) return text;
+    const visibleUser = user.length <= 2 ? user.slice(0, 1) : user.slice(0, 2);
+    const domainParts = domain.split(".");
+    const domainName = domainParts[0] || "";
+    const suffix = domainParts.slice(1).join(".");
+    const visibleDomain = domainName.length <= 2 ? domainName.slice(0, 1) : domainName.slice(0, 2);
+    return `${visibleUser}***@${visibleDomain}***${suffix ? `.${suffix}` : ""}`;
+  }
+
+  _maskLicense(value) {
+    const text = String(value ?? "").trim();
+    if (!text || text === "—") return text || "—";
+    if (text.length <= 8) return "****";
+    return `${text.slice(0, 4)}-****-****-${text.slice(-4)}`;
+  }
+
+  _safeDiagnosticLicense(license) {
+    return {
+      status: license?.status || "necunoscut",
+      plan: license?.plan || "—",
+      account: this._maskEmail(license?.account || "—"),
+      checked: license?.checked || "—",
+      message: license?.message || "—",
+    };
+  }
+
   _normalizeText(value) {
     return String(value ?? "")
       .normalize("NFD")
@@ -659,7 +689,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const action = this._actions.get(key);
     if (!entityId) return `<button class="row-action disabled" disabled title="Butonul de actualizare nu a fost găsit"><ha-icon icon="mdi:refresh-off"></ha-icon></button>`;
     const message = action?.status === "ok" ? `<small class="refresh-message ok">Actualizat</small>` : action?.status === "error" ? `<small class="refresh-message error">Eroare</small>` : "";
-    return `<div class="refresh-wrap"><button class="row-action ${action?.status === "busy" ? "busy" : ""}" data-refresh-entity="${this._escape(entityId)}" data-action-key="${this._escape(key)}" title="Actualizează acest furnizor"><ha-icon icon="mdi:refresh"></ha-icon></button>${message}</div>`;
+    return `<div class="refresh-wrap"><button class="row-action ${action?.status === "busy" ? "busy" : ""}" data-refresh-entity="${this._escape(entityId)}" data-action-key="${this._escape(key)}" title="Actualizează acest furnizor" aria-label="Actualizează acest furnizor" ${action?.status === "busy" ? "disabled" : ""}><ha-icon icon="mdi:refresh"></ha-icon></button>${message}</div>`;
   }
 
   _providerAppLabel(provider) {
@@ -680,8 +710,10 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const providerKey = this._providerKey(provider);
     const label = this._providerAppLabel(provider);
     if (!providerKey || !label) return "";
+    const action = this._actions.get(`open_provider__${providerKey}`);
+    const busy = action?.status === "busy";
     return `
-      <button class="provider-app-action" data-open-provider="${this._escape(providerKey)}" title="${this._escape(label)}" aria-label="${this._escape(label)}">
+      <button class="provider-app-action ${busy ? "busy" : ""}" data-open-provider="${this._escape(providerKey)}" title="Deschide ${this._escape(label)}" aria-label="Deschide ${this._escape(label)}" ${busy ? "disabled" : ""}>
         <ha-icon icon="mdi:open-in-app"></ha-icon>
         <span>${this._escape(label)}</span>
       </button>
@@ -1137,6 +1169,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       <section class="panel-card contact-card">
         <div class="card-head"><div><span class="eyebrow">contact</span><h2>HAForge Labs</h2></div></div>
         <p>Pentru suport, sugestii sau raportarea unei probleme legate de integrare, folosește canalele de mai jos.</p>
+        <div class="support-note"><ha-icon icon="mdi:information-outline"></ha-icon><span>Pentru suport, menționează versiunea integrării, furnizorul afectat și mesajul din tabul Diagnostic. Nu publica niciodată codul complet de licență, date de autentificare sau coduri client complete.</span></div>
         <div class="contact-actions">
           <a class="contact-action" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer"><ha-icon icon="mdi:web"></ha-icon><span>Site HAForge Labs</span></a>
           <a class="contact-action" href="mailto:contact@haforgelabs.ro"><ha-icon icon="mdi:email-outline"></ha-icon><span>contact@haforgelabs.ro</span></a>
@@ -1166,7 +1199,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       ultima_eroare: summary.attrs.ultima_eroare || "fără erori",
       locatii: summary.locations?.length || 0,
       facturi: summary.attrs.numar_facturi ?? providers.length,
-      licenta: lic,
+      licenta: this._safeDiagnosticLicense(lic),
       furnizori: providers,
     };
   }
@@ -1190,6 +1223,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <section class="panel-card">
         <div class="card-head"><div><span class="eyebrow">administrare</span><h2>Setări rapide</h2></div></div>
+        <div class="support-note"><ha-icon icon="mdi:information-outline"></ha-icon><span>Setările de afișare și denumirile de mai jos modifică doar dashboard-ul integrat. Nu redenumesc entitățile Home Assistant și nu modifică dashboard-urile Lovelace existente.</span></div>
         <div class="settings-grid">
           <div class="setting-block">
             <div><span class="eyebrow">aplicații furnizori</span><h3>Dispozitiv mobil</h3><p>Alege telefonul pe care se deschid aplicațiile furnizorilor din butoanele aflate în facturi.</p></div>
@@ -1211,7 +1245,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
       </section>
       <section class="panel-card">
-        <div class="card-head"><div><span class="eyebrow">notificări</span><h2>Ce notificări primești</h2></div><button class="primary dark small" data-save-notification-settings>Salvează notificările</button></div>
+        <div class="card-head"><div><span class="eyebrow">notificări</span><h2>Ce notificări primești</h2></div><button class="primary dark small" data-save-notification-settings ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salvează..." : "Salvează notificările"}</button></div>
         <div class="settings-list">
           ${toggle("facturi_noi", "Facturi noi", "Primești notificare când integrarea detectează o factură nouă neplătită.")}
           ${toggle("scadente", "Scadențe apropiate", "Primești notificări înainte de scadență, după pragurile configurate în integrare.")}
@@ -1219,7 +1253,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         </div>
       </section>
       <section class="panel-card">
-        <div class="card-head"><div><span class="eyebrow">locații</span><h2>Denumiri afișate</h2></div><button class="primary dark small" data-save-location-aliases>Salvează denumirile</button></div>
+        <div class="card-head"><div><span class="eyebrow">locații</span><h2>Denumiri afișate</h2></div><button class="primary dark small" data-save-location-aliases ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salvează..." : "Salvează denumirile"}</button></div>
         <div class="location-alias-list">
           ${locations.length ? locations.map((location) => {
             const key = this._locationKey(location);
@@ -1404,6 +1438,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .action-message.ok { background:#e9f8ee; color:#14783c; }
       .action-message.error { background:#fff0e6; color:#b55415; }
       .empty { color:#6b7b90; background:#f7f9fc; border-radius:18px; padding:18px; }
+
+      .support-note { display:flex; gap:12px; align-items:flex-start; border-radius:18px; padding:14px 16px; background:var(--soft-blue); color:var(--muted); font-size:14px; line-height:1.55; margin:14px 0 18px; }
+      .support-note ha-icon { color:var(--accent); flex:0 0 auto; margin-top:1px; }
+      button[disabled] { opacity:.68; cursor:not-allowed; }
+
       @media (prefers-color-scheme: dark) {
         :host {
           background:
@@ -1586,7 +1625,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         await this._hass.callService("button", "press", { entity_id: buttonEntityId });
       }
       this._readingDrafts.delete(buttonEntityId || numberEntityId);
-      this._actions.set(actionKey, { status: "ok", message: "Indexul a fost transmis spre procesare." });
+      this._actions.set(actionKey, { status: "ok", message: "Comanda de transmitere a indexului a fost trimisă. Verifică ulterior portalul furnizorului sau următorul refresh pentru confirmarea finală." });
     } catch (err) {
       this._actions.set(actionKey, { status: "error", message: err?.message || "Transmiterea indexului a eșuat." });
     }
@@ -1680,6 +1719,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const saveLocationAliases = this.shadowRoot.querySelector("[data-save-location-aliases]");
     if (saveLocationAliases) {
       saveLocationAliases.addEventListener("click", () => {
+        if (saveLocationAliases.disabled) return;
         const aliases = this._locationAliases();
         this.shadowRoot.querySelectorAll("[data-location-alias]").forEach((input) => {
           const key = input.getAttribute("data-location-alias");
@@ -1696,6 +1736,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const saveNotificationSettings = this.shadowRoot.querySelector("[data-save-notification-settings]");
     if (saveNotificationSettings) {
       saveNotificationSettings.addEventListener("click", async () => {
+        if (saveNotificationSettings.disabled) return;
         const prefs = this._notificationPreferences();
         this._actions.set("settings", { status: "busy", message: "Se salvează notificările..." });
         this._render();
@@ -1723,7 +1764,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       button.addEventListener("click", async (event) => {
         event.stopPropagation();
         const provider = button.getAttribute("data-open-provider");
-        if (!provider) return;
+        if (!provider || button.disabled) return;
         const key = `open_provider__${provider}`;
         this._actions.set(key, { status: "busy" });
         this._render();
@@ -1740,7 +1781,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       button.addEventListener("click", async () => {
         const entityId = button.getAttribute("data-refresh-entity");
         const key = button.getAttribute("data-action-key") || `refresh__${entityId}`;
-        if (!entityId) return;
+        if (!entityId || button.disabled) return;
         this._actions.set(key, { status: "busy" });
         this._render();
         try {
@@ -1776,6 +1817,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const applyLicense = this.shadowRoot.querySelector("[data-apply-license]");
     if (applyLicense) {
       applyLicense.addEventListener("click", async () => {
+        if (applyLicense.disabled) return;
         const code = String(this.shadowRoot.querySelector("#license-input")?.value || this._licenseDraft || "").trim();
         if (!code) {
           this._actions.set("license", { status: "error", message: "Introdu mai întâi codul de licență." });
