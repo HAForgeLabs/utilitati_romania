@@ -6,10 +6,13 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._panel = null;
     this._activeTab = "overview";
     this._expandedLocations = new Set();
+    this._expandedInvoices = new Set();
     this._readingCache = new Map();
     this._actions = new Map();
     this._readingDrafts = new Map();
     this._invoiceGrouping = this._loadInvoiceGroupingPreference() || "location";
+    this._invoiceFilter = this._loadInvoiceFilterPreference() || "all";
+    this._settingsDrafts = new Map();
     this._licenseDraft = "";
     this._interactiveUntil = 0;
   }
@@ -35,7 +38,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (Date.now() < this._interactiveUntil) return true;
     const active = this.shadowRoot.activeElement;
     if (!active) return false;
-    return !!active.closest?.("[data-invoice-grouping], .reading-input, #license-input");
+    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias]");
   }
 
   _holdRenderBriefly(ms = 3500) {
@@ -156,6 +159,87 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return parts.map((part) => String(part ?? "").trim()).join("__");
   }
 
+  _storageKey(name) {
+    return `utilitati_romania_panel__${name}`;
+  }
+
+  _loadJsonPreference(name, fallback) {
+    try {
+      const raw = window.localStorage?.getItem(this._storageKey(name));
+      if (!raw) return fallback;
+      return JSON.parse(raw);
+    } catch (_err) {
+      return fallback;
+    }
+  }
+
+  _saveJsonPreference(name, value) {
+    try { window.localStorage?.setItem(this._storageKey(name), JSON.stringify(value)); } catch (_err) {}
+  }
+
+  _dashboardPreferences() {
+    return {
+      defaultTab: "overview",
+      compactInvoicesMobile: true,
+      ...this._loadJsonPreference("dashboard_preferences", {}),
+    };
+  }
+
+  _notificationPreferences() {
+    return {
+      facturi_noi: true,
+      scadente: true,
+      indexuri: true,
+      praguri_scadenta: [5, 3, 1],
+      ...this._loadJsonPreference("notification_preferences", {}),
+    };
+  }
+
+  _locationAliases() {
+    return this._loadJsonPreference("location_aliases", {});
+  }
+
+  _locationKey(location) {
+    return String(location?.locatie_cheie || location?.eticheta_locatie || location?.nume || location?.id || "locatie").trim();
+  }
+
+  _rawLocationName(location) {
+    return location?.eticheta_locatie || location?.nume || location?.locatie_cheie || "Locație";
+  }
+
+  _displayLocationName(location) {
+    const key = this._locationKey(location);
+    const aliases = this._locationAliases();
+    return String(aliases[key] || this._rawLocationName(location) || "Locație").trim();
+  }
+
+  _mobileDeviceSelectEntity() {
+    const states = Object.values(this._hass?.states || {});
+    let best = null;
+    let bestScore = -1;
+    for (const stateObj of states) {
+      if (!stateObj?.entity_id?.startsWith("select.")) continue;
+      const text = this._entityFriendlyText(stateObj);
+      const entityId = String(stateObj.entity_id || "").toLowerCase();
+      let score = 0;
+      if (entityId.includes("utilitati_romania") || entityId.includes("administrare_integrare")) score += 40;
+      if (text.includes("dispozitiv mobil")) score += 80;
+      if (text.includes("deschidere furnizori")) score += 80;
+      if (Array.isArray(stateObj.attributes?.options) && stateObj.attributes.options.some((item) => String(item).startsWith("mobile_app_"))) score += 40;
+      if (score > bestScore) {
+        best = stateObj;
+        bestScore = score;
+      }
+    }
+    return bestScore >= 80 ? best : null;
+  }
+
+  _mobileDeviceLabel(option) {
+    const value = String(option || "");
+    if (!value || value === "none") return "Neselectat";
+    return value.replace(/^mobile_app_/, "").replace(/_/g, " ");
+  }
+
   _entityFriendlyText(stateObj) {
     const friendly = stateObj?.attributes?.friendly_name || "";
     return this._normalizeText(`${stateObj?.entity_id || ""} ${friendly}`);
@@ -223,7 +307,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <section class="hero">
         <div class="hero-content">
-          <span class="forge-lockup"><img class="forge-logo" src="/utilitati_romania/haforge-logo.png" alt="HAForge Labs"><span>HAForge Labs</span></span>
+          <a class="forge-lockup" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="Deschide site-ul HAForge Labs"><img class="forge-logo" src="/utilitati_romania/haforge-logo.png" alt="HAForge Labs"><span>HAForge Labs</span></a>
           <div class="brand-row">
             <img class="utility-logo" src="/utilitati_romania/logo.png" alt="Utilități România">
             <div class="brand-meta">
@@ -247,7 +331,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <section class="metrics">
         ${this._metric("Locații", locations.length, "mdi:map-marker-radius")}
-        ${this._metric("Furnizori", providersCount, "mdi:office-building")}
+        ${this._metric("Facturi", providersCount, "mdi:file-document-outline")}
         ${this._metric("Neplătite", unpaid, "mdi:alert-circle", this._num(unpaid) > 0 ? "warn" : "")}
         ${this._metric("Plătite", attrs.numar_platite ?? 0, "mdi:check-circle", "ok")}
       </section>
@@ -270,6 +354,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       ["invoices", "Facturi", "mdi:file-document-outline"],
       ["readings", "Indexuri", "mdi:gauge"],
       ["license", "Licență", "mdi:shield-check"],
+      ["contact", "Contact", "mdi:email-outline"],
+      ["settings", "Setări", "mdi:cog-outline"],
       ["diagnostics", "Diagnostic", "mdi:tools"],
     ];
     return `<nav class="tabs">${tabs.map(([id, label, icon]) => `
@@ -307,7 +393,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const dueText = days < 0 ? `întârziată cu ${Math.abs(days)} zile` : days === 0 ? "scadentă azi" : `${days} zile rămase`;
     return `
       <article class="due ${dueTone}">
-        <div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(location?.eticheta_locatie || location?.nume || "Locație")}</span></div>
+        <div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._displayLocationName(location))}</span></div>
         <div class="due-right"><b>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</b><small>${this._escape(dueText)}</small></div>
       </article>
     `;
@@ -319,7 +405,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <article class="location-compact">
         <div class="location-icon">${index + 1}</div>
-        <div><strong>${this._escape(location?.eticheta_locatie || location?.nume || "Locație")}</strong><span>${providers.length} furnizori · ${unpaid} neplătite</span></div>
+        <div><strong>${this._escape(this._displayLocationName(location))}</strong><span>${providers.length} furnizori · ${unpaid} neplătite</span></div>
         <b>${this._escape(location?.total_neplatit_formatat || this._money(location?.total_neplatit, "RON"))}</b>
       </article>
     `;
@@ -339,6 +425,52 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       { value: "provider", label: "Furnizor" },
       { value: "amount", label: "Valoare" },
     ];
+  }
+
+  _invoiceFilterStorageKey() {
+    return "utilitati_romania_panel_invoice_filter";
+  }
+
+  _invoiceFilterOptions() {
+    return [
+      { value: "all", label: "Toate" },
+      { value: "unpaid", label: "Neplătite" },
+      { value: "paid", label: "Plătite" },
+      { value: "due_5", label: "Scadente curând" },
+      { value: "unknown", label: "Necunoscute" },
+    ];
+  }
+
+  _loadInvoiceFilterPreference() {
+    try { return window.localStorage?.getItem(this._invoiceFilterStorageKey()) || ""; } catch (_err) { return ""; }
+  }
+
+  _saveInvoiceFilterPreference(value) {
+    try { window.localStorage?.setItem(this._invoiceFilterStorageKey(), value); } catch (_err) {}
+  }
+
+  _isValidInvoiceFilter(value) {
+    return this._invoiceFilterOptions().some((option) => option.value === value);
+  }
+
+  _setInvoiceFilter(value) {
+    this._invoiceFilter = this._isValidInvoiceFilter(value) ? value : "all";
+    this._saveInvoiceFilterPreference(this._invoiceFilter);
+  }
+
+  _filterInvoiceEntries(entries, filter) {
+    const activeFilter = this._isValidInvoiceFilter(filter) ? filter : "all";
+    if (activeFilter === "all") return entries || [];
+    return (entries || []).filter((entry) => {
+      if (activeFilter === "unpaid") return entry.status === "unpaid";
+      if (activeFilter === "paid") return entry.status === "paid";
+      if (activeFilter === "unknown") return entry.status === "unknown";
+      if (activeFilter === "due_5") {
+        const days = this._daysUntil(entry.dueDate);
+        return entry.status === "unpaid" && Number.isFinite(days) && days <= 5;
+      }
+      return true;
+    });
   }
 
   _loadInvoiceGroupingPreference() {
@@ -450,7 +582,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (grouping === "due_date") return this._invoiceDueDateGroup(entry);
     if (grouping === "urgency") return this._invoiceUrgencyGroup(entry);
     if (grouping === "amount") return this._invoiceAmountGroup(entry);
-    return { key: entry?.location?.locatie_cheie || entry?.location?.eticheta_locatie || "locatie", title: entry?.location?.eticheta_locatie || entry?.location?.locatie_cheie || "Locație", order: 0 };
+    return { key: entry?.location?.locatie_cheie || entry?.location?.eticheta_locatie || "locatie", title: this._displayLocationName(entry?.location), order: 0 };
   }
 
   _buildInvoiceGroups(entries, grouping) {
@@ -489,9 +621,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return parts.join(" · ") || `${entries.length} facturi`;
   }
 
-  _renderInvoiceToolbar(grouping, count) {
-    const options = this._invoiceGroupingOptions().map((option) => `<option value="${this._escape(option.value)}" ${option.value === grouping ? "selected" : ""}>${this._escape(option.label)}</option>`).join("");
-    return `<section class="invoice-toolbar panel-card compact"><label for="ur-panel-invoice-grouping">Afișare facturi</label><select id="ur-panel-invoice-grouping" data-invoice-grouping>${options}</select><span>${this._escape(count)} ${count === 1 ? "factură" : "facturi"}</span></section>`;
+  _renderInvoiceToolbar(grouping, count, totalCount, filter) {
+    const groupOptions = this._invoiceGroupingOptions().map((option) => `<option value="${this._escape(option.value)}" ${option.value === grouping ? "selected" : ""}>${this._escape(option.label)}</option>`).join("");
+    const filterOptions = this._invoiceFilterOptions().map((option) => `<option value="${this._escape(option.value)}" ${option.value === filter ? "selected" : ""}>${this._escape(option.label)}</option>`).join("");
+    const counter = filter && filter !== "all" ? `${count} din ${totalCount} facturi` : `${count} ${count === 1 ? "factură" : "facturi"}`;
+    return `<section class="invoice-toolbar panel-card compact"><label for="ur-panel-invoice-filter">Filtru</label><select id="ur-panel-invoice-filter" data-invoice-filter>${filterOptions}</select><label for="ur-panel-invoice-grouping">Grupare</label><select id="ur-panel-invoice-grouping" data-invoice-grouping>${groupOptions}</select><span>${this._escape(counter)}</span></section>`;
   }
 
   _findRefreshButton(provider) {
@@ -524,17 +658,46 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const key = `refresh__${entityId || this._providerKey(provider)}__${provider?.id_cont || ""}`;
     const action = this._actions.get(key);
     if (!entityId) return `<button class="row-action disabled" disabled title="Butonul de actualizare nu a fost găsit"><ha-icon icon="mdi:refresh-off"></ha-icon></button>`;
-    return `<button class="row-action ${action?.status === "busy" ? "busy" : ""}" data-refresh-entity="${this._escape(entityId)}" data-action-key="${this._escape(key)}" title="Actualizează acest furnizor"><ha-icon icon="mdi:refresh"></ha-icon></button>`;
+    const message = action?.status === "ok" ? `<small class="refresh-message ok">Actualizat</small>` : action?.status === "error" ? `<small class="refresh-message error">Eroare</small>` : "";
+    return `<div class="refresh-wrap"><button class="row-action ${action?.status === "busy" ? "busy" : ""}" data-refresh-entity="${this._escape(entityId)}" data-action-key="${this._escape(key)}" title="Actualizează acest furnizor"><ha-icon icon="mdi:refresh"></ha-icon></button>${message}</div>`;
+  }
+
+  _providerAppLabel(provider) {
+    const key = this._providerKey(provider);
+    const labels = {
+      digi: "App. Digi",
+      eon: "App. E.ON",
+      hidroelectrica: "App. Hidroelectrica",
+      myelectrica: "App. myElectrica",
+      nova: "App. Nova",
+      ebloc: "App. e-bloc",
+      orange: "App. Orange",
+    };
+    return labels[key] || "";
+  }
+
+  _renderOpenProviderButton(provider) {
+    const providerKey = this._providerKey(provider);
+    const label = this._providerAppLabel(provider);
+    if (!providerKey || !label) return "";
+    return `
+      <button class="provider-app-action" data-open-provider="${this._escape(providerKey)}" title="${this._escape(label)}" aria-label="${this._escape(label)}">
+        <ha-icon icon="mdi:open-in-app"></ha-icon>
+        <span>${this._escape(label)}</span>
+      </button>
+    `;
   }
 
   _renderInvoices(locations) {
     if (!locations.length) return `<section class="panel-card"><div class="empty">Nu există facturi în senzorul agregat.</div></section>`;
     const grouping = this._isValidInvoiceGrouping(this._invoiceGrouping) ? this._invoiceGrouping : "location";
-    const entries = this._collectInvoiceEntries(locations);
+    const filter = this._isValidInvoiceFilter(this._invoiceFilter) ? this._invoiceFilter : "all";
+    const allEntries = this._collectInvoiceEntries(locations);
+    const entries = this._filterInvoiceEntries(allEntries, filter);
     const groups = this._buildInvoiceGroups(entries, grouping);
     return `
-      ${this._renderInvoiceToolbar(grouping, entries.length)}
-      ${groups.map((group) => `
+      ${this._renderInvoiceToolbar(grouping, entries.length, allEntries.length, filter)}
+      ${entries.length ? groups.map((group) => `
         <section class="panel-card location-card">
           <div class="location-title static">
             <div><span class="eyebrow">${this._escape(grouping === "location" ? "loc de consum" : "grupare")}</span><h2>${this._escape(group.title)}</h2></div>
@@ -542,8 +705,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           </div>
           <div class="invoice-list">${group.entries.map((entry) => this._invoiceRow(entry.location, entry.provider)).join("")}</div>
         </section>
-      `).join("")}
+      `).join("") : `<section class="panel-card"><div class="empty">Nu există facturi pentru filtrul selectat.</div></section>`}
     `;
+  }
+
+  _invoiceKey(location, provider) {
+    return this._makeKey("invoice", location?.locatie_cheie || location?.eticheta_locatie || "locatie", this._providerName(provider), this._providerInvoice(provider), this._providerDue(provider), this._providerAmount(provider));
   }
 
   _invoiceRow(location, provider) {
@@ -551,14 +718,23 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const due = this._providerDue(provider);
     const days = this._daysUntil(due);
     const warning = status === "unpaid" && days !== null && days <= 5;
+    const key = this._invoiceKey(location, provider);
+    const expanded = this._expandedInvoices.has(key);
     return `
-      <article class="invoice-row ${status} ${warning ? "warning" : ""}">
+      <article class="invoice-row ${status} ${warning ? "warning" : ""} ${expanded ? "expanded" : ""}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
         <div class="invoice-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._providerInvoice(provider))}</span></div>
-        <div class="invoice-meta"><span>Scadență</span><strong>${this._escape(this._date(due))}</strong></div>
-        <div class="invoice-meta amount"><span>Valoare</span><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong></div>
-        <span class="pill ${status}">${this._escape(this._statusLabel(status))}</span>
-        ${this._renderRefreshButton(provider)}
+        <div class="invoice-quick"><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span></div>
+        <button class="invoice-toggle" data-toggle-invoice="${this._escape(key)}" title="Detalii factură" aria-label="Detalii factură"><ha-icon icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
+        <div class="invoice-details">
+          <div class="invoice-meta"><span>Scadență</span><strong>${this._escape(this._date(due))}</strong></div>
+          <div class="invoice-meta amount"><span>Valoare</span><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong></div>
+          <span class="pill ${status}">${this._escape(this._statusLabel(status))}</span>
+          <div class="invoice-actions">
+            ${this._renderOpenProviderButton(provider)}
+            ${this._renderRefreshButton(provider)}
+          </div>
+        </div>
       </article>
     `;
   }
@@ -815,7 +991,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     else if (Number.isFinite(days) && days >= 0) group = 1;
     else if (start) group = 1;
     else if (data.available) group = 2;
-    return { group, time: start ? start.getTime() : Number.POSITIVE_INFINITY, name: `${this._providerName(item.provider)} ${item.location?.eticheta_locatie || ""}` };
+    return { group, time: start ? start.getTime() : Number.POSITIVE_INFINITY, name: `${this._providerName(item.provider)} ${this._displayLocationName(item.location) || ""}` };
   }
 
   _renderReadings(locations) {
@@ -829,10 +1005,6 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <section class="panel-card">
         <div class="card-head"><div><span class="eyebrow">indexuri</span><h2>Perioade de transmitere</h2></div></div>
-        <div class="feature-note">
-          <ha-icon icon="mdi:gauge"></ha-icon>
-          <div><strong>Detectare din entitățile reale ale furnizorilor</strong><p>Panoul folosește aceeași logică de identificare ca în card pentru perioada de citire și entitățile de index. Acolo unde perioada de transmitere este deschisă și integrarea expune entitățile necesare, poți introduce indexul nou și îl poți transmite direct din acest panou.</p></div>
-        </div>
         <div class="reading-list">
           ${providers.length ? providers.map(({ location, provider }) => this._readingRow(location, provider)).join("") : `<div class="empty">Nu există furnizori disponibili pentru indexuri.</div>`}
         </div>
@@ -849,7 +1021,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <article class="reading-row ${tone}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
-        <div class="reading-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(location?.eticheta_locatie || "Locație")}</span></div>
+        <div class="reading-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._displayLocationName(location))}</span></div>
         <div class="reading-period"><span>Perioadă</span><strong>${this._escape(this._readingPeriodLabel(data))}</strong></div>
         <div class="reading-current"><span>Index curent</span><strong>${this._escape(current)}</strong></div>
         <span class="pill ${tone}">${this._escape(data.badge || (data.available ? "Închisă" : "Nedetectat"))}</span>
@@ -952,21 +1124,138 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           <input id="license-input" type="text" autocomplete="off" placeholder="Cod licență" value="${this._escape(licenseValue)}">
           <button class="primary dark" data-apply-license ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se verifică..." : "Aplică licența"}</button>
         </div>
+        <div class="license-links">
+          <a class="bmc-button" href="https://www.buymeacoffee.com/haforgelabs" target="_blank" rel="noopener noreferrer"><ha-icon icon="mdi:coffee"></ha-icon><span>Buy Me a Coffee</span></a>
+        </div>
         ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
+      </section>
+    `;
+  }
+
+  _renderContact() {
+    return `
+      <section class="panel-card contact-card">
+        <div class="card-head"><div><span class="eyebrow">contact</span><h2>HAForge Labs</h2></div></div>
+        <p>Pentru suport, sugestii sau raportarea unei probleme legate de integrare, folosește canalele de mai jos.</p>
+        <div class="contact-actions">
+          <a class="contact-action" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer"><ha-icon icon="mdi:web"></ha-icon><span>Site HAForge Labs</span></a>
+          <a class="contact-action" href="mailto:contact@haforgelabs.ro"><ha-icon icon="mdi:email-outline"></ha-icon><span>contact@haforgelabs.ro</span></a>
+          <a class="contact-action" href="https://github.com/HAForgeLabs/utilitati_romania/issues" target="_blank" rel="noopener noreferrer"><ha-icon icon="mdi:github"></ha-icon><span>Raportează pe GitHub</span></a>
+        </div>
+      </section>
+    `;
+  }
+
+  _diagnosticPayload(summary) {
+    const lic = this._licenseStates();
+    const providers = this._allProviders(summary.locations || []).map(({ location, provider }) => {
+      const reading = this._getReadingData(location, provider);
+      return {
+        locatie: this._displayLocationName(location),
+        furnizor: this._providerName(provider),
+        status_factura: this._statusLabel(this._status(provider)),
+        scadenta: this._date(this._providerDue(provider)),
+        valoare: this._money(this._providerAmount(provider), provider?.currency || "RON"),
+        citire: reading.isOpen ? "deschisă" : reading.available ? "închisă" : "nedetectată",
+      };
+    });
+    return {
+      integrare: "Utilități România",
+      senzor_agregat: summary.entityId || "nedetectat",
+      stare_senzor: summary.state?.state || "indisponibil",
+      ultima_eroare: summary.attrs.ultima_eroare || "fără erori",
+      locatii: summary.locations?.length || 0,
+      facturi: summary.attrs.numar_facturi ?? providers.length,
+      licenta: lic,
+      furnizori: providers,
+    };
+  }
+
+
+  _renderSettings(summary) {
+    const mobileSelect = this._mobileDeviceSelectEntity();
+    const mobileOptions = Array.isArray(mobileSelect?.attributes?.options) ? mobileSelect.attributes.options : [];
+    const selectedMobile = mobileSelect?.state || "none";
+    const prefs = this._notificationPreferences();
+    const dashboardPrefs = this._dashboardPreferences();
+    const aliases = this._locationAliases();
+    const action = this._actions.get("settings");
+    const locations = summary.locations || [];
+    const toggle = (key, label, description) => `
+      <label class="setting-toggle">
+        <input type="checkbox" data-setting-toggle="${this._escape(key)}" ${prefs[key] ? "checked" : ""}>
+        <span><strong>${this._escape(label)}</strong><small>${this._escape(description)}</small></span>
+      </label>
+    `;
+    return `
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">administrare</span><h2>Setări rapide</h2></div></div>
+        <div class="settings-grid">
+          <div class="setting-block">
+            <div><span class="eyebrow">aplicații furnizori</span><h3>Dispozitiv mobil</h3><p>Alege telefonul pe care se deschid aplicațiile furnizorilor din butoanele aflate în facturi.</p></div>
+            ${mobileSelect ? `
+              <select data-mobile-device-select data-entity-id="${this._escape(mobileSelect.entity_id)}">
+                ${mobileOptions.map((option) => `<option value="${this._escape(option)}" ${option === selectedMobile ? "selected" : ""}>${this._escape(this._mobileDeviceLabel(option))}</option>`).join("")}
+              </select>
+              <small class="setting-hint">Entitate: ${this._escape(mobileSelect.entity_id)}</small>
+            ` : `<div class="empty">Nu am găsit entitatea de selectare a dispozitivului mobil. Verifică intrarea „Administrare integrare”.</div>`}
+          </div>
+          <div class="setting-block">
+            <div><span class="eyebrow">afișare</span><h3>Preferințe dashboard</h3><p>Setări locale pentru acest panou. Nu modifică dashboard-urile Lovelace ale utilizatorului.</p></div>
+            <label class="setting-toggle">
+              <input type="checkbox" data-dashboard-pref="compactInvoicesMobile" ${dashboardPrefs.compactInvoicesMobile ? "checked" : ""}>
+              <span><strong>Facturi compacte pe mobil</strong><small>Păstrează lista scurtă și afișează detaliile la apăsarea săgeții.</small></span>
+            </label>
+          </div>
+        </div>
+        ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
+      </section>
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">notificări</span><h2>Ce notificări primești</h2></div><button class="primary dark small" data-save-notification-settings>Salvează notificările</button></div>
+        <div class="settings-list">
+          ${toggle("facturi_noi", "Facturi noi", "Primești notificare când integrarea detectează o factură nouă neplătită.")}
+          ${toggle("scadente", "Scadențe apropiate", "Primești notificări înainte de scadență, după pragurile configurate în integrare.")}
+          ${toggle("indexuri", "Perioade de transmitere index", "Primești notificare când începe perioada de transmitere index pentru furnizorii suportați.")}
+        </div>
+      </section>
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">locații</span><h2>Denumiri afișate</h2></div><button class="primary dark small" data-save-location-aliases>Salvează denumirile</button></div>
+        <div class="location-alias-list">
+          ${locations.length ? locations.map((location) => {
+            const key = this._locationKey(location);
+            const raw = this._rawLocationName(location);
+            const value = this._settingsDrafts.has(`alias__${key}`) ? this._settingsDrafts.get(`alias__${key}`) : (aliases[key] || "");
+            return `<label class="location-alias-row"><span><strong>${this._escape(raw)}</strong><small>Cheie: ${this._escape(key)}</small></span><input type="text" data-location-alias="${this._escape(key)}" placeholder="Nume afișat" value="${this._escape(value)}"></label>`;
+          }).join("") : `<div class="empty">Nu există locații în senzorul agregat.</div>`}
+        </div>
       </section>
     `;
   }
 
   _renderDiagnostics(summary) {
     const entities = Object.keys(this._hass?.states || {}).filter((id) => id.includes("utilitati") || id.includes("licenta")).length;
+    const action = this._actions.get("copy_diagnostics");
+    const providers = this._allProviders(summary.locations || []);
     return `
       <section class="panel-card">
-        <div class="card-head"><div><span class="eyebrow">diagnostic</span><h2>Stare integrare</h2></div></div>
+        <div class="card-head"><div><span class="eyebrow">diagnostic</span><h2>Stare integrare</h2></div><button class="primary dark small" data-copy-diagnostics>${action?.status === "busy" ? "Se copiază..." : "Copiază diagnostic"}</button></div>
         <div class="details-grid">
           <div><span>Senzor agregat</span><strong>${this._escape(summary.entityId || "nedetectat")}</strong></div>
           <div><span>Disponibilitate</span><strong>${summary.state ? this._escape(summary.state.state) : "indisponibil"}</strong></div>
           <div><span>Entități relevante</span><strong>${entities}</strong></div>
           <div><span>Ultima eroare</span><strong>${this._escape(summary.attrs.ultima_eroare || "fără erori")}</strong></div>
+        </div>
+        ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
+      </section>
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">furnizori</span><h2>Status rapid</h2></div></div>
+        <div class="provider-status-list">
+          ${providers.length ? providers.map(({ location, provider }) => {
+            const reading = this._getReadingData(location, provider);
+            const status = this._status(provider);
+            const readingTone = reading.isOpen ? "open" : reading.available ? "closed" : "missing";
+            return `<article class="provider-status-row"><div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._displayLocationName(location))}</span></div><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span><span class="pill ${readingTone}">${this._escape(reading.isOpen ? "Citire deschisă" : reading.available ? "Citire închisă" : "Citire nedetectată")}</span></article>`;
+          }).join("") : `<div class="empty">Nu există furnizori în senzorul agregat.</div>`}
         </div>
       </section>
       <section class="panel-card"><div class="feature-note subtle"><ha-icon icon="mdi:information-outline"></ha-icon><div><strong>Panoul nu modifică dashboard-urile utilizatorului</strong><p>Este încărcat ca pagină separată în sidebar și citește datele deja publicate de integrare.</p></div></div></section>
@@ -979,6 +1268,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (this._activeTab === "invoices") return this._renderInvoices(locations);
     if (this._activeTab === "readings") return this._renderReadings(locations);
     if (this._activeTab === "license") return this._renderLicense();
+    if (this._activeTab === "contact") return this._renderContact();
+    if (this._activeTab === "settings") return this._renderSettings(summary);
     if (this._activeTab === "diagnostics") return this._renderDiagnostics(summary);
     return this._renderOverview(attrs, locations);
   }
@@ -994,7 +1285,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .brand-row { position:relative; z-index:1; display:flex; align-items:center; gap:18px; padding-right:190px; min-height:96px; }
       .utility-logo { width:86px; height:86px; object-fit:contain; border-radius:24px; background:rgba(255,255,255,.12); padding:10px; border:1px solid rgba(255,255,255,.16); flex:0 0 auto; }
       .brand-meta { display:flex; align-items:center; min-width:0; }
-      .forge-lockup { position:absolute; top:30px; right:34px; z-index:2; display:inline-flex; align-items:center; gap:8px; color:#8cc4ff; font-size:11px; text-transform:uppercase; letter-spacing:.13em; font-weight:900; white-space:nowrap; }
+      .forge-lockup { position:absolute; top:30px; right:34px; z-index:2; display:inline-flex; align-items:center; gap:8px; color:#8cc4ff; font-size:11px; text-transform:uppercase; letter-spacing:.13em; font-weight:900; white-space:nowrap; text-decoration:none; }
       .forge-logo { width:34px; height:34px; border-radius:11px; object-fit:cover; box-shadow:0 0 24px rgba(0,210,255,.4); }
       .eyebrow { display:block; text-transform:uppercase; letter-spacing:.13em; font-size:11px; font-weight:800; color:#5fa8ff; margin-bottom:6px; }
       .hero-content .eyebrow { color:#8cc4ff; }
@@ -1006,6 +1297,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .primary { border:0; border-radius:999px; padding:12px 18px; font-weight:800; background:#4ea1ff; color:#fff; box-shadow:0 12px 30px rgba(78,161,255,.35); }
       .primary.dark { background:#112033; box-shadow:0 12px 30px rgba(17,32,51,.2); }
       .primary:disabled { opacity:.62; cursor:default; }
+      .primary.small { padding:9px 13px; font-size:13px; }
       .hero-card { padding:28px; border-radius:32px; background:#fff; color:#142033; display:flex; flex-direction:column; justify-content:center; box-shadow:0 24px 70px rgba(0,0,0,.14); position:relative; overflow:hidden; }
       .hero-card::before { content:""; position:absolute; inset:auto -60px -60px auto; width:180px; height:180px; border-radius:50%; background:rgba(78,161,255,.14); }
       .hero-card.attention::before { background:rgba(255,146,69,.18); }
@@ -1047,8 +1339,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .invoice-toolbar label { color:#6b7b90; font-size:12px; text-transform:uppercase; letter-spacing:.08em; font-weight:900; }
       .invoice-toolbar select { border:1px solid rgba(17,32,51,.10); border-radius:14px; padding:10px 36px 10px 12px; background:#f7f9fc; color:#142033; font-weight:800; }
       .invoice-toolbar span { margin-left:auto; color:#6b7b90; font-weight:800; }
-      .invoice-row { display:grid; grid-template-columns:42px minmax(160px,1fr) 130px 130px auto 42px; }
+      .invoice-row { display:grid; grid-template-columns:42px minmax(160px,1fr) 130px 130px auto 42px; align-items:center; }
       .invoice-row.warning { background:#fff5ec; }
+      .invoice-details { display:contents; }
+      .invoice-quick { display:none; }
+      .invoice-toggle { display:none; width:42px; height:42px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#fff; color:#112033; place-items:center; }
       .reading-row { display:grid; grid-template-columns:42px minmax(150px,1fr) minmax(210px,1.1fr) 110px auto; }
       .reading-controls { grid-column:2 / -1; display:grid; gap:10px; margin-top:2px; }
       .reading-control { display:grid; grid-template-columns:minmax(120px,1fr) minmax(120px,180px) auto; gap:10px; align-items:center; padding:12px; border-radius:16px; background:rgba(255,255,255,.72); border:1px solid rgba(17,32,51,.06); }
@@ -1060,9 +1355,17 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .pill.paid,.pill.credit,.pill.open { background:#e9f8ee; color:#14783c; }
       .pill.unpaid,.pill.closed { background:#fff0e6; color:#b55415; }
       .pill.unknown,.pill.missing { background:#edf1f7; color:#526276; }
+      .refresh-wrap { display:flex; align-items:center; gap:8px; }
+      .refresh-message { font-size:11px; font-weight:900; }
+      .refresh-message.ok { color:#14783c; }
+      .refresh-message.error { color:#b55415; }
       .row-action { width:38px; height:38px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#fff; display:grid; place-items:center; color:#112033; }
       .row-action.busy ha-icon { animation:spin 1s linear infinite; }
       .row-action.disabled { color:#9aa7b7; background:#edf1f7; cursor:default; }
+      .invoice-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .provider-app-action { width:38px; height:38px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#fff; color:#112033; display:grid; place-items:center; box-shadow:none; }
+      .provider-app-action ha-icon { width:20px; height:20px; }
+      .provider-app-action span { display:none; }
       @keyframes spin { to { transform:rotate(360deg); } }
       .feature-note { display:flex; gap:16px; align-items:flex-start; padding:18px; border-radius:20px; background:#eef6ff; color:#23415f; }
       .feature-note ha-icon { color:#4ea1ff; flex:0 0 auto; }
@@ -1074,12 +1377,145 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .license-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; }
       .license-form input { width:100%; border:1px solid rgba(17,32,51,.12); border-radius:18px; padding:14px 16px; font:inherit; background:#f7f9fc; color:#142033; outline:none; }
       .license-form input:focus { border-color:#4ea1ff; box-shadow:0 0 0 3px rgba(78,161,255,.16); }
+      .license-links { margin-top:14px; display:flex; justify-content:flex-end; }
+      .bmc-button { display:inline-flex; align-items:center; gap:8px; padding:12px 16px; border-radius:999px; background:#ffdd00; color:#112033; text-decoration:none; font-weight:900; box-shadow:0 12px 28px rgba(17,32,51,.12); }
+      .contact-card p { color:#526276; margin-bottom:18px; }
+      .contact-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+      .contact-action { display:flex; align-items:center; gap:10px; padding:16px; border-radius:18px; background:#f7f9fc; color:#142033; text-decoration:none; font-weight:900; border:1px solid rgba(17,32,51,.06); }
+      .contact-action ha-icon { color:#4ea1ff; }
+
+      .settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+      .setting-block { display:grid; gap:14px; padding:18px; border-radius:20px; background:#f7f9fc; border:1px solid rgba(17,32,51,.06); }
+      .setting-block h3 { margin:0 0 6px; font-size:18px; }
+      .setting-block p,.setting-hint { color:#6b7b90; margin:0; line-height:1.45; }
+      .setting-block select,.location-alias-row input { width:100%; border:1px solid rgba(17,32,51,.12); border-radius:16px; padding:13px 14px; font:inherit; background:#fff; color:#142033; outline:none; }
+      .settings-list,.location-alias-list { display:grid; gap:12px; }
+      .setting-toggle { display:flex; gap:12px; align-items:flex-start; padding:16px; border-radius:18px; background:#f7f9fc; border:1px solid rgba(17,32,51,.06); cursor:pointer; }
+      .setting-toggle input { width:22px; height:22px; accent-color:#4ea1ff; margin-top:1px; flex:0 0 auto; }
+      .setting-toggle span { display:grid; gap:3px; }
+      .setting-toggle small,.location-alias-row small { color:#6b7b90; line-height:1.35; }
+      .location-alias-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(220px,.7fr); gap:14px; align-items:center; padding:16px; border-radius:18px; background:#f7f9fc; border:1px solid rgba(17,32,51,.06); }
+      .location-alias-row span { display:grid; gap:4px; }
+      .provider-status-list { display:grid; gap:10px; }
+      .provider-status-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:10px; align-items:center; padding:14px; border-radius:16px; background:#f7f9fc; }
+      .provider-status-row div { display:grid; gap:2px; }
+      .provider-status-row span:not(.pill) { color:#6b7b90; font-size:13px; }
       .action-message { margin-top:14px; border-radius:16px; padding:12px 14px; font-weight:700; }
       .action-message.ok { background:#e9f8ee; color:#14783c; }
       .action-message.error { background:#fff0e6; color:#b55415; }
       .empty { color:#6b7b90; background:#f7f9fc; border-radius:18px; padding:18px; }
-      @media (max-width: 900px) { .hero,.grid.two { grid-template-columns:1fr; } .invoice-row { grid-template-columns:42px 1fr 42px; } .invoice-meta,.pill { grid-column:2; justify-self:start; } .row-action { grid-column:3; grid-row:1; } .reading-row { grid-template-columns:42px 1fr; } .reading-period,.reading-current,.reading-row .pill,.reading-controls { grid-column:2; justify-self:stretch; } .reading-control { grid-template-columns:1fr; } .summary-strip,.details-grid { grid-template-columns:1fr; } }
-      @media (max-width: 560px) { :host { background:radial-gradient(circle at -80px -120px,#07111f 0,#10223d 210px,transparent 212px),linear-gradient(180deg,#eef4fb 0%,#f7f9fc 100%); } .wrap { padding:12px 10px 28px; } .hero-content,.hero-card,.panel-card { border-radius:22px; padding:18px; } .hero { gap:12px; } .brand-row { align-items:center; gap:10px; padding-right:0; min-height:70px; } .forge-lockup { top:14px; right:16px; } .forge-lockup span { display:none; } .utility-logo { width:58px; height:58px; border-radius:18px; } .forge-logo { width:32px; height:32px; border-radius:10px; } h1 { font-size:34px; padding-right:42px; } .tabs { margin-top:4px; } .tab { padding:10px 12px; } .tab span { display:none; } .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; } .metric { padding:10px 8px; border-radius:16px; min-height:82px; } .metric ha-icon { width:20px; height:20px; } .metric span { font-size:10px; } .metric strong { font-size:20px; } .license-form { grid-template-columns:1fr; } }
+      @media (prefers-color-scheme: dark) {
+        :host {
+          background:
+            radial-gradient(circle at -80px -120px, rgba(78,161,255,.16) 0, rgba(78,161,255,.08) 210px, transparent 212px),
+            linear-gradient(180deg, #0b1220 0%, #0f172a 100%);
+          color:#edf3fb;
+        }
+        .hero-content { box-shadow:0 24px 70px rgba(0,0,0,.34); border-color:rgba(255,255,255,.10); }
+        .hero-card,.panel-card,.metric,.tabs {
+          background:#172033;
+          color:#edf3fb;
+          border-color:rgba(255,255,255,.08);
+          box-shadow:0 18px 48px rgba(0,0,0,.26);
+        }
+        .hero-card::before { background:rgba(78,161,255,.16); }
+        .tab { color:#a8b3c4; }
+        .tab.active { background:#4ea1ff; color:#ffffff; box-shadow:0 12px 28px rgba(78,161,255,.26); }
+        .hero-card-label,.hero-card small,.metric span,.due span,.location-compact span,.invoice-main span,.invoice-meta span,.reading-main span,.reading-period span,.reading-current span,.details-grid span,.summary-strip span,.empty,.contact-card p,.feature-note p,.provider-status-row span:not(.pill),.invoice-toolbar label,.invoice-toolbar span,.setting-block p,.setting-hint,.setting-toggle small,.location-alias-row small {
+          color:#a8b3c4;
+        }
+        .invoice-row,.reading-row,.due,.location-compact,.details-grid div,.summary-strip div,.contact-action,.provider-status-row,.empty,.setting-block,.setting-toggle,.location-alias-row {
+          background:#111a2b;
+          color:#edf3fb;
+          border-color:rgba(255,255,255,.08);
+        }
+        .invoice-row.warning { background:#251b12; }
+        .invoice-toolbar select,.license-form input,.reading-input,.setting-block select,.location-alias-row input {
+          background:#0f172a;
+          color:#edf3fb;
+          border-color:rgba(255,255,255,.14);
+        }
+        .invoice-toolbar select:focus,.license-form input:focus,.reading-input:focus,.setting-block select:focus,.location-alias-row input:focus {
+          border-color:#4ea1ff;
+          box-shadow:0 0 0 3px rgba(78,161,255,.18);
+        }
+        .reading-control {
+          background:#172033;
+          color:#edf3fb;
+          border-color:rgba(255,255,255,.10);
+        }
+        .row-action,.invoice-toggle {
+          background:#ffffff;
+          color:#112033;
+          border-color:rgba(255,255,255,.16);
+        }
+        .row-action.disabled { background:#202b3f; color:#7f8da0; }
+        .provider-app-action { background:#f7f9fc; color:#112033; border-color:rgba(210,219,232,.22); box-shadow:none; }
+        .feature-note { background:rgba(78,161,255,.12); color:#dcecff; }
+        .feature-note.subtle { background:#111a2b; }
+        .license-card { background:linear-gradient(135deg,#172033,#111a2b); }
+        .license-shield { background:#4ea1ff; }
+        .contact-action { color:#edf3fb; }
+        .pill.paid,.pill.credit,.pill.open { background:#dbf7e6; color:#14783c; }
+        .pill.unpaid,.pill.closed { background:#ffe6d4; color:#a0440f; }
+        .pill.unknown,.pill.missing { background:#263449; color:#d2dbe8; }
+      }
+      @media (max-width: 900px) {
+        .hero,.grid.two { grid-template-columns:1fr; }
+        .invoice-toolbar.compact { display:grid; grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr) auto; gap:10px; align-items:center; }
+        .invoice-toolbar select { width:100%; min-width:0; }
+        .invoice-row { grid-template-columns:42px minmax(0,1fr) 44px; align-items:start; }
+        .invoice-main { grid-column:2; }
+        .invoice-quick { display:flex; align-items:center; gap:10px; flex-wrap:wrap; grid-column:2; margin-top:10px; }
+        .invoice-quick strong { font-size:16px; }
+        .invoice-details { display:none; grid-column:2 / 4; grid-template-columns:1fr; gap:10px; margin-top:12px; padding-top:12px; border-top:1px solid rgba(17,32,51,.07); }
+        .invoice-row.expanded .invoice-details { display:grid; }
+        .invoice-details .invoice-meta,.invoice-details .pill,.invoice-details .row-action,.invoice-details .invoice-actions { justify-self:start; }
+        .invoice-actions { align-items:flex-start; }
+        .invoice-toggle { display:grid; grid-column:3; grid-row:1; }
+        .reading-row { grid-template-columns:42px 1fr; }
+        .reading-period,.reading-current,.reading-row .pill,.reading-controls { grid-column:2; justify-self:stretch; }
+        .reading-control { grid-template-columns:1fr; }
+        .summary-strip,.details-grid { grid-template-columns:1fr; }
+        .contact-actions { grid-template-columns:1fr; }
+        .provider-status-row { grid-template-columns:1fr; align-items:start; }
+        .settings-grid,.location-alias-row { grid-template-columns:1fr; }
+      }
+      @media (max-width: 560px) {
+        :host { background:radial-gradient(circle at -80px -120px,#07111f 0,#10223d 210px,transparent 212px),linear-gradient(180deg,#eef4fb 0%,#f7f9fc 100%); }
+        .wrap { padding:12px 10px 28px; overflow-x:hidden; }
+        .hero-content,.hero-card,.panel-card { border-radius:22px; padding:18px; }
+        .hero-content { padding-bottom:70px; }
+        .hero { gap:12px; }
+        .brand-row { align-items:center; gap:12px; padding-right:0; min-height:70px; }
+        .forge-lockup { top:auto; right:18px; bottom:18px; font-size:10px; }
+        .forge-lockup span { display:inline; }
+        .utility-logo { width:58px; height:58px; border-radius:18px; }
+        .forge-logo { width:30px; height:30px; border-radius:10px; }
+        h1 { font-size:32px; padding-right:0; }
+        .tabs { margin-top:4px; justify-content:space-between; overflow-x:auto; }
+        .tab { padding:10px 12px; }
+        .tab span { display:none; }
+        .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+        .metric { padding:10px 8px; border-radius:16px; min-height:82px; }
+        .metric ha-icon { width:20px; height:20px; }
+        .metric span { font-size:10px; }
+        .metric strong { font-size:20px; }
+        .invoice-toolbar.compact { grid-template-columns:minmax(0,.72fr) minmax(0,1.28fr); gap:8px 10px; padding:16px; overflow:hidden; }
+        .invoice-toolbar label { font-size:10px; align-self:center; }
+        .invoice-toolbar select { width:100%; max-width:100%; min-width:0; padding:10px 30px 10px 12px; font-size:14px; }
+        .invoice-toolbar span { grid-column:1 / -1; margin-left:0; text-align:right; }
+        .license-form { grid-template-columns:1fr; }
+        .license-links { justify-content:stretch; }
+        .bmc-button { width:100%; justify-content:center; }
+      }
+      @media (prefers-color-scheme: dark) and (max-width: 560px) {
+        :host {
+          background:
+            radial-gradient(circle at -80px -120px, rgba(78,161,255,.16) 0, rgba(78,161,255,.08) 210px, transparent 212px),
+            linear-gradient(180deg, #0b1220 0%, #0f172a 100%);
+        }
+      }
     `;
   }
 
@@ -1172,6 +1608,15 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         this._render();
       });
     });
+    this.shadowRoot.querySelectorAll("[data-toggle-invoice]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const key = button.getAttribute("data-toggle-invoice");
+        if (this._expandedInvoices.has(key)) this._expandedInvoices.delete(key);
+        else this._expandedInvoices.add(key);
+        this._render();
+      });
+    });
     const invoiceGrouping = this.shadowRoot.querySelector("[data-invoice-grouping]");
     if (invoiceGrouping) {
       ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => {
@@ -1180,6 +1625,86 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       invoiceGrouping.addEventListener("change", (event) => {
         this._setInvoiceGrouping(event.target.value);
         this._interactiveUntil = 0;
+        this._render();
+      });
+    }
+    const invoiceFilter = this.shadowRoot.querySelector("[data-invoice-filter]");
+    if (invoiceFilter) {
+      ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => {
+        invoiceFilter.addEventListener(eventName, () => this._holdRenderBriefly(4500));
+      });
+      invoiceFilter.addEventListener("change", (event) => {
+        this._setInvoiceFilter(event.target.value);
+        this._interactiveUntil = 0;
+        this._render();
+      });
+    }
+
+    const mobileDeviceSelect = this.shadowRoot.querySelector("[data-mobile-device-select]");
+    if (mobileDeviceSelect) {
+      ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => mobileDeviceSelect.addEventListener(eventName, () => this._holdRenderBriefly(4500)));
+      mobileDeviceSelect.addEventListener("change", async (event) => {
+        const entityId = mobileDeviceSelect.getAttribute("data-entity-id");
+        const option = event.target.value;
+        this._actions.set("settings", { status: "busy", message: "Se salvează dispozitivul mobil..." });
+        this._holdRenderBriefly(1200);
+        this._render();
+        try {
+          await this._hass.callService("select", "select_option", { entity_id: entityId, option });
+          this._actions.set("settings", { status: "ok", message: "Dispozitivul mobil a fost salvat." });
+        } catch (err) {
+          this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva dispozitivul mobil." });
+        }
+        this._interactiveUntil = 0;
+        this._render();
+      });
+    }
+    this.shadowRoot.querySelectorAll("[data-setting-toggle]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const prefs = this._notificationPreferences();
+        prefs[input.getAttribute("data-setting-toggle")] = input.checked;
+        this._saveJsonPreference("notification_preferences", prefs);
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-dashboard-pref]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const prefs = this._dashboardPreferences();
+        prefs[input.getAttribute("data-dashboard-pref")] = input.checked;
+        this._saveJsonPreference("dashboard_preferences", prefs);
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-location-alias]").forEach((input) => {
+      input.addEventListener("focus", () => this._holdRenderBriefly(4500));
+      input.addEventListener("input", (event) => { this._holdRenderBriefly(4500); this._settingsDrafts.set(`alias__${input.getAttribute("data-location-alias")}`, event.target.value || ""); });
+    });
+    const saveLocationAliases = this.shadowRoot.querySelector("[data-save-location-aliases]");
+    if (saveLocationAliases) {
+      saveLocationAliases.addEventListener("click", () => {
+        const aliases = this._locationAliases();
+        this.shadowRoot.querySelectorAll("[data-location-alias]").forEach((input) => {
+          const key = input.getAttribute("data-location-alias");
+          const value = String(input.value || "").trim();
+          if (value) aliases[key] = value;
+          else delete aliases[key];
+        });
+        this._saveJsonPreference("location_aliases", aliases);
+        this._settingsDrafts.clear();
+        this._actions.set("settings", { status: "ok", message: "Denumirile afișate au fost salvate pentru acest dashboard." });
+        this._render();
+      });
+    }
+    const saveNotificationSettings = this.shadowRoot.querySelector("[data-save-notification-settings]");
+    if (saveNotificationSettings) {
+      saveNotificationSettings.addEventListener("click", async () => {
+        const prefs = this._notificationPreferences();
+        this._actions.set("settings", { status: "busy", message: "Se salvează notificările..." });
+        this._render();
+        try {
+          await this._hass.callService("utilitati_romania", "set_notification_preferences", prefs);
+          this._actions.set("settings", { status: "ok", message: "Preferințele de notificare au fost salvate." });
+        } catch (err) {
+          this._actions.set("settings", { status: "error", message: err?.message || "Preferințele au fost salvate local, dar nu au putut fi trimise către backend." });
+        }
         this._render();
       });
     }
@@ -1193,6 +1718,23 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       }
       const submit = wrapper.querySelector("[data-reading-submit]");
       if (submit) submit.addEventListener("click", (event) => { event.stopPropagation(); this._submitReading(wrapper); });
+    });
+    this.shadowRoot.querySelectorAll("[data-open-provider]").forEach((button) => {
+      button.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const provider = button.getAttribute("data-open-provider");
+        if (!provider) return;
+        const key = `open_provider__${provider}`;
+        this._actions.set(key, { status: "busy" });
+        this._render();
+        try {
+          await this._hass.callService("utilitati_romania", "open_provider", { provider });
+          this._actions.set(key, { status: "ok" });
+        } catch (err) {
+          this._actions.set(key, { status: "error", message: err?.message || "Nu am putut deschide aplicația furnizorului." });
+        }
+        this._render();
+      });
     });
     this.shadowRoot.querySelectorAll("[data-refresh-entity]").forEach((button) => {
       button.addEventListener("click", async () => {
@@ -1210,6 +1752,22 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         this._render();
       });
     });
+    const copyDiagnostics = this.shadowRoot.querySelector("[data-copy-diagnostics]");
+    if (copyDiagnostics) {
+      copyDiagnostics.addEventListener("click", async () => {
+        const payload = JSON.stringify(this._diagnosticPayload(this._summary()), null, 2);
+        this._actions.set("copy_diagnostics", { status: "busy", message: "" });
+        this._render();
+        try {
+          await navigator.clipboard.writeText(payload);
+          this._actions.set("copy_diagnostics", { status: "ok", message: "Diagnosticul a fost copiat în clipboard." });
+        } catch (_err) {
+          this._actions.set("copy_diagnostics", { status: "error", message: "Nu am putut copia automat. Selectează și copiază manual din consola browserului." });
+          console.info("Utilități România diagnostic", payload);
+        }
+        this._render();
+      });
+    }
     const licenseInput = this.shadowRoot.querySelector("#license-input");
     if (licenseInput) {
       licenseInput.addEventListener("focus", () => this._holdRenderBriefly(4500));

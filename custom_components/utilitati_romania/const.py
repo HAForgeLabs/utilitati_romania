@@ -88,5 +88,6 @@ SERVICIU_RELOAD_ALL = "reload_all"
 SERVICIU_OPEN_PROVIDER = "open_provider"
 SERVICIU_SET_INVOICE_STATUS = "set_invoice_status"
 SERVICIU_SUBMIT_READING = "submit_reading"
+SERVICIU_SET_NOTIFICATION_PREFERENCES = "set_notification_preferences"
 
 CONF_MOBILE_NOTIFY_SERVICE = "mobile_notify_service"

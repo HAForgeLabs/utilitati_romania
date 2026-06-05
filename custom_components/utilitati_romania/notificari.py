@@ -16,12 +16,54 @@ STORAGE_KEY = "utilitati_romania_notificari"
 
 EVENT_NOTIFICARE = "utilitati_romania_notificare"
 
+PREFERINTE_IMPLICITE = {
+    "facturi_noi": True,
+    "scadente": True,
+    "indexuri": True,
+    "praguri_scadenta": [5, 3, 1],
+}
+
+
+def _normalizeaza_preferinte_notificari(preferinte: dict[str, Any] | None) -> dict[str, Any]:
+    date = dict(PREFERINTE_IMPLICITE)
+    if isinstance(preferinte, dict):
+        for cheie in ("facturi_noi", "scadente", "indexuri"):
+            if cheie in preferinte:
+                date[cheie] = bool(preferinte.get(cheie))
+
+        praguri = preferinte.get("praguri_scadenta")
+        if isinstance(praguri, list):
+            praguri_curate: list[int] = []
+            for prag in praguri:
+                try:
+                    prag_int = int(prag)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= prag_int <= 30 and prag_int not in praguri_curate:
+                    praguri_curate.append(prag_int)
+            if praguri_curate:
+                date["praguri_scadenta"] = sorted(praguri_curate, reverse=True)
+
+    return date
+
+
+async def async_salveaza_preferinte_notificari(hass: HomeAssistant, preferinte: dict[str, Any]) -> dict[str, Any]:
+    store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+    data = await store.async_load() or {}
+    preferinte_normalizate = _normalizeaza_preferinte_notificari(preferinte)
+    data["preferinte"] = preferinte_normalizate
+    data.setdefault("notificate", [])
+    data.setdefault("initializat", False)
+    await store.async_save(data)
+    return preferinte_normalizate
+
 
 class ManagerNotificari:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._date_notificate: set[str] = set()
+        self._preferinte = dict(PREFERINTE_IMPLICITE)
         self._initializat = False
         self._lock = asyncio.Lock()
 
@@ -31,6 +73,7 @@ class ManagerNotificari:
             return
 
         self._date_notificate = set(data.get("notificate", []))
+        self._preferinte = _normalizeaza_preferinte_notificari(data.get("preferinte"))
         self._initializat = bool(data.get("initializat", False))
 
     async def _salveaza(self) -> None:
@@ -38,11 +81,15 @@ class ManagerNotificari:
             {
                 "notificate": sorted(self._date_notificate),
                 "initializat": self._initializat,
+                "preferinte": self._preferinte,
             }
         )
 
     async def proceseaza(self, snapshot: dict[str, Any]) -> None:
         async with self._lock:
+            data = await self._store.async_load() or {}
+            self._preferinte = _normalizeaza_preferinte_notificari(data.get("preferinte"))
+
             facturi = snapshot.get("facturi", [])
             ferestre_index = snapshot.get("ferestre_index", [])
 
@@ -108,7 +155,7 @@ class ManagerNotificari:
 
             locatie = self._format_locatie(adresa, nume_cont)
 
-            if not platita:
+            if not platita and self._preferinte.get("facturi_noi", True):
                 key_emitere = f"{factura_id}_emisa"
                 if key_emitere not in self._date_notificate:
                     await self._trimite(
@@ -124,7 +171,7 @@ class ManagerNotificari:
                     self._date_notificate.add(key_emitere)
                     changed = True
 
-            if platita or not scadenta:
+            if platita or not scadenta or not self._preferinte.get("scadente", True):
                 continue
 
             try:
@@ -134,7 +181,7 @@ class ManagerNotificari:
 
             zile_ramase = (data_scadenta - azi).days
 
-            for prag in (5, 3, 1):
+            for prag in self._preferinte.get("praguri_scadenta", [5, 3, 1]):
                 key_due = f"{factura_id}_due_{prag}"
                 if zile_ramase == prag and key_due not in self._date_notificate:
                     await self._trimite(
@@ -158,6 +205,9 @@ class ManagerNotificari:
         ferestre: list[dict[str, Any]],
         fortat: bool = False,
     ) -> bool:
+        if not self._preferinte.get("indexuri", True):
+            return False
+
         azi = datetime.now().date()
         changed = False
 

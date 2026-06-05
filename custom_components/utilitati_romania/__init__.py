@@ -26,6 +26,7 @@ from .const import (
     SERVICIU_OPEN_PROVIDER,
     SERVICIU_SET_INVOICE_STATUS,
     SERVICIU_SUBMIT_READING,
+    SERVICIU_SET_NOTIFICATION_PREFERENCES,
 )
 from .coordonator import CoordonatorUtilitatiRomania
 from .grupare_facturi import async_incarca_grupari_facturi
@@ -40,6 +41,7 @@ from .myelectrica_device import alias_loc_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, slug_loc_ebloc
 from .naming import build_provider_slug, extract_street_slug
 from .storage_citiri import async_salveaza_citire
+from .notificari import async_salveaza_preferinte_notificari
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -509,6 +511,16 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
         )
 
 
+    async def _async_handle_set_notification_preferences(call: ServiceCall) -> None:
+        preferinte = {
+            "facturi_noi": call.data.get("facturi_noi", True),
+            "scadente": call.data.get("scadente", True),
+            "indexuri": call.data.get("indexuri", True),
+            "praguri_scadenta": call.data.get("praguri_scadenta", [5, 3, 1]),
+        }
+        await async_salveaza_preferinte_notificari(hass, preferinte)
+
+
     async def _async_handle_submit_reading(call: ServiceCall) -> None:
         provider = str(call.data.get("provider") or "").strip().lower()
         entry_id = str(call.data.get("entry_id") or "").strip()
@@ -604,6 +616,7 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMENIU, SERVICIU_OPEN_PROVIDER, _async_handle_open_provider)
     hass.services.async_register(DOMENIU, SERVICIU_SET_INVOICE_STATUS, _async_handle_set_invoice_status)
     hass.services.async_register(DOMENIU, SERVICIU_SUBMIT_READING, _async_handle_submit_reading)
+    hass.services.async_register(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES, _async_handle_set_notification_preferences)
     hass.data[DOMENIU]["_services_registered"] = True
 
 
@@ -619,6 +632,8 @@ def _async_remove_services_if_unused(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMENIU, SERVICIU_SET_INVOICE_STATUS)
     if hass.services.has_service(DOMENIU, SERVICIU_SUBMIT_READING):
         hass.services.async_remove(DOMENIU, SERVICIU_SUBMIT_READING)
+    if hass.services.has_service(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES):
+        hass.services.async_remove(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES)
     hass.data[DOMENIU]["_services_registered"] = False
 
 

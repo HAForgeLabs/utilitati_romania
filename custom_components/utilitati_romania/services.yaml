@@ -39,3 +39,28 @@ submit_reading:
       description: Valoarea indexului de transmis.
       required: true
       example: 622
+
+set_notification_preferences:
+  name: Setează preferințele de notificare
+  description: Salvează preferințele pentru notificările generate de Utilități România.
+  fields:
+    facturi_noi:
+      name: Facturi noi
+      description: Activează notificările pentru facturi noi neplătite.
+      required: false
+      example: true
+    scadente:
+      name: Scadențe
+      description: Activează notificările pentru scadențe apropiate.
+      required: false
+      example: true
+    indexuri:
+      name: Indexuri
+      description: Activează notificările pentru perioade de transmitere index.
+      required: false
+      example: true
+    praguri_scadenta:
+      name: Praguri scadență
+      description: Lista zilelor înainte de scadență pentru care se generează notificări.
+      required: false
+      example: [5, 3, 1]
