@@ -85,6 +85,19 @@ class SenzorAdminBaza(SensorEntity):
 
 
 class SenzorAdminLicenta(SenzorAdminBaza):
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._unsub_interval = async_track_time_interval(self.hass, self._async_handle_interval, timedelta(minutes=1))
+
+    async def async_will_remove_from_hass(self) -> None:
+        if getattr(self, "_unsub_interval", None) is not None:
+            self._unsub_interval()
+            self._unsub_interval = None
+
+    async def _async_handle_interval(self, _now) -> None:
+        await self._async_refresh_value()
+        self.async_write_ha_state()
+
     async def _async_refresh_value(self) -> None:
         storage = await async_obtine_licenta_globala(self.hass)
         info = storage.get("date_verificare_licenta") if isinstance(storage, dict) else {}

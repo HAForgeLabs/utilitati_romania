@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 from datetime import date, datetime
 import logging
 import re
@@ -258,65 +259,60 @@ class ClientApiEbloc:
             await self.async_descopera_conturi()
 
         date_apartamente: dict[str, dict[str, Any]] = {}
-        for id_asociatie, apartamente in self._apartamente.items():
-            index_luni_web = await self._obtine_web_sigur("AjaxGetIndexLuni.php", {"pIdAsoc": id_asociatie})
-            luna_index = _extrage_luna_index_web(index_luni_web) or self._luna_curenta
+        limita_cereri = asyncio.Semaphore(6)
 
-            for apartament in apartamente:
+        async def cerere_limitata(endpoint: str, parametri: dict[str, Any]) -> dict[str, Any]:
+            async with limita_cereri:
+                return await self._obtine_web_sigur(endpoint, parametri)
+
+        async def pagina_limitata(cale: str) -> str:
+            async with limita_cereri:
+                return await self._obtine_pagina_web_sigur(cale)
+
+        for id_asociatie, apartamente in self._apartamente.items():
+            lista_apartamente = [
+                apartament
+                for apartament in apartamente
+                if str(apartament.get("id_ap") or apartament.get("id") or "").strip()
+                and str(apartament.get("id_ap") or apartament.get("id") or "").strip() != "0"
+            ]
+            if not lista_apartamente:
+                continue
+
+            # Datele la nivel de asociație sunt aceleași pentru toate apartamentele.
+            # Le citim o singură dată, nu repetat pentru fiecare apartament.
+            index_luni_web, facturi_luni_web, datorii_toti_web, plati_toti_web, pagina_contoare = await asyncio.gather(
+                cerere_limitata("AjaxGetIndexLuni.php", {"pIdAsoc": id_asociatie}),
+                cerere_limitata("AjaxGetFacturiLuni.php", {"pIdAsoc": id_asociatie}),
+                cerere_limitata("AjaxGetPlatiDatoriiToti.php", {"pIdAsoc": id_asociatie, "pIdAp": -1}),
+                cerere_limitata("AjaxGetPlatiChitanteToti.php", {"pIdAsoc": id_asociatie, "pIdAp": -1}),
+                pagina_limitata(f"index.php?page=10&t={int(time.time())}"),
+            )
+
+            luna_index = _extrage_luna_index_web(index_luni_web) or self._luna_curenta
+            factura_luna = _extrage_luna_facturi_web(facturi_luni_web) or luna_index
+
+            facturi_plati_web, contoare_web_selectat = await asyncio.gather(
+                cerere_limitata("AjaxGetFacturiPlati.php", {"pIdAsoc": id_asociatie, "pLuna": factura_luna}) if factura_luna else _rezultat_gol_async(),
+                cerere_limitata("AjaxGetIndexContoare.php", {"pIdAsoc": id_asociatie, "pLuna": luna_index, "pIdAp": -1}) if luna_index else _rezultat_gol_async(),
+            )
+
+            async def obtine_pachet_apartament(apartament: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
                 id_apartament = str(apartament.get("id_ap") or apartament.get("id") or "").strip()
                 if not id_apartament or id_apartament == "0":
-                    continue
+                    return None
 
                 cheie = f"{id_asociatie}:{id_apartament}"
+                home_info_web, home_stat_web, datorii_web, plati_web, plati_ap_web, contoare_web_apartament = await asyncio.gather(
+                    cerere_limitata("AjaxGetHomeApInfo.php", {"pIdAsoc": id_asociatie, "pIdAp": id_apartament}),
+                    cerere_limitata("AjaxGetHomeStat.php", {"pIdAsoc": id_asociatie, "pIdAp": id_apartament, "pLuni": 12}),
+                    cerere_limitata("AjaxGetPlatiDatorii.php", {"pIdAsoc": id_asociatie, "pIdAp": id_apartament}),
+                    cerere_limitata("AjaxGetPlatiChitante.php", {"pIdAsoc": id_asociatie, "pIdAp": id_apartament}),
+                    cerere_limitata("AjaxGetPlatiAp.php", {"pIdAsoc": id_asociatie, "pIdAp": id_apartament}),
+                    cerere_limitata("AjaxGetIndexContoare.php", {"pIdAsoc": id_asociatie, "pLuna": luna_index, "pIdAp": id_apartament}) if luna_index else _rezultat_gol_async(),
+                )
 
-                home_info_web = await self._obtine_web_sigur(
-                    "AjaxGetHomeApInfo.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
-                )
-                home_stat_web = await self._obtine_web_sigur(
-                    "AjaxGetHomeStat.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament, "pLuni": 12},
-                )
-                datorii_web = await self._obtine_web_sigur(
-                    "AjaxGetPlatiDatorii.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
-                )
-                datorii_toti_web = await self._obtine_web_sigur(
-                    "AjaxGetPlatiDatoriiToti.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": -1},
-                )
-                plati_web = await self._obtine_web_sigur(
-                    "AjaxGetPlatiChitante.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
-                )
-                plati_toti_web = await self._obtine_web_sigur(
-                    "AjaxGetPlatiChitanteToti.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": -1},
-                )
-                plati_ap_web = await self._obtine_web_sigur(
-                    "AjaxGetPlatiAp.php",
-                    {"pIdAsoc": id_asociatie, "pIdAp": id_apartament},
-                )
-                facturi_luni_web = await self._obtine_web_sigur(
-                    "AjaxGetFacturiLuni.php",
-                    {"pIdAsoc": id_asociatie},
-                )
-                factura_luna = _extrage_luna_facturi_web(facturi_luni_web) or luna_index
-                facturi_plati_web = await self._obtine_web_sigur(
-                    "AjaxGetFacturiPlati.php",
-                    {"pIdAsoc": id_asociatie, "pLuna": factura_luna},
-                ) if factura_luna else {}
-                contoare_web_selectat = await self._obtine_web_sigur(
-                    "AjaxGetIndexContoare.php",
-                    {"pIdAsoc": id_asociatie, "pLuna": luna_index, "pIdAp": -1},
-                ) if luna_index else {}
-                contoare_web_apartament = await self._obtine_web_sigur(
-                    "AjaxGetIndexContoare.php",
-                    {"pIdAsoc": id_asociatie, "pLuna": luna_index, "pIdAp": id_apartament},
-                ) if luna_index else {}
-                pagina_contoare = await self._obtine_pagina_web_sigur(f"index.php?page=10&t={int(time.time())}")
-
-                date_apartamente[cheie] = {
+                return cheie, {
                     "asociatie_id": id_asociatie,
                     "apartament_id": id_apartament,
                     "apartament": apartament,
@@ -335,6 +331,15 @@ class ClientApiEbloc:
                     "pagina_contoare": pagina_contoare,
                     "luna_index": luna_index,
                 }
+
+            rezultate_apartamente = await asyncio.gather(
+                *(obtine_pachet_apartament(apartament) for apartament in lista_apartamente)
+            )
+            for rezultat in rezultate_apartamente:
+                if rezultat is None:
+                    continue
+                cheie, pachet = rezultat
+                date_apartamente[cheie] = pachet
 
         return {
             "info": self._date_info,
@@ -615,6 +620,9 @@ class ClientFurnizorEbloc(ClientFurnizor):
         return rezultate
 
 
+
+async def _rezultat_gol_async() -> dict[str, Any]:
+    return {}
 
 def _extrage_conturi_din_pagina_web(html: str) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     asociatii = _extrage_vector_js(html, "gInfoAsoc")

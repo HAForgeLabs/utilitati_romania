@@ -147,8 +147,31 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
 
         try:
             rezultat_licenta = await async_verifica_licenta(self.hass, self.intrare)
+
+            # Salvăm rezultatul verificării înainte de validarea strictă, astfel încât
+            # senzorii globali de licență să reflecte corect și statusurile negative
+            # primite de la server (revoked / expired / invalid). Nu suprascriem însă
+            # cache-ul valid cu erori de conectare temporare.
+            if rezultat_licenta.valida or not rezultat_licenta.eroare_conectare:
+                await async_salveaza_licenta_in_intrare(self.hass, self.intrare, rezultat_licenta)
+                await self.hass.services.async_call(
+                    "homeassistant",
+                    "update_entity",
+                    {
+                        "entity_id": [
+                            f"sensor.{DOMENIU}_status_licenta",
+                            f"sensor.{DOMENIU}_plan_licenta",
+                            f"sensor.{DOMENIU}_valabila_pana_la",
+                            f"sensor.{DOMENIU}_ultima_verificare_licenta",
+                            f"sensor.{DOMENIU}_cont_licenta",
+                            f"sensor.{DOMENIU}_cod_licenta_mascat",
+                            f"sensor.{DOMENIU}_mesaj_licenta",
+                        ]
+                    },
+                    blocking=False,
+                )
+
             valideaza_rezultat_licenta(rezultat_licenta)
-            await async_salveaza_licenta_in_intrare(self.hass, self.intrare, rezultat_licenta)
         except EroareLicenta as err:
             raise UpdateFailed(f"Licență invalidă: {err}") from err
 

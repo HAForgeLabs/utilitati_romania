@@ -42,6 +42,7 @@ from .ebloc_device import alias_loc_ebloc, slug_loc_ebloc
 from .naming import build_provider_slug, extract_street_slug
 from .storage_citiri import async_salveaza_citire
 from .notificari import async_salveaza_preferinte_notificari
+from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licenta
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,7 +132,7 @@ def _async_register_dashboard_panel(hass: HomeAssistant) -> None:
             hass,
             component_name="custom",
             sidebar_title="Utilități România",
-            sidebar_icon="mdi:flash",
+            sidebar_icon="mdi:receipt-text-outline",
             frontend_url_path="utilitati-romania",
             require_admin=False,
             config={
@@ -771,6 +772,35 @@ async def _async_cleanup_admin_registry_links(hass: HomeAssistant) -> None:
             continue
 
 
+async def _async_actualizeaza_senzorii_licentei(hass: HomeAssistant) -> None:
+    await hass.services.async_call(
+        "homeassistant",
+        "update_entity",
+        {
+            "entity_id": [
+                f"sensor.{DOMENIU}_status_licenta",
+                f"sensor.{DOMENIU}_plan_licenta",
+                f"sensor.{DOMENIU}_valabila_pana_la",
+                f"sensor.{DOMENIU}_ultima_verificare_licenta",
+                f"sensor.{DOMENIU}_cont_licenta",
+                f"sensor.{DOMENIU}_cod_licenta_mascat",
+                f"sensor.{DOMENIU}_mesaj_licenta",
+            ]
+        },
+        blocking=False,
+    )
+
+
+async def _async_verifica_licenta_la_pornire(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    try:
+        rezultat = await async_verifica_licenta(hass, entry)
+        if rezultat.valida or not rezultat.eroare_conectare:
+            await async_salveaza_licenta_in_intrare(hass, entry, rezultat)
+            await _async_actualizeaza_senzorii_licentei(hass)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Verificarea licenței la pornire a eșuat: %s", err)
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMENIU, {})
     _async_ensure_services(hass)
@@ -795,6 +825,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:
         hass.data[DOMENIU][entry.entry_id] = {"admin": True}
         await hass.config_entries.async_forward_entry_setups(entry, _ADMIN_PLATFORME)
+        hass.async_create_task(_async_verifica_licenta_la_pornire(hass, entry))
         await _async_cleanup_admin_registry_links(hass)
         return True
 

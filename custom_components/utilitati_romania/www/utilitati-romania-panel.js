@@ -38,11 +38,19 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (Date.now() < this._interactiveUntil) return true;
     const active = this.shadowRoot.activeElement;
     if (!active) return false;
-    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias]");
+    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias], [data-billing-group]");
   }
 
   _holdRenderBriefly(ms = 3500) {
     this._interactiveUntil = Date.now() + ms;
+  }
+
+  _callServiceWithTimeout(domain, service, data, timeoutMs = 12000) {
+    const call = this._hass.callService(domain, service, data);
+    const timeout = new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error("timeout")), timeoutMs);
+    });
+    return Promise.race([call, timeout]);
   }
 
   _summaryEntityId() {
@@ -103,6 +111,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       plan: license?.plan || "—",
       account: this._maskEmail(license?.account || "—"),
       checked: license?.checked || "—",
+      key: license?.key || "—",
       message: license?.message || "—",
     };
   }
@@ -1113,11 +1122,13 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const checkedEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_ultima_verificare_licenta", "sensor.administrare_integrare_ultima_verificare_licenta", "sensor.ultima_verificare_licenta"], ["ultima verificare licenta", "ultima verificare licență"]);
     const accountEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_cont_licenta", "sensor.administrare_integrare_cont_licenta", "sensor.cont_licenta", "sensor.utilitati_romania_utilizator_licenta"], ["cont licenta", "cont licență"]);
     const messageEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_mesaj_licenta", "sensor.administrare_integrare_mesaj_licenta", "sensor.mesaj_licenta"], ["mesaj licenta", "mesaj licență"]);
+    const keyEntity = this._resolveEntity("sensor", ["sensor.utilitati_romania_cod_licenta_mascat", "sensor.administrare_integrare_cod_licenta_mascat", "sensor.cod_licenta_mascat"], ["cod licenta mascat", "cod licență mascat", "cheie licenta mascata", "cheie licență mascată"]);
     return {
       status: statusEntity?.state || "necunoscut",
       plan: planEntity?.state || "—",
       account: accountEntity?.state || "—",
       checked: checkedEntity?.state || "—",
+      key: keyEntity?.state || "—",
       message: messageEntity?.state || "—",
     };
   }
@@ -1132,12 +1143,56 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     };
   }
 
+  _adminReloadEntity() {
+    return this._resolveEntity("button", [
+      "button.utilitati_romania_reload_all_subs",
+      "button.administrare_integrare_reload_all_subs",
+      "button.reload_all_subs",
+    ], [
+      "reload all subs",
+      "reincarca toate subintegrarile",
+      "reîncarcă toate subintegrările",
+    ]);
+  }
+
+  _adminVerifyLicenseEntity() {
+    return this._resolveEntity("button", [
+      "button.utilitati_romania_verifica_licenta",
+      "button.administrare_integrare_verifica_licenta",
+      "button.verifica_licenta",
+    ], [
+      "verifica licenta",
+      "verifică licență",
+      "verifica licența",
+      "verifică licența",
+    ]);
+  }
+
   _renderLicense() {
     const lic = this._licenseStates();
     const entities = this._licenseEntities();
     const licenseValue = this._licenseDraft || entities.currentCode || "";
-    const active = String(lic.status).toLowerCase().includes("active") || String(lic.status).toLowerCase().includes("trial");
+    const licenseStatus = String(lic.status || "").toLowerCase();
+    const licensePlan = String(lic.plan || "").toLowerCase();
+    const isTrial = licenseStatus.includes("trial") || licensePlan.includes("trial");
+    const isFullLicense = licenseStatus.includes("active") && !isTrial;
+    const active = isFullLicense || isTrial;
+    const supportTitle = isFullLicense ? "Susține în continuare dezvoltarea proiectului" : "Susține dezvoltarea proiectului";
+    const supportText = isFullLicense
+      ? "Ai deja o licență activă. Dacă integrarea îți este utilă, poți susține în continuare dezvoltarea, mentenanța și adaptarea proiectului atunci când furnizorii schimbă portalurile, aplicațiile sau API-urile folosite."
+      : "Licența ajută la susținerea dezvoltării, mentenanței și adaptării integrării atunci când furnizorii schimbă portalurile, aplicațiile sau API-urile folosite.";
+    const supportLicenseText = isFullLicense
+      ? "Donațiile suplimentare nu sunt obligatorii, dar ajută la menținerea proiectului activ și la acoperirea timpului de dezvoltare."
+      : "Poți obține o licență printr-o donație minimă pe Buy Me a Coffee. După donație, codul de licență poate fi introdus în câmpul de mai sus.";
+    const supportButtonText = isFullLicense ? "Susține proiectul prin Buy Me a Coffee" : "Obține licență prin Buy Me a Coffee";
+    const supportThanksText = isFullLicense
+      ? "Mulțumim pentru susținere și pentru folosirea integrării."
+      : "Mulțumim pentru susținere. Fiecare donație ajută la menținerea proiectului activ.";
     const action = this._actions.get("license");
+    const reloadAction = this._actions.get("reload_providers");
+    const verifyAction = this._actions.get("verify_license");
+    const reloadEntity = this._adminReloadEntity();
+    const verifyEntity = this._adminVerifyLicenseEntity();
     return `
       <section class="panel-card license-card ${active ? "ok" : "warn"}">
         <div class="license-shield"><ha-icon icon="mdi:shield-check"></ha-icon></div>
@@ -1147,6 +1202,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         <div class="details-grid">
           <div><span>Plan</span><strong>${this._escape(lic.plan)}</strong></div>
           <div><span>Cont</span><strong>${this._escape(lic.account)}</strong></div>
+          <div><span>Licență activă</span><strong>${this._escape(lic.key || "—")}</strong></div>
           <div><span>Ultima verificare</span><strong>${this._escape(this._date(lic.checked))}</strong></div>
         </div>
       </section>
@@ -1156,8 +1212,41 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           <input id="license-input" type="text" autocomplete="off" placeholder="Cod licență" value="${this._escape(licenseValue)}">
           <button class="primary dark" data-apply-license ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se verifică..." : "Aplică licența"}</button>
         </div>
-        <div class="license-links">
-          <a class="bmc-button" href="https://www.buymeacoffee.com/haforgelabs" target="_blank" rel="noopener noreferrer"><ha-icon icon="mdi:coffee"></ha-icon><span>Buy Me a Coffee</span></a>
+        <p class="license-hint">Câmpul poate afișa ultimul cod introdus pentru validare. Licența activă curentă este afișată mascat în secțiunea de mai sus.</p>
+        <div class="license-reload-box">
+          <div>
+            <h3>Verificare licență</h3>
+            <p>Verifică manual licența curentă salvată în integrare. Este util după modificări în portalul de licențiere sau dacă vrei să confirmi rapid statusul.</p>
+          </div>
+          <button class="ghost strong" data-verify-license ${verifyAction?.status === "busy" || !verifyEntity ? "disabled" : ""}>
+            <ha-icon icon="mdi:shield-sync"></ha-icon>
+            <span>${verifyAction?.status === "busy" ? "Se verifică..." : "Verifică licența"}</span>
+          </button>
+        </div>
+        ${verifyAction?.message ? `<div class="action-message ${verifyAction.status === "error" ? "error" : "ok"}">${this._escape(verifyAction.message)}</div>` : ""}
+        <div class="license-reload-box">
+          <div>
+            <h3>După activarea licenței</h3>
+            <p>Dacă perioada trial a expirat și unii furnizori au rămas indisponibili, reîncarcă furnizorii manual. Nu facem acest reload automat, deoarece unele subintegrări pot dura mult.</p>
+          </div>
+          <button class="ghost strong" data-reload-providers ${reloadAction?.status === "busy" ? "disabled" : ""}>
+            <ha-icon icon="mdi:reload-alert"></ha-icon>
+            <span>${reloadAction?.status === "busy" ? "Se reîncarcă..." : "Reîncarcă furnizorii"}</span>
+          </button>
+        </div>
+        ${reloadAction?.message ? `<div class="action-message ${reloadAction.status === "error" ? "error" : "ok"}">${this._escape(reloadAction.message)}</div>` : ""}
+        <div class="license-support-box">
+          <div class="license-support-icon"><ha-icon icon="mdi:heart-outline"></ha-icon></div>
+          <div>
+            <h3>${this._escape(supportTitle)}</h3>
+            <p>Utilități România este un proiect HAForge Labs dezvoltat independent pentru comunitatea Home Assistant din România.</p>
+            <p>${this._escape(supportText)}</p>
+            <p>${this._escape(supportLicenseText)}</p>
+            <div class="license-links">
+              <a class="bmc-button" href="https://www.buymeacoffee.com/haforgelabs" target="_blank" rel="noopener noreferrer"><ha-icon icon="mdi:coffee"></ha-icon><span>${this._escape(supportButtonText)}</span></a>
+            </div>
+            <small>${this._escape(supportThanksText)}</small>
+          </div>
         </div>
         ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
       </section>
@@ -1205,6 +1294,160 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
 
+  _billingGroupEntities(summary = this._summary()) {
+    const states = this._hass?.states || {};
+    const providerDefinitions = [
+      { slug: "apa canal sibiu", label: "Apă Canal Sibiu" },
+      { slug: "digi romania", label: "Digi România" },
+      { slug: "distributie energie electrica romania", label: "Distribuție Energie Electrică România" },
+      { slug: "e on romania", label: "E.ON România" },
+      { slug: "eon romania", label: "E.ON România" },
+      { slug: "hidroelectrica", label: "Hidroelectrica" },
+      { slug: "e bloc ro", label: "e-bloc.ro" },
+      { slug: "orange", label: "Orange" },
+      { slug: "nova", label: "Nova" },
+      { slug: "myelectrica", label: "myElectrica" },
+      { slug: "deer", label: "DEER" },
+    ];
+    const providerAliases = new Map(providerDefinitions.map((item) => [this._normalizeText(item.slug), item.label]));
+    const compact = (value) => this._normalizeText(value).replace(/\s+/g, "");
+    const cleanGroupWords = (value) => String(value || "")
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/^grupare\s+facturi\s*/iu, "")
+      .replace(/\s*[·|]\s*grupare\s+facturi\s*/giu, " - ")
+      .replace(/\s*-\s*grupare\s+facturi\s+.+$/iu, "")
+      .replace(/\s+grupare\s+facturi\s+.+$/iu, "")
+      .replace(/\s+grupare\s+facturi\s*$/iu, "")
+      .trim();
+    const cleanDisplay = (value) => cleanGroupWords(value)
+      .replace(/\bCf\b/gi, "")
+      .replace(/\bCont\b/gi, "")
+      .replace(/\s+/g, " ")
+      .replace(/\s+,/g, ",")
+      .trim();
+    const titleFromEntity = (entityId) => entityId
+      .replace(/^text\./, "")
+      .replace(/^grupare_facturi_/, "")
+      .replace(/_grupare_facturi_/g, " - ")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+    const providerLabelFromText = (text) => {
+      const normalized = this._normalizeText(text);
+      const compactText = compact(text);
+      let best = null;
+      for (const [slug, label] of providerAliases.entries()) {
+        const compactSlug = compact(slug);
+        if (normalized.includes(slug) || compactText.includes(compactSlug)) {
+          if (!best || compactSlug.length > compact(best.slug).length) best = { slug, label };
+        }
+      }
+      return best;
+    };
+    const entitySourceText = (entityId, friendly) => cleanGroupWords(friendly || titleFromEntity(entityId));
+    const buildEntityTerms = (entityId, friendly) => {
+      const source = `${entityId} ${friendly || ""}`;
+      return this._normalizeText(source)
+        .replace(/\btext\b/g, " ")
+        .replace(/\bgrupare\b/g, " ")
+        .replace(/\bfacturi\b/g, " ")
+        .split(/\s+/)
+        .filter((term) => term && term.length > 1 && !["ro", "romania", "grupare", "facturi"].includes(term));
+    };
+    const providerEntries = this._allProviders(summary?.locations || []).map(({ location, provider }) => {
+      const name = this._providerName(provider);
+      const providerLabel = providerLabelFromText(name)?.label || name;
+      const address = cleanDisplay(provider?.adresa_originala || provider?.adresa || provider?.address || "");
+      const accountName = cleanDisplay(provider?.nume_cont || provider?.account_name || provider?.cont || "");
+      const locationName = cleanDisplay(this._rawLocationName(location));
+      const identifiers = [
+        provider?.apartament,
+        provider?.apartment,
+        provider?.id_apartament,
+        provider?.id_cont,
+        provider?.id_contract,
+        provider?.cod_client,
+        provider?.pod,
+        provider?.ppe,
+      ].map((value) => cleanDisplay(value)).filter(Boolean);
+      const detail = address || accountName || locationName;
+      const label = `${providerLabel}${detail ? ` - ${detail}` : ""}`;
+      const haystack = this._normalizeText([name, providerLabel, address, accountName, locationName, location?.locatie_cheie, location?.eticheta_locatie, ...identifiers].join(" "));
+      return { providerLabel, label, haystack, detail, identifiers };
+    });
+    const bestProviderEntry = (entityId, friendly) => {
+      const source = entitySourceText(entityId, friendly);
+      const provider = providerLabelFromText(source) || providerLabelFromText(entityId) || providerLabelFromText(friendly);
+      const terms = buildEntityTerms(entityId, friendly);
+      let candidates = providerEntries;
+      if (provider?.label) {
+        const providerNorm = this._normalizeText(provider.label);
+        candidates = candidates.filter((entry) => this._normalizeText(entry.providerLabel) === providerNorm || entry.haystack.includes(providerNorm));
+      }
+      if (!candidates.length) return null;
+      let best = null;
+      for (const entry of candidates) {
+        let score = 0;
+        for (const term of terms) {
+          if (entry.haystack.includes(term)) score += Math.min(8, term.length);
+        }
+        if (provider?.label && this._normalizeText(entry.providerLabel) === this._normalizeText(provider.label)) score += 30;
+        if (entry.detail) score += 5;
+        if (entry.identifiers?.length) score += 2;
+        if (!best || score > best.score) best = { entry, score };
+      }
+      return best?.score > 0 ? best.entry : null;
+    };
+    const fallbackLabel = (entityId, friendly) => {
+      const source = entitySourceText(entityId, friendly);
+      const provider = providerLabelFromText(source) || providerLabelFromText(entityId) || { label: cleanDisplay(source).split(" - ")[0] || "Furnizor" };
+      let rest = cleanDisplay(source)
+        .replace(new RegExp(`^${provider.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*-?\\s*`, "i"), "")
+        .replace(/^grupare\s+facturi\s*/i, "")
+        .trim();
+      rest = rest
+        .replace(/\s*-\s*$/g, "")
+        .replace(/\s+Grupare\s+Facturi\s+.+$/i, "")
+        .trim();
+      return `${provider.label}${rest ? ` - ${rest}` : ""}`;
+    };
+    const isGenericEblocGroup = (item) => {
+      const label = String(item.label || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const entityId = String(item.entityId || "").toLowerCase();
+      return entityId.includes("e_bloc_ro") && (
+        /_asociatia$/.test(entityId) ||
+        /^e-bloc\.ro\s*-\s*asociatia$/.test(label) ||
+        /^e-bloc\.ro\s*-\s*asociatie$/.test(label)
+      );
+    };
+
+    return Object.entries(states)
+      .filter(([entityId, state]) => {
+        if (!entityId.startsWith("text.")) return false;
+        if (entityId.includes("cod_licenta")) return false;
+        const name = String(state?.attributes?.friendly_name || state?.attributes?.name || entityId).toLowerCase();
+        return name.includes("grupare facturi") || entityId.includes("grupare_facturi");
+      })
+      .map(([entityId, state]) => {
+        const friendly = String(state?.attributes?.friendly_name || state?.attributes?.name || entityId);
+        const matched = bestProviderEntry(entityId, friendly);
+        const label = matched?.label || fallbackLabel(entityId, friendly);
+        const savedValue = state?.state && !["unknown", "unavailable"].includes(state.state) ? state.state : "";
+        return {
+          entityId,
+          state,
+          friendly,
+          provider: label,
+          label,
+          context: `Grupare salvată: ${savedValue || "necompletată"}`,
+          savedValue,
+        };
+      })
+      .filter((item) => !isGenericEblocGroup(item))
+      .sort((a, b) => `${a.label} ${a.savedValue}`.localeCompare(`${b.label} ${b.savedValue}`, "ro"));
+  }
+
+
   _renderSettings(summary) {
     const mobileSelect = this._mobileDeviceSelectEntity();
     const mobileOptions = Array.isArray(mobileSelect?.attributes?.options) ? mobileSelect.attributes.options : [];
@@ -1214,6 +1457,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const aliases = this._locationAliases();
     const action = this._actions.get("settings");
     const locations = summary.locations || [];
+    const billingGroups = this._billingGroupEntities(summary);
     const toggle = (key, label, description) => `
       <label class="setting-toggle">
         <input type="checkbox" data-setting-toggle="${this._escape(key)}" ${prefs[key] ? "checked" : ""}>
@@ -1253,7 +1497,16 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         </div>
       </section>
       <section class="panel-card">
-        <div class="card-head"><div><span class="eyebrow">locații</span><h2>Denumiri afișate</h2></div><button class="primary dark small" data-save-location-aliases ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salvează..." : "Salvează denumirile"}</button></div>
+        <div class="card-head"><div><span class="eyebrow">grupare facturi</span><h2>Locuri de consum pentru facturi</h2><p>Modifică gruparea reală folosită de card și de senzorul agregat. Valorile se salvează în entitățile de configurare ale integrării.</p></div><button class="primary dark small" data-save-billing-groups ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salvează..." : "Salvează grupările"}</button></div>
+        <div class="location-alias-list">
+          ${billingGroups.length ? billingGroups.map((item) => {
+            const value = this._settingsDrafts.has(`billing__${item.entityId}`) ? this._settingsDrafts.get(`billing__${item.entityId}`) : (item.savedValue || "");
+            return `<label class="location-alias-row billing-group-row"><span><strong>${this._escape(item.label || item.provider)}</strong><small>Grupare salvată: ${this._escape(value || "necompletată")}</small><small>Entitate: ${this._escape(item.entityId)}</small></span><input type="text" data-billing-group="${this._escape(item.entityId)}" placeholder="Ex. Frasinului" value="${this._escape(value)}"></label>`;
+          }).join("") : `<div class="empty">Nu am găsit entități de grupare facturi. Acestea apar după încărcarea furnizorilor configurați.</div>`}
+        </div>
+      </section>
+      <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">locații</span><h2>Denumiri afișate doar în dashboard</h2></div><button class="primary dark small" data-save-location-aliases ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salvează..." : "Salvează denumirile"}</button></div>
         <div class="location-alias-list">
           ${locations.length ? locations.map((location) => {
             const key = this._locationKey(location);
@@ -1292,7 +1545,6 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           }).join("") : `<div class="empty">Nu există furnizori în senzorul agregat.</div>`}
         </div>
       </section>
-      <section class="panel-card"><div class="feature-note subtle"><ha-icon icon="mdi:information-outline"></ha-icon><div><strong>Panoul nu modifică dashboard-urile utilizatorului</strong><p>Este încărcat ca pagină separată în sidebar și citește datele deja publicate de integrare.</p></div></div></section>
     `;
   }
 
@@ -1411,7 +1663,19 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .license-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; }
       .license-form input { width:100%; border:1px solid rgba(17,32,51,.12); border-radius:18px; padding:14px 16px; font:inherit; background:#f7f9fc; color:#142033; outline:none; }
       .license-form input:focus { border-color:#4ea1ff; box-shadow:0 0 0 3px rgba(78,161,255,.16); }
-      .license-links { margin-top:14px; display:flex; justify-content:flex-end; }
+      .license-hint { margin:10px 2px 0; color:var(--muted); font-size:13px; line-height:1.45; }
+      .license-reload-box { margin-top:18px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:16px; align-items:center; border-radius:22px; padding:18px; background:#f7f9fc; border:1px solid var(--border); }
+      .license-reload-box h3 { margin:0 0 6px; font-size:17px; color:var(--text); }
+      .license-reload-box p { margin:0; color:var(--muted); line-height:1.5; font-size:14px; }
+      .ghost { border:1px solid rgba(17,32,51,.12); border-radius:999px; padding:11px 15px; background:#fff; color:#112033; font-weight:900; display:inline-flex; align-items:center; justify-content:center; gap:8px; white-space:nowrap; }
+      .ghost.strong { background:#112033; color:#fff; border-color:#112033; box-shadow:0 12px 26px rgba(17,32,51,.16); }
+      .ghost ha-icon { width:19px; height:19px; }
+      .license-support-box { margin-top:18px; display:grid; grid-template-columns:auto 1fr; gap:16px; border-radius:22px; padding:18px; background:linear-gradient(135deg, var(--soft-blue), rgba(255,221,0,.18)); border:1px solid var(--border); }
+      .license-support-icon { width:42px; height:42px; border-radius:16px; display:grid; place-items:center; background:var(--card); color:var(--accent); box-shadow:0 10px 24px rgba(17,32,51,.10); }
+      .license-support-box h3 { margin:0 0 8px; font-size:17px; color:var(--text); }
+      .license-support-box p { margin:0 0 8px; color:var(--muted); line-height:1.55; font-size:14px; }
+      .license-support-box small { display:block; margin-top:10px; color:var(--muted); line-height:1.45; }
+      .license-links { margin-top:14px; display:flex; justify-content:flex-start; }
       .bmc-button { display:inline-flex; align-items:center; gap:8px; padding:12px 16px; border-radius:999px; background:#ffdd00; color:#112033; text-decoration:none; font-weight:900; box-shadow:0 12px 28px rgba(17,32,51,.12); }
       .contact-card p { color:#526276; margin-bottom:18px; }
       .contact-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
@@ -1493,6 +1757,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         .feature-note { background:rgba(78,161,255,.12); color:#dcecff; }
         .feature-note.subtle { background:#111a2b; }
         .license-card { background:linear-gradient(135deg,#172033,#111a2b); }
+        .license-reload-box { background:#111a2b; border-color:rgba(255,255,255,.08); }
+        .ghost { background:#172033; color:#edf3fb; border-color:rgba(255,255,255,.14); }
+        .ghost.strong { background:#4ea1ff; color:#fff; border-color:#4ea1ff; box-shadow:0 12px 26px rgba(78,161,255,.18); }
         .license-shield { background:#4ea1ff; }
         .contact-action { color:#edf3fb; }
         .pill.paid,.pill.credit,.pill.open { background:#dbf7e6; color:#14783c; }
@@ -1545,8 +1812,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         .invoice-toolbar select { width:100%; max-width:100%; min-width:0; padding:10px 30px 10px 12px; font-size:14px; }
         .invoice-toolbar span { grid-column:1 / -1; margin-left:0; text-align:right; }
         .license-form { grid-template-columns:1fr; }
+        .license-reload-box { grid-template-columns:1fr; padding:16px; }
+        .license-reload-box .ghost { width:100%; }
+        .license-support-box { grid-template-columns:1fr; padding:16px; }
+        .license-support-icon { width:38px; height:38px; }
         .license-links { justify-content:stretch; }
-        .bmc-button { width:100%; justify-content:center; }
+        .bmc-button { width:100%; justify-content:center; text-align:center; }
       }
       @media (prefers-color-scheme: dark) and (max-width: 560px) {
         :host {
@@ -1716,6 +1987,35 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       input.addEventListener("focus", () => this._holdRenderBriefly(4500));
       input.addEventListener("input", (event) => { this._holdRenderBriefly(4500); this._settingsDrafts.set(`alias__${input.getAttribute("data-location-alias")}`, event.target.value || ""); });
     });
+    this.shadowRoot.querySelectorAll("[data-billing-group]").forEach((input) => {
+      input.addEventListener("focus", () => this._holdRenderBriefly(4500));
+      input.addEventListener("input", (event) => { this._holdRenderBriefly(4500); this._settingsDrafts.set(`billing__${input.getAttribute("data-billing-group")}`, event.target.value || ""); });
+    });
+    const saveBillingGroups = this.shadowRoot.querySelector("[data-save-billing-groups]");
+    if (saveBillingGroups) {
+      saveBillingGroups.addEventListener("click", async () => {
+        if (saveBillingGroups.disabled) return;
+        const inputs = Array.from(this.shadowRoot.querySelectorAll("[data-billing-group]"));
+        this._actions.set("settings", { status: "busy", message: "Se salvează grupările facturilor..." });
+        this._render();
+        try {
+          for (const input of inputs) {
+            const entityId = input.getAttribute("data-billing-group");
+            const value = String(input.value || "").trim();
+            const current = this._hass?.states?.[entityId]?.state;
+            const normalizedCurrent = current && !["unknown", "unavailable"].includes(current) ? String(current).trim() : "";
+            if (value === normalizedCurrent) continue;
+            await this._hass.callService("text", "set_value", { entity_id: entityId, value });
+          }
+          for (const input of inputs) this._settingsDrafts.delete(`billing__${input.getAttribute("data-billing-group")}`);
+          this._actions.set("settings", { status: "ok", message: "Grupările facturilor au fost salvate. Datele se vor regrupa după următorul refresh al senzorului agregat." });
+        } catch (err) {
+          this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva grupările facturilor." });
+        }
+        this._interactiveUntil = 0;
+        this._render();
+      });
+    }
     const saveLocationAliases = this.shadowRoot.querySelector("[data-save-location-aliases]");
     if (saveLocationAliases) {
       saveLocationAliases.addEventListener("click", () => {
@@ -1809,6 +2109,67 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         this._render();
       });
     }
+    const verifyLicense = this.shadowRoot.querySelector("[data-verify-license]");
+    if (verifyLicense) {
+      verifyLicense.addEventListener("click", async () => {
+        if (verifyLicense.disabled) return;
+        const verifyEntity = this._adminVerifyLicenseEntity();
+        const beforeLicense = this._licenseStates();
+        this._actions.set("verify_license", { status: "busy", message: "Se verifică licența curentă..." });
+        this._render();
+        try {
+          if (!verifyEntity?.entity_id) throw new Error("Nu am găsit butonul de verificare a licenței.");
+          await this._callServiceWithTimeout("button", "press", { entity_id: verifyEntity.entity_id }, 15000);
+          await this._sleep(1200);
+          const updatedLicense = this._licenseStates();
+          this._actions.set("verify_license", {
+            status: "ok",
+            message: `Licența curentă a fost verificată. Status: ${updatedLicense.status || "necunoscut"}${updatedLicense.plan && updatedLicense.plan !== "—" ? ` / ${updatedLicense.plan}` : ""}${updatedLicense.key && updatedLicense.key !== "—" ? ` · licență: ${updatedLicense.key}` : ""}.`,
+          });
+        } catch (err) {
+          if (err?.message === "timeout") {
+            await this._sleep(1800);
+            const updatedLicense = this._licenseStates();
+            const changed = String(updatedLicense.status) !== String(beforeLicense.status) || String(updatedLicense.plan) !== String(beforeLicense.plan) || String(updatedLicense.message) !== String(beforeLicense.message);
+            this._actions.set("verify_license", {
+              status: changed ? "ok" : "error",
+              message: changed
+                ? `Licența curentă a fost verificată. Status: ${updatedLicense.status || "necunoscut"}${updatedLicense.plan && updatedLicense.plan !== "—" ? ` / ${updatedLicense.plan}` : ""}.`
+                : "Verificarea a fost trimisă, dar Home Assistant nu a confirmat rapid finalizarea. Verifică statusul de mai sus după refresh.",
+            });
+          } else {
+            this._actions.set("verify_license", { status: "error", message: err?.message || "Verificarea licenței a eșuat." });
+          }
+        }
+        this._render();
+      });
+    }
+
+    const reloadProviders = this.shadowRoot.querySelector("[data-reload-providers]");
+    if (reloadProviders) {
+      reloadProviders.addEventListener("click", async () => {
+        if (reloadProviders.disabled) return;
+        const reloadEntity = this._adminReloadEntity();
+        this._actions.set("reload_providers", { status: "busy", message: "Am pornit reîncărcarea furnizorilor..." });
+        this._render();
+        try {
+          if (reloadEntity?.entity_id) {
+            await this._callServiceWithTimeout("button", "press", { entity_id: reloadEntity.entity_id }, 3500);
+          } else {
+            await this._callServiceWithTimeout("utilitati_romania", "reload_all", {}, 3500);
+          }
+          this._actions.set("reload_providers", { status: "ok", message: "Reîncărcarea furnizorilor a fost pornită. Pentru furnizorii lenți, datele pot apărea după câteva zeci de secunde." });
+        } catch (err) {
+          if (err?.message === "timeout") {
+            this._actions.set("reload_providers", { status: "ok", message: "Reîncărcarea furnizorilor a fost pornită. Unele subintegrări, cum ar fi e-bloc, pot dura mai mult." });
+          } else {
+            this._actions.set("reload_providers", { status: "error", message: err?.message || "Nu am putut porni reîncărcarea furnizorilor." });
+          }
+        }
+        this._render();
+      });
+    }
+
     const licenseInput = this.shadowRoot.querySelector("#license-input");
     if (licenseInput) {
       licenseInput.addEventListener("focus", () => this._holdRenderBriefly(4500));
@@ -1825,15 +2186,33 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           return;
         }
         const entities = this._licenseEntities();
+        const beforeLicense = this._licenseStates();
         this._actions.set("license", { status: "busy", message: "" });
         this._render();
         try {
-          await this._hass.callService("text", "set_value", { entity_id: entities.text, value: code });
-          await this._hass.callService("button", "press", { entity_id: entities.button });
+          await this._callServiceWithTimeout("text", "set_value", { entity_id: entities.text, value: code }, 8000);
+          await this._callServiceWithTimeout("button", "press", { entity_id: entities.button }, 15000);
+          await this._sleep(1200);
+          const updatedLicense = this._licenseStates();
           this._licenseDraft = "";
-          this._actions.set("license", { status: "ok", message: "Licența a fost trimisă spre validare. Datele se vor actualiza după verificare." });
+          this._actions.set("license", {
+            status: "ok",
+            message: `Licența a fost verificată. Status actual: ${updatedLicense.status || "necunoscut"}${updatedLicense.plan && updatedLicense.plan !== "—" ? ` / ${updatedLicense.plan}` : ""}${updatedLicense.key && updatedLicense.key !== "—" ? ` · licență activă: ${updatedLicense.key}` : ""}. Dacă furnizorii au rămas indisponibili după expirarea trialului, folosește butonul „Reîncarcă furnizorii”.`,
+          });
         } catch (err) {
-          this._actions.set("license", { status: "error", message: err?.message || "Aplicarea licenței a eșuat." });
+          if (err?.message === "timeout") {
+            await this._sleep(1800);
+            const updatedLicense = this._licenseStates();
+            const changed = String(updatedLicense.status) !== String(beforeLicense.status) || String(updatedLicense.plan) !== String(beforeLicense.plan) || String(updatedLicense.message) !== String(beforeLicense.message);
+            this._actions.set("license", {
+              status: "ok",
+              message: changed
+                ? `Licența a fost verificată. Status actual: ${updatedLicense.status || "necunoscut"}${updatedLicense.plan && updatedLicense.plan !== "—" ? ` / ${updatedLicense.plan}` : ""}${updatedLicense.key && updatedLicense.key !== "—" ? ` · licență activă: ${updatedLicense.key}` : ""}. Dacă furnizorii au rămas indisponibili după expirarea trialului, folosește butonul „Reîncarcă furnizorii”.`
+                : "Comanda de verificare a fost trimisă. Dacă statusul de sus nu se actualizează în câteva secunde, fă refresh și verifică mesajul licenței.",
+            });
+          } else {
+            this._actions.set("license", { status: "error", message: err?.message || "Aplicarea licenței a eșuat." });
+          }
         }
         this._render();
       });

@@ -16,7 +16,11 @@ from homeassistant.components import persistent_notification
 from .coordonator import CoordonatorUtilitatiRomania
 from .entitate import EntitateUtilitatiRomania
 from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL, SERVICIU_RELOAD_ALL
-from .licentiere import async_obtine_context_licenta, async_salveaza_licenta_globala, async_valideaza_licenta
+from .licentiere import (
+    async_obtine_context_licenta,
+    async_salveaza_licenta_globala,
+    async_valideaza_licenta,
+)
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import alias_loc_eon, info_device_eon, slug_loc_eon
 from .furnizori.hidroelectrica_helper import build_usage_entity, safe_get
@@ -75,6 +79,27 @@ def _admin_license_text_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> st
     return registry.async_get_entity_id("text", DOMENIU, unique_id)
 
 
+def _senzori_licenta_admin() -> list[str]:
+    return [
+        f"sensor.{DOMENIU}_status_licenta",
+        f"sensor.{DOMENIU}_plan_licenta",
+        f"sensor.{DOMENIU}_valabila_pana_la",
+        f"sensor.{DOMENIU}_ultima_verificare_licenta",
+        f"sensor.{DOMENIU}_cont_licenta",
+        f"sensor.{DOMENIU}_cod_licenta_mascat",
+        f"sensor.{DOMENIU}_mesaj_licenta",
+    ]
+
+
+async def _async_actualizeaza_senzorii_licentei(hass: HomeAssistant) -> None:
+    await hass.services.async_call(
+        "homeassistant",
+        "update_entity",
+        {"entity_id": _senzori_licenta_admin()},
+        blocking=False,
+    )
+
+
 def _admin_device_info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMENIU, entry.entry_id)},
@@ -91,7 +116,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     if entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:
-        async_add_entities([ButonReloadToateSubintegrarile(entry), ButonAplicaLicenta(entry)])
+        async_add_entities([ButonReloadToateSubintegrarile(entry), ButonAplicaLicenta(entry), ButonVerificaLicenta(entry)])
         return
 
     coordonator: CoordonatorUtilitatiRomania = hass.data[DOMENIU][entry.entry_id]
@@ -131,6 +156,62 @@ class ButonReloadToateSubintegrarile(ButtonEntity):
 
     async def async_press(self) -> None:
         await self.hass.services.async_call(DOMENIU, SERVICIU_RELOAD_ALL, {}, blocking=True)
+
+
+class ButonVerificaLicenta(ButtonEntity):
+    _attr_icon = "mdi:shield-sync"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_admin_verifica_licenta"
+        self._attr_name = "Verifică licență"
+        self.entity_id = f"button.{DOMENIU}_verifica_licenta"
+        self._attr_device_info = _admin_device_info(entry)
+        self._attr_entity_category = EntityCategory.CONFIG
+
+    async def async_press(self) -> None:
+        utilizator, cheie, _storage = await async_obtine_context_licenta(self.hass, intrare=self._entry)
+        if not utilizator:
+            raise HomeAssistantError("Nu există încă un cont de licență asociat. Configurează mai întâi cel puțin un furnizor.")
+        if not cheie:
+            raise HomeAssistantError("Nu există un cod de licență salvat pentru verificare.")
+
+        rezultat = await async_valideaza_licenta(self.hass, cheie, utilizator)
+
+        if rezultat.eroare_conectare:
+            mesaj = rezultat.mesaj or "Serverul de licență nu a putut fi contactat."
+            persistent_notification.async_create(
+                self.hass,
+                f"Verificarea licenței nu a putut fi finalizată.\n\nMotiv: **{mesaj}**",
+                title="Utilități România – Licență",
+                notification_id="utilitati_romania_verifica_licenta",
+            )
+            raise HomeAssistantError(mesaj)
+
+        await async_salveaza_licenta_globala(self.hass, cheie, utilizator, rezultat)
+        await _async_actualizeaza_senzorii_licentei(self.hass)
+
+        if rezultat.valida:
+            mesaj = (
+                "Licența a fost verificată cu succes.\n\n"
+                f"- Status: **{rezultat.status}**\n"
+                f"- Plan: **{rezultat.plan or '-'}**\n"
+                f"- Expiră la: **{rezultat.expira_la or '-'}**"
+            )
+        else:
+            mesaj = (
+                "Licența a fost verificată, dar nu mai este validă.\n\n"
+                f"- Status: **{rezultat.status}**\n"
+                f"- Motiv: **{rezultat.mesaj or '-'}**\n\n"
+                "Furnizorii pot rămâne indisponibili până la activarea unei licențe valide."
+            )
+
+        persistent_notification.async_create(
+            self.hass,
+            mesaj,
+            title="Utilități România – Licență",
+            notification_id="utilitati_romania_verifica_licenta",
+        )
 
 
 class ButonAplicaLicenta(ButtonEntity):
@@ -179,29 +260,7 @@ class ButonAplicaLicenta(ButtonEntity):
             blocking=True,
         )
 
-        await self.hass.services.async_call(
-            DOMENIU,
-            SERVICIU_RELOAD_ALL,
-            {},
-            blocking=True,
-        )
-
-        await self.hass.services.async_call(
-            "homeassistant",
-            "update_entity",
-            {
-                "entity_id": [
-                    f"sensor.{DOMENIU}_status_licenta",
-                    f"sensor.{DOMENIU}_plan_licenta",
-                    f"sensor.{DOMENIU}_valabila_pana_la",
-                    f"sensor.{DOMENIU}_ultima_verificare_licenta",
-                    f"sensor.{DOMENIU}_cont_licenta",
-                    f"sensor.{DOMENIU}_cod_licenta_mascat",
-                    f"sensor.{DOMENIU}_mesaj_licenta",
-                ]
-            },
-            blocking=False,
-        )
+        await _async_actualizeaza_senzorii_licentei(self.hass)
 
         persistent_notification.async_create(
             self.hass,
@@ -209,7 +268,9 @@ class ButonAplicaLicenta(ButtonEntity):
                 "Licența a fost actualizată cu succes.\n\n"
                 f"- Utilizator: **{utilizator}**\n"
                 f"- Plan: **{rezultat.plan or '-'}**\n"
-                f"- Expiră la: **{rezultat.expira_la or '-'}**"
+                f"- Expiră la: **{rezultat.expira_la or '-'}**\n\n"
+                "Senzorii de licență au fost actualizați fără reîncărcarea automată a furnizorilor. "
+                "Dacă un furnizor era deja blocat de licență, folosește manual butonul „Reload all subs” sau reîncarcă integrarea din Home Assistant."
             ),
             title="Utilități România – Licență",
             notification_id=notif_id,
