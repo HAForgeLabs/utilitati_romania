@@ -688,6 +688,28 @@ def _money_to_lei(value: Any) -> float | None:
     return round(parsed, 2)
 
 
+def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
+    """Construiește cheia stabilă folosită pentru agregarea facturilor în dashboard."""
+    locatie = item["locatie_cheie"]
+    furnizor = normalize_text(item["furnizor"]).lower()
+
+    # Unii furnizori pot avea mai multe contracte/servicii pe aceeași locație.
+    # Dacă am grupa doar după locație + furnizor, facturile se suprascriu între ele.
+    if furnizor in {"eon", "orange"}:
+        identificator_serviciu = (
+            item.get("id_cont")
+            or item.get("id_contract")
+            or item.get("tip_utilitate")
+            or item.get("tip_serviciu")
+            or item.get("invoice_id")
+            or item.get("invoice_title")
+            or ""
+        )
+        return (locatie, furnizor, normalize_text(identificator_serviciu).lower())
+
+    return (locatie, furnizor)
+
+
 def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
@@ -713,21 +735,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             if item.get("status") == "credit":
                 continue
 
-            # Orange poate avea mai multe abonamente active în același cont și pe aceeași
-            # grupare manuală de facturi. Dacă am păstra cheia doar pe locație + furnizor,
-            # cardul ar afișa un singur număr Orange, pentru că facturile s-ar suprascrie
-            # între ele. Pentru Orange separăm explicit fiecare abonament după id_cont.
-            if item.get("furnizor") == "orange":
-                group_key = (
-                    item["locatie_cheie"],
-                    normalize_text(item["furnizor"]).lower(),
-                    normalize_text(item.get("id_cont") or item.get("invoice_id") or "").lower(),
-                )
-            else:
-                group_key = (
-                    item["locatie_cheie"],
-                    normalize_text(item["furnizor"]).lower(),
-                )
+            group_key = _cheie_grupare_factura(item)
 
             current = grouped.get(group_key)
             if current is None or _sort_key_for_date(item.get("issue_date")) > _sort_key_for_date(current.get("issue_date")):
@@ -740,10 +748,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                 if fallback_item is None:
                     continue
 
-                group_key = (
-                    fallback_item["locatie_cheie"],
-                    normalize_text(fallback_item["furnizor"]).lower(),
-                )
+                group_key = _cheie_grupare_factura(fallback_item)
 
                 current = grouped.get(group_key)
 
@@ -786,10 +791,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                 if fallback_item is None:
                     continue
 
-                group_key = (
-                    fallback_item["locatie_cheie"],
-                    normalize_text(fallback_item["furnizor"]).lower(),
-                )
+                group_key = _cheie_grupare_factura(fallback_item)
 
                 current = grouped.get(group_key)
                 if current is None:

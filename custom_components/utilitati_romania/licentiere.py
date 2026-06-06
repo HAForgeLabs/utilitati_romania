@@ -39,6 +39,15 @@ VERSIUNE_STORAGE_LICENTA = 1
 CHEIE_STORAGE_LICENTA = f"{DOMENIU}_licenta"
 
 
+def normalizeaza_cheia_licenta(cheie: str | None) -> str:
+    """Normalizează codul de licență introdus de utilizator."""
+    text = str(cheie or "").strip()
+    for caracter in ("‐", "‑", "‒", "–", "—", "―"):
+        text = text.replace(caracter, "-")
+    text = "".join(text.split())
+    return text.upper() or "TRIAL"
+
+
 @dataclass(slots=True)
 class RezultatLicenta:
     valida: bool
@@ -93,7 +102,7 @@ async def async_salveaza_licenta_globala(
     ).strip()
 
     payload: dict[str, Any] = {
-        CONF_CHEIE_LICENTA: str(cheie_licenta).strip() or "TRIAL",
+        CONF_CHEIE_LICENTA: normalizeaza_cheia_licenta(cheie_licenta),
         CONF_UTILIZATOR: utilizator_final,
     }
 
@@ -117,7 +126,7 @@ async def async_obtine_context_licenta(
 ) -> tuple[str, str, dict[str, Any]]:
     storage = await async_obtine_licenta_globala(hass)
     storage_utilizator = str(storage.get(CONF_UTILIZATOR, "")).strip()
-    storage_cheie = str(storage.get(CONF_CHEIE_LICENTA, "")).strip()
+    storage_cheie = normalizeaza_cheia_licenta(storage.get(CONF_CHEIE_LICENTA, "")) if storage.get(CONF_CHEIE_LICENTA) else ""
 
     entry_utilizator = ""
     entry_cheie = ""
@@ -125,12 +134,12 @@ async def async_obtine_context_licenta(
         entry_utilizator = str(
             intrare.options.get(CONF_UTILIZATOR, intrare.data.get(CONF_UTILIZATOR, ""))
         ).strip()
-        entry_cheie = str(
+        entry_cheie = normalizeaza_cheia_licenta(
             intrare.options.get(CONF_CHEIE_LICENTA, intrare.data.get(CONF_CHEIE_LICENTA, ""))
-        ).strip()
+        )
 
     utilizator_final = str(utilizator).strip() if utilizator is not None else (storage_utilizator or entry_utilizator)
-    cheie_finala = str(cheie_licenta).strip() if cheie_licenta is not None else (storage_cheie or entry_cheie or "TRIAL")
+    cheie_finala = normalizeaza_cheia_licenta(cheie_licenta) if cheie_licenta is not None else (storage_cheie or entry_cheie or "TRIAL")
     return utilizator_final, cheie_finala, storage
 
 
@@ -139,7 +148,7 @@ def _date_licenta_din_storage_sunt_pentru_contextul_curent(
     cheie_licenta: str,
     utilizator: str,
 ) -> bool:
-    cheie_ok = str(date_licenta_globala.get(CONF_CHEIE_LICENTA, "")).strip() == str(cheie_licenta).strip()
+    cheie_ok = normalizeaza_cheia_licenta(date_licenta_globala.get(CONF_CHEIE_LICENTA, "")) == normalizeaza_cheia_licenta(cheie_licenta)
 
     utilizator_stocat = str(date_licenta_globala.get(CONF_UTILIZATOR, "")).strip()
     if not utilizator or not utilizator_stocat:
@@ -155,7 +164,7 @@ async def async_valideaza_licenta(
 ) -> RezultatLicenta:
     sesiune = async_get_clientsession(hass)
     payload = {
-        "license_key": cheie_licenta,
+        "license_key": normalizeaza_cheia_licenta(cheie_licenta),
         "fingerprint": construieste_fingerprint_instanta(hass),
         "product": DOMENIU,
         "username": utilizator,

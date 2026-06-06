@@ -20,6 +20,7 @@ from .licentiere import (
     async_obtine_context_licenta,
     async_salveaza_licenta_globala,
     async_valideaza_licenta,
+    normalizeaza_cheia_licenta,
 )
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_device_eon, slug_serviciu_loc_eon, tip_serviciu_eon
@@ -238,7 +239,7 @@ class ButonAplicaLicenta(ButtonEntity):
             raise HomeAssistantError("Nu am găsit câmpul text pentru introducerea licenței.")
 
         stare = self.hass.states.get(text_entity_id)
-        cod = str(stare.state).strip() if stare else ""
+        cod = normalizeaza_cheia_licenta(stare.state if stare else "")
         if not cod:
             raise HomeAssistantError("Introdu mai întâi un cod de licență nou.")
 
