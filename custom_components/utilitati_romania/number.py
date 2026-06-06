@@ -9,7 +9,7 @@ from .coordonator import CoordonatorUtilitatiRomania
 from .const import DOMENIU
 from .entitate import EntitateUtilitatiRomania
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
-from .eon_device import alias_loc_eon, info_device_eon, slug_loc_eon
+from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_device_eon, slug_serviciu_loc_eon, tip_serviciu_eon
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
 from .naming import build_provider_slug
@@ -162,17 +162,19 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
         self.cont = cont
 
         alias = alias_loc_eon(cont.nume, cont.adresa, cont.id_cont)
-        slug = slug_loc_eon(cont.id_cont, alias, cont.adresa)
-        tip = cont.tip_serviciu or cont.tip_utilitate or "curent"
+        slug = slug_serviciu_loc_eon(cont)
+        identificator = id_unic_eon(cont)
+        tip = tip_serviciu_eon(cont)
+        cheie_serviciu = cheie_serviciu_eon(cont)
 
         self._attr_native_unit_of_measurement = "m³" if tip == "gaz" else "kWh"
-        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{cont.id_cont}_index"
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_index"
         self._attr_name = (
             f"Index {'gaz' if tip == 'gaz' else 'energie electrică'} {alias}"
         )
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
-        self._attr_suggested_object_id = f"eon_{cont.id_cont}_{slug}_index"
-        self.entity_id = f"number.eon_{cont.id_cont}_{slug}_index"
+        self._attr_suggested_object_id = f"{slug}_index"
+        self.entity_id = f"number.{slug}_index"
         self._attr_native_value = 0
 
     async def async_added_to_hass(self) -> None:

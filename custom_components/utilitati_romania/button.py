@@ -22,7 +22,7 @@ from .licentiere import (
     async_valideaza_licenta,
 )
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
-from .eon_device import alias_loc_eon, info_device_eon, slug_loc_eon
+from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_device_eon, slug_serviciu_loc_eon, tip_serviciu_eon
 from .furnizori.hidroelectrica_helper import build_usage_entity, safe_get
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
@@ -366,14 +366,18 @@ class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
         super().__init__(coordonator)
         self.cont = cont
         alias = alias_loc_eon(cont.nume, cont.adresa, cont.id_cont)
-        slug = slug_loc_eon(cont.id_cont, alias, cont.adresa)
-        tip = cont.tip_serviciu or cont.tip_utilitate or "curent"
+        slug = slug_serviciu_loc_eon(cont)
+        identificator = id_unic_eon(cont)
+        tip = tip_serviciu_eon(cont)
 
         self._alias = alias
         self._tip = tip
+        self._number_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_index"
 
-        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{slug}_trimite_index"
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_trimite_index"
         self._attr_name = f"Trimite index {'gaz' if tip == 'gaz' else 'energie electrică'} {alias}"
+        self._attr_suggested_object_id = f"{slug}_trimite_index"
+        self.entity_id = f"button.{slug}_trimite_index"
         self._attr_icon = "mdi:send-circle"
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
 
@@ -382,17 +386,21 @@ class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
         notif_id = f"utilitati_romania_eon_trimite_index_{self.cont.id_cont}"
 
         try:
-            text_cautat = "index gaz" if self._tip == "gaz" else "index energie electrică"
+            registru_entitati = er.async_get(self.hass)
+            number_entity_id = registru_entitati.async_get_entity_id("number", DOMENIU, self._number_unique_id)
+            numar = self.hass.states.get(number_entity_id) if number_entity_id else None
 
-            numar = next(
-                (
-                    state
-                    for state in self.hass.states.async_all("number")
-                    if text_cautat in str(state.attributes.get("friendly_name", "")).lower()
-                    and self._alias.lower() in str(state.attributes.get("friendly_name", "")).lower()
-                ),
-                None,
-            )
+            if not numar:
+                text_cautat = "index gaz" if self._tip == "gaz" else "index energie electrică"
+                numar = next(
+                    (
+                        state
+                        for state in self.hass.states.async_all("number")
+                        if text_cautat in str(state.attributes.get("friendly_name", "")).lower()
+                        and self._alias.lower() in str(state.attributes.get("friendly_name", "")).lower()
+                    ),
+                    None,
+                )
 
             if not numar:
                 raise ValueError(

@@ -804,12 +804,17 @@ class ClientFurnizorEon(ClientFurnizor):
                 )
 
             factura_id = _safe_str(loc.get("id_ultima_factura"))
+            valoare_factura_consum = round(_to_float(loc.get("valoare_ultima_factura"), 0.0), 2)
+            if not factura_id and factura_restanta and sold_factura > 0:
+                factura_id = f"sold-{id_cont}"
+                valoare_factura_consum = round(sold_factura, 2)
+
             if factura_id:
                 facturi.append(
                     FacturaUtilitate(
                         id_factura=factura_id,
                         titlu=f"Factura {factura_id}",
-                        valoare=round(_to_float(loc.get("valoare_ultima_factura"), 0.0), 2),
+                        valoare=valoare_factura_consum,
                         moneda="RON",
                         data_emitere=_parse_date(loc.get("data_ultima_factura")),
                         data_scadenta=_parse_date(loc.get("urmatoarea_scadenta")),

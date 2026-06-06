@@ -20,7 +20,14 @@ from .entitate import EntitateUtilitatiRomania
 from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL
 from .modele import FacturaUtilitate, InstantaneuFurnizor
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
-from .eon_device import alias_loc_eon, info_device_eon, slug_loc_eon
+from .eon_device import (
+    alias_loc_eon,
+    cheie_serviciu_eon,
+    id_unic_eon,
+    info_device_eon,
+    slug_serviciu_loc_eon,
+    tip_serviciu_eon,
+)
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .deer_device import alias_loc_deer, info_device_deer, slug_loc_deer
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
@@ -250,11 +257,59 @@ def _valoare_consum_global(instantaneu: InstantaneuFurnizor, cheie: str):
     return None
 
 
-def _valoare_rezumat_financiar(instantaneu: InstantaneuFurnizor, cheie: str):
-    if instantaneu.furnizor == "digi":
-        return _valoare_consum_global(instantaneu, cheie)
-    return _valoare_consum(instantaneu, cheie)
+def _suma_consumuri_pe_cont(instantaneu: InstantaneuFurnizor, cheie: str) -> float | None:
+    total = 0.0
+    gasit = False
+    for consum in instantaneu.consumuri or []:
+        if getattr(consum, "cheie", None) != cheie:
+            continue
+        if getattr(consum, "id_cont", None) in (None, ""):
+            continue
+        try:
+            total += float(getattr(consum, "valoare", 0) or 0)
+            gasit = True
+        except (TypeError, ValueError):
+            continue
+    return round(total, 2) if gasit else None
 
+
+def _valoare_rezumat_financiar(instantaneu: InstantaneuFurnizor, cheie: str):
+    valoare_globala = _valoare_consum_global(instantaneu, cheie)
+    if valoare_globala is not None:
+        return valoare_globala
+    return _suma_consumuri_pe_cont(instantaneu, cheie)
+
+
+
+
+def _cheie_serviciu_eon_din_valori(tip_serviciu: Any = None, tip_utilitate: Any = None) -> str:
+    text = f"{tip_serviciu or ''} {tip_utilitate or ''}".strip().lower()
+    if "gaz" in text or "gas" in text or "02" in text:
+        return "gaz"
+    if "curent" in text or "electric" in text or "energie" in text or "01" in text:
+        return "energie_electrica"
+    return "serviciu"
+
+
+def _valoare_consum_eon(instantaneu: InstantaneuFurnizor, cheie: str, cont):
+    id_cont = getattr(cont, "id_cont", None)
+    serviciu_cont = cheie_serviciu_eon(cont)
+    valori = []
+    for consum in instantaneu.consumuri or []:
+        if getattr(consum, "cheie", None) != cheie:
+            continue
+        if getattr(consum, "id_cont", None) != id_cont:
+            continue
+        serviciu_consum = _cheie_serviciu_eon_din_valori(
+            getattr(consum, "tip_serviciu", None),
+            getattr(consum, "tip_utilitate", None),
+        )
+        if serviciu_consum == serviciu_cont:
+            valori.append(getattr(consum, "valoare", None))
+
+    if valori:
+        return valori[0]
+    return _valoare_consum(instantaneu, cheie, id_cont)
 
 def _id_ultima_factura_rezumat(instantaneu: InstantaneuFurnizor):
     if instantaneu.furnizor == "digi":
@@ -349,7 +404,7 @@ def _calculeaza_total_neachitat(instantaneu: InstantaneuFurnizor):
         except Exception:
             return 0.0
 
-    sold_curent = _valoare_consum(instantaneu, "sold_curent")
+    sold_curent = _valoare_rezumat_financiar(instantaneu, "sold_curent")
     if sold_curent is not None:
         try:
             return round(max(float(sold_curent), 0.0), 2)
@@ -423,12 +478,8 @@ def _slug_strada_digi(cont) -> str:
 
 
 def _tip_eon(cont) -> str:
-    tip = (getattr(cont, "tip_serviciu", None) or getattr(cont, "tip_utilitate", None) or "").strip().lower()
-    if tip in {"gaz", "energie electrică", "electricitate", "curent", "01", "02"}:
-        if tip in {"gaz", "02"}:
-            return "gaz"
-        return "curent"
-    return "gaz"
+    tip = tip_serviciu_eon(cont)
+    return "gaz" if tip == "gaz" else "curent"
 
 
 def _an_curent_loc_eon(cont) -> int:
@@ -651,14 +702,14 @@ SENZORI_CONT_HIDRO: tuple[DescriereSenzorCont, ...] = (
 )
 
 SENZORI_CONT_EON: tuple[DescriereSenzorCont, ...] = (
-    DescriereSenzorCont(key="citire_permisa", name="Citire permisă", icon="mdi:counter", functie_valoare=lambda i, c: _valoare_consum(i, "citire_permisa", c.id_cont)),
-    DescriereSenzorCont(key="de_plata", name="De plată", icon="mdi:cash-clock", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "de_plata", c.id_cont)),
-    DescriereSenzorCont(key="factura_restanta", name="Factură restantă", icon="mdi:alert-circle", functie_valoare=lambda i, c: _valoare_consum(i, "factura_restanta", c.id_cont)),
+    DescriereSenzorCont(key="citire_permisa", name="Citire permisă", icon="mdi:counter", functie_valoare=lambda i, c: _valoare_consum_eon(i, "citire_permisa", c)),
+    DescriereSenzorCont(key="de_plata", name="De plată", icon="mdi:cash-clock", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum_eon(i, "de_plata", c)),
+    DescriereSenzorCont(key="factura_restanta", name="Factură restantă", icon="mdi:alert-circle", functie_valoare=lambda i, c: _valoare_consum_eon(i, "factura_restanta", c)),
     DescriereSenzorCont(key="id_ultima_factura", name="ID ultima factură", icon="mdi:receipt-text", functie_valoare=lambda i, c: _eon_id_ultima_factura(c)),
-    DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "sold_curent", c.id_cont)),
-    DescriereSenzorCont(key="sold_factura", name="Sold factură", icon="mdi:cash-refund", functie_valoare=lambda i, c: "da" if float(_valoare_consum(i, "sold_factura", c.id_cont) or 0) > 0 else "nu"),
+    DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum_eon(i, "sold_curent", c)),
+    DescriereSenzorCont(key="sold_factura", name="Sold factură", icon="mdi:cash-refund", functie_valoare=lambda i, c: "da" if float(_valoare_consum_eon(i, "sold_factura", c) or 0) > 0 else "nu"),
     DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _eon_valoare_ultima_factura(c)),
-    DescriereSenzorCont(key="index_contor", name="Index contor", icon="mdi:meter-gas", functie_valoare=lambda i, c: _valoare_consum(i, "index_gaz", c.id_cont) if _tip_eon(c) == "gaz" else _valoare_consum(i, "index_energie_electrica", c.id_cont)),
+    DescriereSenzorCont(key="index_contor", name="Index contor", icon="mdi:meter-gas", functie_valoare=lambda i, c: _valoare_consum_eon(i, "index_gaz", c) if _tip_eon(c) == "gaz" else _valoare_consum_eon(i, "index_energie_electrica", c)),
 )
 
 SENZORI_CONT_EON_EXTINS: tuple[DescriereSenzorContEonExtins, ...] = (
@@ -1069,8 +1120,9 @@ class SenzorContEon(EntitateUtilitatiRomania, SensorEntity):
         self.cont = cont
         self.entity_description = descriere
         alias = alias_loc_eon(cont.nume, cont.adresa, cont.id_cont)
-        slug = slug_loc_eon(cont.id_cont, alias, cont.adresa)
-        self._attr_unique_id = f"{coordonator.intrare.entry_id}_{slug}_{descriere.key}"
+        slug = slug_serviciu_loc_eon(cont)
+        identificator = id_unic_eon(cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_{descriere.key}"
         if descriere.key == "index_contor":
             self._attr_name = 'Index gaz' if _tip_eon(cont) == 'gaz' else 'Index energie electrică'
             self._attr_native_unit_of_measurement = 'm³' if _tip_eon(cont) == 'gaz' else 'kWh'
@@ -1097,6 +1149,8 @@ class SenzorContEon(EntitateUtilitatiRomania, SensorEntity):
             "nume_cont": self.cont.nume,
             "tip_serviciu": self.cont.tip_serviciu,
             "tip_utilitate": self.cont.tip_utilitate,
+            "serviciu_eon": cheie_serviciu_eon(self.cont),
+            "identificator_eon": id_unic_eon(self.cont),
             "adresa": self.cont.adresa,
         }
         raw = _date_brute_cont(self.cont)
@@ -1113,7 +1167,8 @@ class SenzorContEonExtins(EntitateUtilitatiRomania, SensorEntity):
         self.cont = cont
         self.entity_description = descriere
         alias = alias_loc_eon(cont.nume, cont.adresa, cont.id_cont)
-        slug = slug_loc_eon(cont.id_cont, alias, cont.adresa)
+        slug = slug_serviciu_loc_eon(cont)
+        identificator = id_unic_eon(cont)
         tip = _tip_eon(cont)
         an = _an_curent_loc_eon(cont)
 
@@ -1131,7 +1186,7 @@ class SenzorContEonExtins(EntitateUtilitatiRomania, SensorEntity):
             self._attr_name = descriere.name
             self._attr_suggested_object_id = f"{slug}_{descriere.key}"
 
-        self._attr_unique_id = f"{coordonator.intrare.entry_id}_{slug}_{descriere.key}_{an if descriere.key.startswith('arhiva_') else 'base'}"
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_{descriere.key}_{an if descriere.key.startswith('arhiva_') else 'base'}"
         self.entity_id = f"sensor.{self._attr_suggested_object_id}"
         self._attr_icon = descriere.icon
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
@@ -1148,6 +1203,8 @@ class SenzorContEonExtins(EntitateUtilitatiRomania, SensorEntity):
             "nume_cont": self.cont.nume,
             "tip_serviciu": self.cont.tip_serviciu,
             "tip_utilitate": self.cont.tip_utilitate,
+            "serviciu_eon": cheie_serviciu_eon(self.cont),
+            "identificator_eon": id_unic_eon(self.cont),
             "adresa": self.cont.adresa,
         }
 
