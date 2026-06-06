@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -27,6 +28,98 @@ from ..const import (
 from .digi_models import AddressInvoices, DigiData, InvoiceDetail, InvoiceSummary
 
 _LOGGER = logging.getLogger(__name__)
+
+
+
+def _digi_mask_token(value: Any, *, visible: int = 4) -> str | None:
+    """Mascheaza un identificator Digi pastrand doar suficient pentru corelare in log."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return ""
+    if len(text) <= visible * 2:
+        return "***"
+    return f"{text[:visible]}…{text[-visible:]}"
+
+
+def _digi_mask_text(value: Any) -> str | None:
+    """Mascheaza textul care poate contine numere de telefon sau coduri client."""
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text:
+        return ""
+    text = re.sub(r"\b\d{3,}\b", "***", text)
+    if len(text) > 80:
+        text = f"{text[:77]}..."
+    return text
+
+
+def _digi_stable_anon_label(prefix: str, value: Any) -> str | None:
+    """Genereaza o eticheta anonima stabila pentru corelarea elementelor in log."""
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text:
+        return ""
+
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+    return f"{prefix}_{digest}"
+
+
+def _digi_mask_address(value: Any) -> str | None:
+    """Anonimizeaza complet adresa, pastrand doar un indiciu tehnic stabil pentru diagnostic."""
+    return _digi_stable_anon_label("adresa_anonimizata", value)
+
+
+def _digi_mask_address_key(value: Any) -> str | None:
+    """Anonimizeaza cheia interna de adresa, deoarece poate contine fragmente din adresa reala."""
+    return _digi_stable_anon_label("cheie_adresa_anonimizata", value)
+
+
+def _digi_mask_service_name(value: Any) -> str | None:
+    """Mascheaza denumirea serviciului fara a ascunde complet tipul serviciului."""
+    return _digi_mask_text(value)
+
+
+def _digi_safe_invoice_debug(item: dict[str, Any]) -> dict[str, Any]:
+    """Construieste o reprezentare sigura pentru logurile de diagnostic Digi."""
+    services = item.get("services") or []
+    if not isinstance(services, list):
+        services = []
+
+    return {
+        "invoice_id": _digi_mask_token(item.get("invoice_id")),
+        "invoice_number": _digi_mask_token(item.get("invoice_number")),
+        "issue_date": item.get("issue_date"),
+        "due_date": item.get("due_date"),
+        "amount": item.get("amount"),
+        "rest": item.get("rest"),
+        "status": _digi_mask_text(item.get("status")),
+        "description": _digi_mask_text(item.get("description")),
+        "services_count": len(services),
+        "services": [
+            {
+                "name": _digi_mask_service_name(service.get("name") if isinstance(service, dict) else service),
+                "amount": service.get("amount") if isinstance(service, dict) else None,
+            }
+            for service in services[:10]
+        ],
+    }
+
+
+def _digi_safe_row_debug(row: InvoiceSummary) -> dict[str, Any]:
+    """Construieste o reprezentare sigura pentru randurile extrase din pagina de facturi."""
+    return {
+        "invoice_id": _digi_mask_token(row.invoice_id),
+        "address_key": _digi_mask_address_key(row.address_key),
+        "address": _digi_mask_address(row.address),
+        "issue_date": row.issue_date,
+        "due_date": row.due_date,
+        "description": _digi_mask_text(row.description),
+        "amount": row.amount,
+    }
 
 RE_INPUT_TAG = re.compile(r"<input[^>]*>", re.I | re.S)
 RE_LABEL_FOR = re.compile(
@@ -555,10 +648,26 @@ class DigiApiClient:
             raise DigiReauthRequired("Session expired")
 
         parsed = self._parse_invoice_page(html)
+        parsed_debug = parsed.get("debug") or {}
         if not parsed["rows"]:
             raise DigiError("No invoices found in Digi page")
 
         rows: list[InvoiceSummary] = parsed["rows"]
+
+        _LOGGER.warning(
+            "Diagnostic Digi: pagina facturi parsata: %s",
+            json.dumps(
+                {
+                    "addresses_count": parsed_debug.get("addresses_count"),
+                    "current_rows_count": parsed_debug.get("current_rows_count"),
+                    "archive_rows_count": parsed_debug.get("archive_rows_count"),
+                    "cfg_ids_count": parsed_debug.get("cfg_ids_count"),
+                    "rows_count": len(rows),
+                    "rows": [_digi_safe_row_debug(row) for row in rows[:12]],
+                },
+                ensure_ascii=False,
+            ),
+        )
 
         recent_ids_by_address: dict[str, list[str]] = {}
         for row in rows:
@@ -611,6 +720,30 @@ class DigiApiClient:
                 unpaid_count=unpaid_count,
             )
 
+        _LOGGER.warning(
+            "Diagnostic Digi: facturi grupate pe adrese/servicii: %s",
+            json.dumps(
+                {
+                    "addresses_count": len(invoices_by_address),
+                    "addresses": [
+                        {
+                            "address_key": _digi_mask_address_key(address_key),
+                            "address": _digi_mask_address(entry.address),
+                            "latest": _digi_safe_invoice_debug(entry.latest or {}),
+                            "history_count": len(entry.history or []),
+                            "unpaid_count": entry.unpaid_count,
+                            "history": [
+                                _digi_safe_invoice_debug(item)
+                                for item in (entry.history or [])[:8]
+                            ],
+                        }
+                        for address_key, entry in invoices_by_address.items()
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+
         return DigiData(
             account_label=None,
             account_id=None,
@@ -623,13 +756,21 @@ class DigiApiClient:
         addresses: dict[str, str] = {
             key: self._clean_text(label) for key, label in RE_ADDRESS_OPTION.findall(html)
         }
+        debug_info: dict[str, Any] = {
+            "addresses_count": len(addresses),
+            "current_rows_count": 0,
+            "archive_rows_count": 0,
+            "cfg_ids_count": 0,
+        }
 
         rows: list[InvoiceSummary] = []
 
         current_html = self._extract_section(html, "Facturi curente", "Facturi achitate")
         current_invoice_ids: list[str] = []
         if current_html:
-            for address_key, invoice_id, issue_date, description, due_date, amount_text in RE_CURRENT_ROW.findall(current_html):
+            current_matches = RE_CURRENT_ROW.findall(current_html)
+            debug_info["current_rows_count"] = len(current_matches)
+            for address_key, invoice_id, issue_date, description, due_date, amount_text in current_matches:
                 current_invoice_ids.append(str(invoice_id))
                 rows.append(
                     InvoiceSummary(
@@ -654,6 +795,7 @@ class DigiApiClient:
             try:
                 cfg = json.loads(unescape(cfg_match.group(1).strip()))
                 all_ids = [str(item["id"]) for item in cfg if item.get("id")]
+                debug_info["cfg_ids_count"] = len(all_ids)
 
                 # Digi include în client-invoices-cfg atât factura/facturile curente,
                 # cât și facturile achitate. Pentru arhivă trebuie eliminate mai întâi
@@ -670,6 +812,7 @@ class DigiApiClient:
                 raise DigiError("Invalid invoice config JSON") from err
 
         archive_matches = list(RE_ROW.findall(archive_html if archive_html else html))
+        debug_info["archive_rows_count"] = len(archive_matches)
 
         for idx, match in enumerate(archive_matches):
             if idx >= len(archive_ids):
@@ -694,7 +837,7 @@ class DigiApiClient:
         if not rows:
             _LOGGER.debug("Digi invoices page parsed but no rows found")
 
-        return {"rows": rows, "addresses": addresses}
+        return {"rows": rows, "addresses": addresses, "debug": debug_info}
 
     async def _fetch_invoice_details(self, invoice_id: str) -> InvoiceDetail:
         payload = {
