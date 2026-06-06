@@ -664,11 +664,18 @@ async def _async_cleanup_admin_registry_links(hass: HomeAssistant) -> None:
     for device in list(device_registry.devices.values()):
         identifiers = set(device.identifiers or set())
 
-        if any(domain == DOMENIU and identifier in admin_entry_ids for domain, identifier in identifiers):
-            admin_device_ids.add(device.id)
+        for raw_identifier in identifiers:
+            if not isinstance(raw_identifier, tuple) or len(raw_identifier) < 2:
+                continue
 
-        if (DOMENIU, "grupare_facturi") in identifiers:
-            grouping_device_ids.add(device.id)
+            domain = raw_identifier[0]
+            identifier = raw_identifier[1]
+
+            if domain == DOMENIU and identifier in admin_entry_ids:
+                admin_device_ids.add(device.id)
+
+            if domain == DOMENIU and identifier == "grupare_facturi":
+                grouping_device_ids.add(device.id)
 
     for device_id in admin_device_ids:
         for entity_entry in list(
