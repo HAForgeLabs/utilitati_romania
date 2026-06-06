@@ -91,11 +91,19 @@ def _senzori_licenta_admin() -> list[str]:
     ]
 
 
+def _filtreaza_entitati_existente(hass: HomeAssistant, entity_ids: list[str]) -> list[str]:
+    return [entity_id for entity_id in entity_ids if hass.states.get(entity_id) is not None]
+
+
 async def _async_actualizeaza_senzorii_licentei(hass: HomeAssistant) -> None:
+    entity_ids = _filtreaza_entitati_existente(hass, _senzori_licenta_admin())
+    if not entity_ids:
+        return
+
     await hass.services.async_call(
         "homeassistant",
         "update_entity",
-        {"entity_id": _senzori_licenta_admin()},
+        {"entity_id": entity_ids},
         blocking=False,
     )
 

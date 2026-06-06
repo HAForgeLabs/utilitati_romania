@@ -34,6 +34,35 @@ from .storage_citiri import async_salveaza_citire, obtine_citire_cache
 _LOGGER = logging.getLogger(__name__)
 
 
+def _senzori_licenta_admin() -> list[str]:
+    return [
+        f"sensor.{DOMENIU}_status_licenta",
+        f"sensor.{DOMENIU}_plan_licenta",
+        f"sensor.{DOMENIU}_valabila_pana_la",
+        f"sensor.{DOMENIU}_ultima_verificare_licenta",
+        f"sensor.{DOMENIU}_cont_licenta",
+        f"sensor.{DOMENIU}_cod_licenta_mascat",
+        f"sensor.{DOMENIU}_mesaj_licenta",
+    ]
+
+
+def _filtreaza_entitati_existente(hass: HomeAssistant, entity_ids: list[str]) -> list[str]:
+    return [entity_id for entity_id in entity_ids if hass.states.get(entity_id) is not None]
+
+
+async def _async_actualizeaza_senzorii_licentei(hass: HomeAssistant) -> None:
+    entity_ids = _filtreaza_entitati_existente(hass, _senzori_licenta_admin())
+    if not entity_ids:
+        return
+
+    await hass.services.async_call(
+        "homeassistant",
+        "update_entity",
+        {"entity_id": entity_ids},
+        blocking=False,
+    )
+
+
 class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
     def __init__(self, hass: HomeAssistant, intrare: ConfigEntry) -> None:
         self.hass = hass
@@ -154,22 +183,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             # cache-ul valid cu erori de conectare temporare.
             if rezultat_licenta.valida or not rezultat_licenta.eroare_conectare:
                 await async_salveaza_licenta_in_intrare(self.hass, self.intrare, rezultat_licenta)
-                await self.hass.services.async_call(
-                    "homeassistant",
-                    "update_entity",
-                    {
-                        "entity_id": [
-                            f"sensor.{DOMENIU}_status_licenta",
-                            f"sensor.{DOMENIU}_plan_licenta",
-                            f"sensor.{DOMENIU}_valabila_pana_la",
-                            f"sensor.{DOMENIU}_ultima_verificare_licenta",
-                            f"sensor.{DOMENIU}_cont_licenta",
-                            f"sensor.{DOMENIU}_cod_licenta_mascat",
-                            f"sensor.{DOMENIU}_mesaj_licenta",
-                        ]
-                    },
-                    blocking=False,
-                )
+                await _async_actualizeaza_senzorii_licentei(self.hass)
 
             valideaza_rezultat_licenta(rezultat_licenta)
         except EroareLicenta as err:
