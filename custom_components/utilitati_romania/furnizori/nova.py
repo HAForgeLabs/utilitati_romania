@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -215,6 +217,8 @@ class ClientFurnizorNova(ClientFurnizor):
         except EroareRaspunsNova as err:
             raise EroareParsare(str(err)) from err
 
+        _logheaza_diagnostic_nova(date_brute)
+
         conturi = self._mapeaza_conturi(date_brute)
         facturi = self._mapeaza_facturi(date_brute)
         consumuri = self._mapeaza_consumuri(date_brute, conturi)
@@ -348,6 +352,225 @@ class ClientFurnizorNova(ClientFurnizor):
             },
         }
 
+
+
+def _logheaza_diagnostic_nova(date_brute: dict[str, Any]) -> None:
+    """Scrie in log un diagnostic anonimizat pentru investigarea conturilor Nova multi-locatie."""
+
+    try:
+        puncte = date_brute.get("metering_points", []) or []
+        facturi = date_brute.get("invoices", []) or []
+        balanta = date_brute.get("invoice_balance", {}) or {}
+
+        _LOGGER.warning(
+            "Diagnostic Nova: conturi si puncte consum: %s",
+            json.dumps(
+                {
+                    "logged_account": _nova_safe_account_debug(date_brute.get("account", {}) or {}),
+                    "viewed_account": _nova_safe_account_debug(date_brute.get("viewed_account", {}) or {}),
+                    "metering_points_count": len(puncte),
+                    "metering_points": [_nova_safe_metering_point_debug(punct) for punct in puncte[:12]],
+                    "raw_counts": {
+                        "invoices": len(facturi),
+                        "payments": len(date_brute.get("payments", []) or []),
+                        "self_readings": len(date_brute.get("self_readings", []) or []),
+                        "metering_points_self_readings": len(date_brute.get("metering_points_self_readings", []) or []),
+                        "legal_notifications": len(date_brute.get("legal_notifications", []) or []),
+                        "incidents": len(date_brute.get("incidents", []) or []),
+                    },
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+
+        _LOGGER.warning(
+            "Diagnostic Nova: facturi si solduri: %s",
+            json.dumps(
+                {
+                    "balance": _nova_safe_balance_debug(balanta),
+                    "invoices_count": len(facturi),
+                    "invoices": [_nova_safe_invoice_debug(factura) for factura in facturi[:12]],
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Diagnostic Nova: nu s-a putut genera diagnosticul anonimizat: %s", err)
+
+
+def _nova_safe_account_debug(cont: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(cont, dict):
+        return {}
+
+    return {
+        "id": _nova_mask_identifier(
+            cont.get("accountId") or cont.get("_id") or cont.get("id"),
+            "cont_anonimizat",
+        ),
+        "account_number": _nova_mask_identifier(
+            cont.get("accountNumber") or cont.get("number") or cont.get("clientCode"),
+            "numar_cont_anonimizat",
+        ),
+        "type": _nova_safe_label(cont.get("type") or cont.get("accountType") or cont.get("role")),
+        "status": _nova_safe_label(cont.get("status")),
+        "keys_present": sorted(str(key) for key in cont.keys())[:40],
+    }
+
+
+def _nova_safe_metering_point_debug(punct: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(punct, dict):
+        return {}
+
+    adresa = punct.get("address")
+    return {
+        "id": _nova_mask_identifier(
+            punct.get("meteringPointId") or punct.get("_id") or punct.get("id"),
+            "punct_consum_anonimizat",
+        ),
+        "number": _nova_mask_identifier(punct.get("number"), "numar_punct_anonimizat"),
+        "specific_id": _nova_mask_identifier(
+            punct.get("specificIdForUtilityType") or punct.get("specificId") or punct.get("code"),
+            "cod_punct_anonimizat",
+        ),
+        "utility_type": _nova_safe_label(
+            punct.get("utilityType")
+            or punct.get("utility")
+            or punct.get("serviceType")
+            or punct.get("commodity")
+            or punct.get("type")
+        ),
+        "normalized_utility_type": _normalizeaza_tip_serviciu(
+            punct.get("utilityType")
+            or punct.get("utility")
+            or punct.get("serviceType")
+            or punct.get("commodity")
+            or punct.get("type")
+            or ""
+        ),
+        "contract_type": _nova_safe_label(punct.get("contractType")),
+        "contract_id": _nova_mask_identifier(punct.get("contractId"), "contract_anonimizat"),
+        "status": _nova_safe_label(punct.get("status")),
+        "has_address": bool(adresa),
+        "address": _nova_mask_identifier(adresa, "adresa_anonimizata") if adresa else None,
+        "is_prosumer_flag": _nova_boolish(
+            punct.get("isProsumer") or punct.get("prosumer") or punct.get("hasInjection") or punct.get("injection")
+        ),
+        "keys_present": sorted(str(key) for key in punct.keys())[:50],
+    }
+
+
+def _nova_safe_invoice_debug(factura: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(factura, dict):
+        return {}
+
+    return {
+        "id": _nova_mask_identifier(
+            factura.get("invoiceId")
+            or factura.get("id")
+            or factura.get("_id")
+            or factura.get("number")
+            or factura.get("invoiceNumber"),
+            "factura_anonimizata",
+        ),
+        "invoice_number": _nova_mask_identifier(
+            factura.get("invoiceNumber") or factura.get("number") or factura.get("series") or factura.get("invoiceSeries"),
+            "numar_factura_anonimizat",
+        ),
+        "issue_date": _nova_safe_label(factura.get("issueDate") or factura.get("issuedAt") or factura.get("date")),
+        "due_date": _nova_safe_label(factura.get("dueDate") or factura.get("dueAt")),
+        "amount": _float_sigur(
+            factura.get("amountTotal")
+            or factura.get("value")
+            or factura.get("invoiceValue")
+            or factura.get("total")
+            or factura.get("amount")
+            or factura.get("totalAmount")
+        ),
+        "remaining": _float_sigur(
+            factura.get("amountToPay")
+            or factura.get("restToPay")
+            or factura.get("rest")
+            or factura.get("remainingValue")
+            or factura.get("remaining")
+            or factura.get("amountRemaining")
+        ),
+        "status": _nova_safe_label(factura.get("status") or factura.get("paymentStatus")),
+        "type": _nova_safe_label(factura.get("type")),
+        "title": _nova_safe_label(factura.get("title")),
+        "category": _nova_safe_label(factura.get("category") or factura.get("description") or factura.get("invoiceType")),
+        "utility_type": _nova_safe_label(
+            factura.get("utilityType")
+            or factura.get("utility")
+            or factura.get("serviceType")
+            or factura.get("commodity")
+        ),
+        "normalized_utility_type": _normalizeaza_tip_serviciu(
+            factura.get("utilityType")
+            or factura.get("utility")
+            or factura.get("serviceType")
+            or factura.get("commodity")
+            or factura.get("type")
+            or ""
+        ),
+        "metering_point_number": _nova_mask_identifier(
+            factura.get("meteringPointNumber"),
+            "numar_punct_anonimizat",
+        ),
+        "metering_point_code": _nova_mask_identifier(
+            factura.get("meteringPointCode"),
+            "cod_punct_anonimizat",
+        ),
+        "contract_id": _nova_mask_identifier(factura.get("contractId"), "contract_anonimizat"),
+        "keys_present": sorted(str(key) for key in factura.keys())[:60],
+    }
+
+
+def _nova_safe_balance_debug(balanta: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(balanta, dict):
+        return {}
+
+    return {
+        "total": _float_sigur(balanta.get("total")),
+        "prosumer": _float_sigur(balanta.get("prosumer")),
+        "keys_present": sorted(str(key) for key in balanta.keys())[:40],
+    }
+
+
+def _nova_mask_identifier(valoare: Any, prefix: str) -> str | None:
+    if valoare in (None, "", [], {}):
+        return None
+    text = json.dumps(valoare, ensure_ascii=False, sort_keys=True, default=str) if isinstance(valoare, (dict, list)) else str(valoare)
+    digest = hashlib.sha256(f"utilitati_romania_nova::{text}".encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return f"{prefix}_{digest}"
+
+
+def _nova_safe_label(valoare: Any, *, limita: int = 80) -> str | None:
+    if valoare in (None, ""):
+        return None
+    text = str(valoare).strip()
+    if not text:
+        return None
+    text = " ".join(text.split())
+    if len(text) > limita:
+        text = f"{text[:limita]}…"
+    return text
+
+
+def _nova_boolish(valoare: Any) -> bool | None:
+    if valoare in (None, ""):
+        return None
+    if isinstance(valoare, bool):
+        return valoare
+    if isinstance(valoare, (int, float)):
+        return bool(valoare)
+    text = str(valoare).strip().lower()
+    if text in {"true", "1", "da", "yes", "y"}:
+        return True
+    if text in {"false", "0", "nu", "no", "n"}:
+        return False
+    return None
 
 def _normalizeaza_tip_serviciu(valoare: Any) -> str | None:
     if valoare in (None, ""):
