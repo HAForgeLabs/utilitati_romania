@@ -311,8 +311,54 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return "Necunoscut";
   }
 
+  _providerInvoiceAmount(provider) {
+    return provider?.amount ?? provider?.suma ?? provider?.valoare ?? provider?.total ?? null;
+  }
+
+  _isRerVestProvider(provider) {
+    const key = String(provider?.furnizor || provider?.provider || provider?.provider_key || provider?.platform || "").toLowerCase();
+    const label = String(provider?.furnizor_label || provider?.supplier || provider?.name || "").toLowerCase();
+    return key === "rervest" || key === "rer_vest" || label.includes("rer vest");
+  }
+
   _providerAmount(provider) {
-    return provider?.amount ?? provider?.suma ?? provider?.valoare ?? provider?.total ?? provider?.unpaid_amount ?? null;
+    const invoiceAmount = this._num(this._providerInvoiceAmount(provider));
+    const unpaidTotal = this._providerUnpaidTotal(provider);
+
+    // RER Vest poate avea mai multe facturi neachitate pentru același loc de consum,
+    // dar rândul principal rămâne ultima factură. În acest caz afișăm totalul de plată,
+    // nu doar valoarea ultimei facturi.
+    if (this._isRerVestProvider(provider) && this._status(provider) === "unpaid" && unpaidTotal > invoiceAmount) {
+      return unpaidTotal;
+    }
+
+    return this._providerInvoiceAmount(provider) ?? provider?.unpaid_amount ?? null;
+  }
+
+  _providerUnpaidCount(provider) {
+    if (this._status(provider) !== "unpaid") return 0;
+
+    const explicitCount = this._num(provider?.unpaid_count);
+    if (explicitCount > 1) return Math.round(explicitCount);
+
+    if (Array.isArray(provider?.invoice_ids) && provider.invoice_ids.length > 1) {
+      return provider.invoice_ids.length;
+    }
+
+    const invoiceAmount = this._num(this._providerInvoiceAmount(provider));
+    const unpaidTotal = this._providerUnpaidTotal(provider);
+    if (this._isRerVestProvider(provider) && invoiceAmount > 0 && unpaidTotal > invoiceAmount) {
+      return 2;
+    }
+
+    return 1;
+  }
+
+  _providerUnpaidTotal(provider) {
+    if (this._status(provider) !== "unpaid") return 0;
+    const total = this._num(provider?.unpaid_total ?? provider?.unpaid_amount);
+    if (total > 0) return total;
+    return this._num(this._providerInvoiceAmount(provider));
   }
 
   _providerDue(provider) {
@@ -440,7 +486,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
 
   _locationCompact(location, index) {
     const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
-    const unpaid = providers.filter((provider) => this._status(provider) === "unpaid").length;
+    const unpaid = providers.reduce((sum, provider) => sum + (this._status(provider) === "unpaid" ? Math.max(1, this._num(provider?.unpaid_count || 1)) : 0), 0);
     return `
       <article class="location-compact">
         <div class="location-icon">${index + 1}</div>
@@ -648,10 +694,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
   _invoiceGroupSummary(entries) {
-    const paid = (entries || []).filter((entry) => entry.status === "paid").length;
-    const unpaid = (entries || []).filter((entry) => entry.status === "unpaid").length;
-    const credit = (entries || []).filter((entry) => entry.status === "credit").length;
-    const totalUnpaid = (entries || []).filter((entry) => entry.status === "unpaid").reduce((sum, entry) => sum + this._num(entry.amount), 0);
+    const providers = (entries || []).map((entry) => entry.provider).filter(Boolean);
+    const paid = providers.filter((provider) => this._status(provider) === "paid").length;
+    const unpaid = providers.reduce((sum, provider) => sum + this._providerUnpaidCount(provider), 0);
+    const credit = providers.filter((provider) => this._status(provider) === "credit").length;
+    const totalUnpaid = providers.reduce((sum, provider) => sum + this._providerUnpaidTotal(provider), 0);
     const parts = [];
     if (unpaid) parts.push(`${unpaid} neplătite`);
     if (paid) parts.push(`${paid} plătite`);

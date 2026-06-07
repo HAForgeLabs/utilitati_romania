@@ -93,6 +93,35 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return this._normalizeStatus(provider?.status || provider?.payment_status || provider?.status_raw);
   }
 
+  _providerInvoiceAmount(provider) {
+    return provider?.amount ?? provider?.suma ?? provider?.valoare ?? provider?.total ?? null;
+  }
+
+  _isRerVestProvider(provider) {
+    const key = String(provider?.furnizor || provider?.provider || provider?.provider_key || provider?.platform || "").toLowerCase();
+    const label = String(provider?.furnizor_label || provider?.supplier || provider?.name || "").toLowerCase();
+    return key === "rervest" || key === "rer_vest" || label.includes("rer vest");
+  }
+
+  _providerUnpaidTotalValue(provider) {
+    if (this._providerEffectiveStatus(provider) !== "unpaid") return 0;
+    const total = this._toNumber(provider?.unpaid_total ?? provider?.unpaid_amount);
+    if (total > 0) return total;
+    return this._toNumber(this._providerInvoiceAmount(provider));
+  }
+
+  _providerDisplayAmount(provider) {
+    const invoiceAmount = this._toNumber(this._providerInvoiceAmount(provider));
+    const unpaidTotal = this._providerUnpaidTotalValue(provider);
+
+    // Dacă totalul de plată este mai mare decât ultima factură, afișăm totalul restant.
+    if (this._isRerVestProvider(provider) && this._providerEffectiveStatus(provider) === "unpaid" && unpaidTotal > invoiceAmount) {
+      return unpaidTotal;
+    }
+
+    return this._providerInvoiceAmount(provider) ?? provider?.unpaid_amount ?? null;
+  }
+
   _formatDate(value) {
     if (!value || value === "-") return "—";
     const text = String(value).trim();
@@ -389,7 +418,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
           status: this._providerEffectiveStatus(provider),
           supplier: provider?.furnizor_label || provider?.furnizor || "Furnizor",
           dueDate: provider?.due_date || provider?.data_scadenta || provider?.scadenta || provider?.dueDate || "",
-          amount: this._toNumber(provider?.amount ?? provider?.suma ?? provider?.valoare),
+          amount: this._toNumber(this._providerDisplayAmount(provider)),
         });
       });
     }
@@ -548,14 +577,35 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       });
   }
 
+  _providerUnpaidCount(provider) {
+    if (this._providerEffectiveStatus(provider) !== "unpaid") return 0;
+
+    const explicitCount = this._toNumber(provider?.unpaid_count);
+    if (explicitCount > 1) return Math.round(explicitCount);
+
+    if (Array.isArray(provider?.invoice_ids) && provider.invoice_ids.length > 1) {
+      return provider.invoice_ids.length;
+    }
+
+    const invoiceAmount = this._toNumber(this._providerInvoiceAmount(provider));
+    const unpaidTotal = this._providerUnpaidTotal(provider);
+    if (this._isRerVestProvider(provider) && invoiceAmount > 0 && unpaidTotal > invoiceAmount) {
+      return 2;
+    }
+
+    return 1;
+  }
+
+  _providerUnpaidTotal(provider) {
+    return this._providerUnpaidTotalValue(provider);
+  }
+
   _invoiceGroupSummary(entries) {
-    const providers = (entries || []).map((entry) => entry.provider);
-    const paid = (entries || []).filter((entry) => entry.status === "paid").length;
-    const unpaid = (entries || []).filter((entry) => entry.status === "unpaid").length;
-    const credit = (entries || []).filter((entry) => entry.status === "credit").length;
-    const totalUnpaid = providers
-      .filter((provider) => this._providerEffectiveStatus(provider) === "unpaid")
-      .reduce((sum, provider) => sum + this._toNumber(provider?.amount), 0);
+    const providers = (entries || []).map((entry) => entry.provider).filter(Boolean);
+    const paid = providers.filter((provider) => this._providerEffectiveStatus(provider) === "paid").length;
+    const unpaid = providers.reduce((sum, provider) => sum + this._providerUnpaidCount(provider), 0);
+    const credit = providers.filter((provider) => this._providerEffectiveStatus(provider) === "credit").length;
+    const totalUnpaid = providers.reduce((sum, provider) => sum + this._providerUnpaidTotal(provider), 0);
 
     const parts = [];
     parts.push(`${providers.length} ${providers.length === 1 ? "factură" : "facturi"}`);
@@ -614,14 +664,16 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   _locationSummary(location) {
     const providers = Array.isArray(location.furnizori) ? location.furnizori : [];
     const paid = providers.filter((item) => this._providerEffectiveStatus(item) === "paid").length;
-    const unpaid = providers.filter((item) => this._providerEffectiveStatus(item) === "unpaid").length;
+    const unpaid = providers.reduce((sum, item) => sum + this._providerUnpaidCount(item), 0);
     const credit = providers.filter((item) => this._providerEffectiveStatus(item) === "credit").length;
+    const totalUnpaid = providers.reduce((sum, item) => sum + this._providerUnpaidTotal(item), 0);
 
     const parts = [];
     parts.push(`${providers.length} ${providers.length === 1 ? "factură" : "facturi"}`);
     if (paid > 0) parts.push(`${paid} plătite`);
     if (unpaid > 0) parts.push(`${unpaid} neplătite`);
     if (credit > 0) parts.push(`${credit} credit`);
+    if (totalUnpaid > 0) parts.push(`total neplătit ${this._formatMoney(totalUnpaid)}`);
 
     return parts.join(" • ");
   }
@@ -1355,7 +1407,7 @@ _buildProviderRefreshButton(provider) {
   _buildProviderRow(location, provider, index) {
     const supplier = provider.furnizor_label || provider.furnizor || "Furnizor";
     const title = this._providerCompactTitle(provider);
-    const amountFormatted = this._formatMoney(provider.amount, provider.currency || "RON");
+    const amountFormatted = this._formatMoney(this._providerDisplayAmount(provider), provider.currency || "RON");
     const status = this._providerEffectiveStatus(provider);
     const statusLabel = this._statusLabel(status);
     const issueDate = this._formatDate(provider.issue_date || provider.data_emitere);
@@ -1438,6 +1490,7 @@ _buildProviderRefreshButton(provider) {
       nova: "App. Nova",
       ebloc: "App. e-bloc",
       orange: "App. Orange",
+      rervest: "App. RER Vest",
     };
     return labels[key] || "";
   }

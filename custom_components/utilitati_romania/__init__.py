@@ -369,6 +369,12 @@ def _provider_open_target(provider: str | None) -> dict[str, str] | None:
             "fallback": "https://www.orange.ro/myaccount/",
         }
 
+    if key == "rervest":
+        return {
+            "mode": "url",
+            "fallback": "https://rervest.ro/contul-meu/",
+        }
+
     return None
 
 

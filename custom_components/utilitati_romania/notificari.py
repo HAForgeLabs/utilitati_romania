@@ -63,6 +63,7 @@ class ManagerNotificari:
         self.hass = hass
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._date_notificate: set[str] = set()
+        self._surse_facturi_initializate: set[str] = set()
         self._preferinte = dict(PREFERINTE_IMPLICITE)
         self._initializat = False
         self._lock = asyncio.Lock()
@@ -73,6 +74,7 @@ class ManagerNotificari:
             return
 
         self._date_notificate = set(data.get("notificate", []))
+        self._surse_facturi_initializate = set(data.get("surse_facturi_initializate", []))
         self._preferinte = _normalizeaza_preferinte_notificari(data.get("preferinte"))
         self._initializat = bool(data.get("initializat", False))
 
@@ -80,6 +82,7 @@ class ManagerNotificari:
         await self._store.async_save(
             {
                 "notificate": sorted(self._date_notificate),
+                "surse_facturi_initializate": sorted(self._surse_facturi_initializate),
                 "initializat": self._initializat,
                 "preferinte": self._preferinte,
             }
@@ -88,6 +91,10 @@ class ManagerNotificari:
     async def proceseaza(self, snapshot: dict[str, Any]) -> None:
         async with self._lock:
             data = await self._store.async_load() or {}
+            if data:
+                self._date_notificate = set(data.get("notificate", []))
+                self._surse_facturi_initializate = set(data.get("surse_facturi_initializate", []))
+                self._initializat = bool(data.get("initializat", self._initializat))
             self._preferinte = _normalizeaza_preferinte_notificari(data.get("preferinte"))
 
             facturi = snapshot.get("facturi", [])
@@ -109,7 +116,9 @@ class ManagerNotificari:
 
                 changed = False
                 fortat = not self._initializat
-                changed |= await self._proceseaza_facturi(facturi)
+                surse_noi = self._surse_facturi_neinitializate(facturi)
+                changed |= await self._proceseaza_facturi(facturi, surse_initializate=surse_noi)
+                self._surse_facturi_initializate.update(surse_noi)
                 changed |= await self._proceseaza_index(
                     ferestre_index,
                     fortat=fortat,
@@ -124,15 +133,39 @@ class ManagerNotificari:
                 return
 
             changed = False
-            changed |= await self._proceseaza_facturi(facturi)
+            surse_noi = self._surse_facturi_neinitializate(facturi)
+            changed |= await self._proceseaza_facturi(facturi, surse_initializate=surse_noi)
+            if surse_noi:
+                self._surse_facturi_initializate.update(surse_noi)
+                changed = True
             changed |= await self._proceseaza_index(ferestre_index)
 
             if changed:
                 await self._salveaza()
 
-    async def _proceseaza_facturi(self, facturi: list[dict[str, Any]]) -> bool:
+    def _surse_facturi_neinitializate(self, facturi: list[dict[str, Any]]) -> set[str]:
+        surse: set[str] = set()
+        for factura in facturi:
+            cheie = self._cheie_sursa_factura(factura)
+            if cheie and cheie not in self._surse_facturi_initializate:
+                surse.add(cheie)
+        return surse
+
+    @staticmethod
+    def _cheie_sursa_factura(factura: dict[str, Any]) -> str:
+        furnizor = str(factura.get("furnizor") or "furnizor").strip().lower()
+        cont = str(factura.get("id_cont") or factura.get("id_contract") or "cont").strip().lower()
+        return f"{furnizor}:{cont}"
+
+    async def _proceseaza_facturi(
+        self,
+        facturi: list[dict[str, Any]],
+        *,
+        surse_initializate: set[str] | None = None,
+    ) -> bool:
         azi = datetime.now().date()
         changed = False
+        surse_initializate = surse_initializate or set()
 
         for factura in facturi:
             factura_id = factura.get("id")
@@ -157,7 +190,16 @@ class ManagerNotificari:
 
             if not platita and self._preferinte.get("facturi_noi", True):
                 key_emitere = f"{factura_id}_emisa"
-                if key_emitere not in self._date_notificate:
+                sursa_factura = self._cheie_sursa_factura(factura)
+                if sursa_factura in surse_initializate and key_emitere not in self._date_notificate:
+                    self._date_notificate.add(key_emitere)
+                    changed = True
+                    _LOGGER.debug(
+                        "Factura existentă %s pentru sursa nouă %s a fost marcată ca deja cunoscută, fără notificare.",
+                        factura_id,
+                        sursa_factura,
+                    )
+                elif key_emitere not in self._date_notificate:
                     await self._trimite(
                         cheie=key_emitere,
                         tip="factura_emisa",

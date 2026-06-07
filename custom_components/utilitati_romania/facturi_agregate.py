@@ -27,6 +27,7 @@ _PROVIDER_LABELS = {
     "myelectrica": "myElectrica",
     "nova": "Nova",
     "orange": "Orange",
+    "rervest": "RER Vest",
 }
 
 _STATUS_PAID_TOKENS = {
@@ -150,6 +151,8 @@ def _provider_label(provider: str | None) -> str:
 
 def _to_float(value: Any) -> float | None:
     if value in (None, "", "None"):
+        return None
+    if isinstance(value, bool):
         return None
     try:
         if isinstance(value, str):
@@ -710,6 +713,72 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
     return (locatie, furnizor)
 
 
+def _valoare_neplatita_item(item: dict[str, Any]) -> float:
+    if item.get("status") != "unpaid":
+        return 0.0
+
+    amount = _to_float(item.get("unpaid_amount"))
+    if amount is None or amount <= 0:
+        amount = _to_float(item.get("amount"))
+    return round(max(float(amount or 0), 0.0), 2)
+
+
+def _initializeaza_agregare_item(item: dict[str, Any]) -> dict[str, Any]:
+    count = 1 if item.get("status") == "unpaid" else 0
+    total = _valoare_neplatita_item(item)
+
+    item["unpaid_count"] = count
+    item["unpaid_total"] = total
+    if count:
+        item["unpaid_amount"] = total
+
+    invoice_id = item.get("invoice_id")
+    item["invoice_ids"] = [invoice_id] if invoice_id not in (None, "") else []
+    return item
+
+
+def _combina_itemuri_grupate(current: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+    current = _initializeaza_agregare_item(current)
+    item = _initializeaza_agregare_item(item)
+
+    current_unpaid_count = int(current.get("unpaid_count") or 0)
+    item_unpaid_count = int(item.get("unpaid_count") or 0)
+    current_unpaid_total = _to_float(current.get("unpaid_total")) or _valoare_neplatita_item(current)
+    item_unpaid_total = _to_float(item.get("unpaid_total")) or _valoare_neplatita_item(item)
+
+    if _sort_key_for_date(item.get("issue_date")) > _sort_key_for_date(current.get("issue_date")):
+        display = dict(item)
+        other = current
+    else:
+        display = dict(current)
+        other = item
+
+    invoice_ids = []
+    for source in (current, item):
+        for invoice_id in source.get("invoice_ids") or []:
+            if invoice_id not in (None, "") and invoice_id not in invoice_ids:
+                invoice_ids.append(invoice_id)
+
+    unpaid_count = current_unpaid_count + item_unpaid_count
+    unpaid_total = round(current_unpaid_total + item_unpaid_total, 2)
+
+    display["unpaid_count"] = unpaid_count
+    display["unpaid_total"] = unpaid_total
+    display["invoice_ids"] = invoice_ids
+
+    if unpaid_count > 0:
+        display["status"] = "unpaid"
+        display["payment_status"] = "unpaid"
+        display["is_paid"] = False
+        display["unpaid_amount"] = unpaid_total
+
+        if unpaid_count > 1:
+            display["invoice_count_label"] = f"{unpaid_count} facturi neplătite"
+            display["invoice_title"] = display.get("invoice_title") or other.get("invoice_title")
+
+    return display
+
+
 def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
@@ -738,8 +807,10 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             group_key = _cheie_grupare_factura(item)
 
             current = grouped.get(group_key)
-            if current is None or _sort_key_for_date(item.get("issue_date")) > _sort_key_for_date(current.get("issue_date")):
-                grouped[group_key] = item
+            if current is None:
+                grouped[group_key] = _initializeaza_agregare_item(item)
+            else:
+                grouped[group_key] = _combina_itemuri_grupate(current, item)
 
         # 2. Fallback specific E.ON din consumuri, doar pentru corectarea statusului curent
         if instantaneu.furnizor == "eon":
@@ -857,7 +928,7 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
             if status in {"paid", "credit"}:
                 paid += 1
             elif status == "unpaid":
-                unpaid += 1
+                unpaid += max(int(item.get("unpaid_count") or 1), 1)
             else:
                 unknown += 1
 

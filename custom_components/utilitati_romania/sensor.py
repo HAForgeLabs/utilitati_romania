@@ -510,15 +510,21 @@ def _scadenta_urmatoare(instantaneu: InstantaneuFurnizor):
     if instantaneu.furnizor == "digi":
         return _valoare_consum_global(instantaneu, "urmatoarea_scadenta")
 
-    facturi = list(instantaneu.facturi or [])
-    if instantaneu.furnizor == "nova":
-        facturi = [f for f in facturi if _este_factura_activa_model(f)]
+    facturi_active = [
+        f
+        for f in list(instantaneu.facturi or [])
+        if _este_factura_activa_model(f) and getattr(f, "data_scadenta", None)
+    ]
+    if not facturi_active:
+        return None
 
-    dates = []
-    for f in facturi:
-        if f.data_scadenta:
-            dates.append(f.data_scadenta)
-    return min(dates).isoformat() if dates else None
+    azi = date.today()
+    scadente_viitoare = [f.data_scadenta for f in facturi_active if f.data_scadenta >= azi]
+    if scadente_viitoare:
+        return min(scadente_viitoare).isoformat()
+
+    scadente_depasite = [f.data_scadenta for f in facturi_active if f.data_scadenta < azi]
+    return max(scadente_depasite).isoformat() if scadente_depasite else None
 
 
 def _date_brute_cont(cont) -> dict[str, Any]:

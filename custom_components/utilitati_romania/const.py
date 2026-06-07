@@ -54,6 +54,7 @@ FURNIZOR_MYELECTRICA = "myelectrica"
 FURNIZOR_DEER = "deer"
 FURNIZOR_EBLOC = "ebloc"
 FURNIZOR_ORANGE = "orange"
+FURNIZOR_RERVEST = "rervest"
 
 CONF_DATE_TOKEN_EON = "date_token_eon"
 
