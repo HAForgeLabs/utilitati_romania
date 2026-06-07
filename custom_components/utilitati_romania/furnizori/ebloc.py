@@ -54,6 +54,13 @@ class SesiuneEbloc:
 
 
 @dataclass(slots=True)
+class SesiunePortalEbloc:
+    id_sesiune: str
+    activa: bool
+    descriere: str | None = None
+
+
+@dataclass(slots=True)
 class PlataEbloc:
     id_plata: str
     data_plata: date | None
@@ -86,7 +93,16 @@ class ContorEbloc:
 
 class ClientApiEbloc:
     def __init__(self, sesiune: ClientSession, utilizator: str, parola: str) -> None:
-        self._sesiune = sesiune
+        connector = sesiune.connector
+        if connector is None:
+            raise EroareConectareEbloc("Connector HTTP indisponibil pentru sesiunea e-bloc.ro")
+
+        self._sesiune = aiohttp.ClientSession(
+            connector=connector,
+            connector_owner=False,
+            cookie_jar=aiohttp.CookieJar(),
+            timeout=sesiune.timeout,
+        )
         self._utilizator = utilizator
         self._parola = parola
         self._id_sesiune: str | None = None
@@ -96,6 +112,11 @@ class ClientApiEbloc:
         self._drepturi: dict[str, bool] = {}
         self._luna_curenta: str | None = None
         self._date_info: dict[str, Any] = {}
+
+    async def close(self) -> None:
+        await self.async_inchide_sesiunea_curenta()
+        if not self._sesiune.closed:
+            await self._sesiune.close()
 
     async def async_login(self) -> SesiuneEbloc:
         try:
@@ -382,6 +403,100 @@ class ClientApiEbloc:
             },
         )
 
+    async def async_listeaza_sesiuni_portal(self) -> list[SesiunePortalEbloc]:
+        pagina = await self._pagina_web("index.php?page=3", referer=f"{URL_EBLOC}/index.php?page=10")
+        return _extrage_sesiuni_portal_ebloc(pagina)
+
+    async def async_sterge_sesiune_portal(self, id_sesiune: str, *, timeout_secunde: float = 6.0) -> bool:
+        raspuns = await asyncio.wait_for(
+            self._cerere_web(
+                "AjaxStergeSesiune.php",
+                {"pIdSess": str(id_sesiune)},
+            ),
+            timeout=timeout_secunde,
+        )
+        text = str(raspuns).lower()
+        return "error" not in text and "eroare" not in text
+
+    async def async_curata_sesiuni_vechi(self) -> dict[str, Any]:
+        sesiuni = await self.async_listeaza_sesiuni_portal()
+        if not sesiuni:
+            return {
+                "total": 0,
+                "pastrate": 0,
+                "sterse": 0,
+                "esuate": 0,
+                "ids_sterse": [],
+                "ids_esuate": [],
+                "ramase": 0,
+            }
+
+        # Portalul afișează sesiunile în ordine descrescătoare după activitate.
+        # Păstrăm până la două sesiuni recente, ca să evităm ștergerea agresivă
+        # a browserului curent sau a sesiunii folosite de integrare.
+        ids_pastrate: list[str] = []
+        for sesiune in sesiuni:
+            if sesiune.activa and sesiune.id_sesiune not in ids_pastrate:
+                ids_pastrate.append(sesiune.id_sesiune)
+
+        for sesiune in sesiuni:
+            if len(ids_pastrate) >= 2:
+                break
+            if sesiune.id_sesiune not in ids_pastrate:
+                ids_pastrate.append(sesiune.id_sesiune)
+
+        de_sters = [s for s in sesiuni if s.id_sesiune not in ids_pastrate]
+        ids_de_sters = {s.id_sesiune for s in de_sters}
+        incercate: set[str] = set()
+        esuate_cerere: set[str] = set()
+        limita_concurenta = asyncio.Semaphore(6)
+
+        async def _sterge_controlat(sesiune: SesiunePortalEbloc) -> None:
+            async with limita_concurenta:
+                incercate.add(sesiune.id_sesiune)
+                try:
+                    await self.async_sterge_sesiune_portal(sesiune.id_sesiune)
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Nu am putut șterge sesiunea e-bloc.ro %s: %s", sesiune.id_sesiune, err)
+                    esuate_cerere.add(sesiune.id_sesiune)
+
+        if de_sters:
+            await asyncio.gather(*(_sterge_controlat(sesiune) for sesiune in de_sters))
+
+        sesiuni_ramase: list[SesiunePortalEbloc] = []
+        try:
+            sesiuni_ramase = await self.async_listeaza_sesiuni_portal()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Nu am putut reciti sesiunile e-bloc.ro după curățare: %s", err)
+
+        ids_ramase = {s.id_sesiune for s in sesiuni_ramase}
+        ids_eliminate = ids_de_sters - ids_ramase
+        ids_neeliminate = ids_de_sters & ids_ramase
+
+        return {
+            "total": len(sesiuni),
+            "pastrate": len(ids_pastrate),
+            "ids_pastrate": ids_pastrate,
+            "sterse": len(ids_eliminate),
+            "esuate": len(ids_neeliminate),
+            "ids_sterse": sorted(ids_eliminate),
+            "ids_esuate": sorted(ids_neeliminate),
+            "ids_cereri_esuate": sorted(esuate_cerere),
+            "ramase": len(sesiuni_ramase),
+        }
+
+    async def async_inchide_sesiunea_curenta(self) -> None:
+        if self._sesiune.closed or not self._id_sesiune:
+            return
+
+        try:
+            sesiuni = await self.async_listeaza_sesiuni_portal()
+            curenta = next((s for s in sesiuni if s.activa), None)
+            if curenta is not None:
+                await self.async_sterge_sesiune_portal(curenta.id_sesiune, timeout_secunde=4.0)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Nu am putut închide sesiunea curentă e-bloc.ro: %s", err)
+
 
 class ClientFurnizorEbloc(ClientFurnizor):
     cheie_furnizor = "ebloc"
@@ -390,6 +505,9 @@ class ClientFurnizorEbloc(ClientFurnizor):
     def __init__(self, *, sesiune: ClientSession, utilizator: str, parola: str, optiuni: dict) -> None:
         super().__init__(sesiune=sesiune, utilizator=utilizator, parola=parola, optiuni=optiuni)
         self.api = ClientApiEbloc(sesiune, utilizator, parola)
+
+    async def async_inchide(self) -> None:
+        await self.api.close()
 
     async def async_testeaza_conexiunea(self) -> str:
         try:
@@ -441,6 +559,9 @@ class ClientFurnizorEbloc(ClientFurnizor):
         if len(parti) != 2:
             raise EroareRaspunsEbloc("ID cont e-bloc.ro invalid pentru actualizarea numărului de persoane")
         return await self.api.async_seteaza_numar_persoane(parti[0], parti[1], luna, numar_persoane)
+
+    async def async_curata_sesiuni_vechi(self) -> dict[str, Any]:
+        return await self.api.async_curata_sesiuni_vechi()
 
     def _mapeaza_conturi(self, date_brute: dict[str, Any]) -> list[ContUtilitate]:
         asociatii = {
@@ -738,6 +859,32 @@ def _extrage_luna_index_web(data: dict[str, Any]) -> str | None:
 
 def _extrage_luna_facturi_web(data: dict[str, Any]) -> str | None:
     return _extrage_luna_index_web(data)
+
+
+def _curata_text_html(text: str) -> str:
+    text = re.sub(r"<br\s*/?>", " | ", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&nbsp;|&#160;", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extrage_sesiuni_portal_ebloc(pagina: str) -> list[SesiunePortalEbloc]:
+    rezultate: list[SesiunePortalEbloc] = []
+    if not pagina:
+        return rezultate
+
+    pattern = re.compile(
+        r'<li\s+id=["\']sess-(?P<id>\d+)["\'][^>]*>(?P<body>.*?)(?=<li\s+id=["\']sess-|</ul>)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for potrivire in pattern.finditer(pagina):
+        id_sesiune = potrivire.group("id")
+        body = potrivire.group("body")
+        descriere = _curata_text_html(body)
+        activa = "activă acum" in descriere.lower() or "activa acum" in descriere.lower()
+        rezultate.append(SesiunePortalEbloc(id_sesiune=id_sesiune, activa=activa, descriere=descriere or None))
+
+    return rezultate
 
 def _lista(valoare: Any) -> list[Any]:
     if isinstance(valoare, list):

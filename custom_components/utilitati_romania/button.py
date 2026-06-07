@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 
@@ -148,6 +149,7 @@ async def async_setup_entry(
         for cont in coordonator.data.conturi:
             entitati.append(ButonTrimiteIndexApaCanal(coordonator, cont))
     elif coordonator.data and coordonator.data.furnizor == "ebloc":
+        entitati.append(ButonCurataSesiuniEbloc(coordonator))
         for cont in coordonator.data.conturi:
             entitati.append(ButonTrimiteNumarPersoaneEbloc(coordonator, cont))
     async_add_entities(entitati)
@@ -616,6 +618,79 @@ class ButonTrimiteIndexApaCanal(EntitateUtilitatiRomania, ButtonEntity):
             notification_id=f"utilitati_romania_apa_canal_trimite_index_{self.cont.id_cont}",
         )
         await self.coordinator.async_request_refresh()
+
+
+class ButonCurataSesiuniEbloc(EntitateUtilitatiRomania, ButtonEntity):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania) -> None:
+        super().__init__(coordonator)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_ebloc_curata_sesiuni"
+        self._attr_name = "Curăță sesiuni vechi"
+        self._attr_icon = "mdi:account-cancel"
+        self._attr_entity_category = EntityCategory.CONFIG
+
+    async def async_press(self) -> None:
+        curatare = getattr(self.coordinator.client, "async_curata_sesiuni_vechi", None)
+        if not callable(curatare):
+            raise HomeAssistantError("Clientul E-Bloc nu permite curățarea sesiunilor.")
+
+        if getattr(self, "_curatare_in_derulare", False):
+            persistent_notification.async_create(
+                self.hass,
+                "Curățarea sesiunilor E-Bloc este deja în derulare. Operațiunea poate dura câteva minute dacă portalul are multe sesiuni vechi.",
+                title="Utilități România – E-Bloc",
+                notification_id="utilitati_romania_ebloc_curata_sesiuni",
+            )
+            return
+
+        self._curatare_in_derulare = True
+        persistent_notification.async_create(
+            self.hass,
+            "Am pornit curățarea sesiunilor vechi E-Bloc. Operațiunea rulează în fundal și poate dura câteva minute dacă există multe sesiuni vechi. Vei primi o notificare la final.",
+            title="Utilități România – E-Bloc",
+            notification_id="utilitati_romania_ebloc_curata_sesiuni",
+        )
+        self.hass.async_create_task(self._async_curata_sesiuni_fundal())
+
+    async def _async_curata_sesiuni_fundal(self) -> None:
+        try:
+            curatare = getattr(self.coordinator.client, "async_curata_sesiuni_vechi", None)
+            if not callable(curatare):
+                raise HomeAssistantError("Clientul E-Bloc nu permite curățarea sesiunilor.")
+
+            rezultat = await asyncio.wait_for(curatare(), timeout=240)
+            sterse = int(rezultat.get("sterse") or 0)
+            esuate = int(rezultat.get("esuate") or 0)
+            total = int(rezultat.get("total") or 0)
+
+            mesaj = (
+                "Curățarea sesiunilor E-Bloc a fost finalizată.\n\n"
+                f"- Sesiuni găsite: **{total}**\n"
+                f"- Sesiuni șterse: **{sterse}**\n"
+                f"- Sesiuni păstrate: **{rezultat.get('pastrate', 0)}**\n"
+                f"- Sesiuni neșterse: **{esuate}**\n"
+                f"- Sesiuni rămase în portal: **{rezultat.get('ramase', 0)}**"
+            )
+            if esuate:
+                mesaj += "\n\nUnele sesiuni nu au putut fi șterse. Poți reîncerca după un refresh al integrării."
+
+            persistent_notification.async_create(
+                self.hass,
+                mesaj,
+                title="Utilități România – E-Bloc",
+                notification_id="utilitati_romania_ebloc_curata_sesiuni",
+            )
+
+            await self.coordinator.async_request_refresh()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Curățarea sesiunilor E-Bloc a eșuat: %s", err)
+            persistent_notification.async_create(
+                self.hass,
+                f"Curățarea sesiunilor E-Bloc nu a putut fi finalizată complet: {err}",
+                title="Utilități România – E-Bloc",
+                notification_id="utilitati_romania_ebloc_curata_sesiuni",
+            )
+        finally:
+            self._curatare_in_derulare = False
 
 
 class ButonTrimiteNumarPersoaneEbloc(EntitateUtilitatiRomania, ButtonEntity):
