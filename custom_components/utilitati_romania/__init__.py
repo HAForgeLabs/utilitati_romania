@@ -18,6 +18,8 @@ from homeassistant.helpers import entity_registry as er
 from .const import (
     CONF_FURNIZOR,
     CONF_PREMISE_LABEL,
+    CONF_ACCOUNT_ID,
+    CONF_CONTRACT_ID,
     CONF_MOBILE_NOTIFY_SERVICE,
     DOMENIU,
     PLATFORME,
@@ -842,6 +844,52 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+
+
+def _nume_curat_apa_brasov_din_coordonator(entry: ConfigEntry, coordonator: CoordonatorUtilitatiRomania) -> str | None:
+    if entry.data.get(CONF_FURNIZOR) != "apa_brasov" or coordonator.data is None:
+        return None
+    conturi = getattr(coordonator.data, "conturi", []) or []
+    if not conturi:
+        return None
+    cont = conturi[0]
+    nume = str(getattr(cont, "nume", None) or "").strip()
+    if not nume:
+        return None
+    if nume.lower().startswith("selector"):
+        return "Apă Brașov"
+    return f"Apă Brașov - {nume}"
+
+
+async def _async_curata_intrare_apa_brasov(hass: HomeAssistant, entry: ConfigEntry, coordonator: CoordonatorUtilitatiRomania) -> None:
+    nume_curat = _nume_curat_apa_brasov_din_coordonator(entry, coordonator)
+    if not nume_curat:
+        return
+
+    date_noi = dict(entry.data)
+    cont = (getattr(coordonator.data, "conturi", []) or [None])[0]
+    if cont is not None:
+        date_noi[CONF_PREMISE_LABEL] = str(getattr(cont, "nume", None) or date_noi.get(CONF_PREMISE_LABEL) or "").strip()
+        id_cont = str(getattr(cont, "id_cont", None) or "").strip()
+        if id_cont:
+            date_noi[CONF_ACCOUNT_ID] = id_cont
+            date_noi[CONF_CONTRACT_ID] = id_cont
+
+    if entry.title != nume_curat or date_noi != dict(entry.data):
+        hass.config_entries.async_update_entry(entry, title=nume_curat, data=date_noi)
+
+    device_registry = dr.async_get(hass)
+    for device in list(device_registry.devices.values()):
+        if (DOMENIU, entry.entry_id) not in set(device.identifiers or set()):
+            continue
+        try:
+            device_registry.async_update_device(device.id, name=nume_curat)
+        except TypeError:
+            # Versiunile mai vechi de Home Assistant pot să nu permită setarea numelui aici.
+            pass
+        except Exception:
+            _LOGGER.debug("Nu am putut actualiza numele device-ului Apă Brașov", exc_info=True)
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMENIU, {})
     _async_ensure_services(hass)
@@ -867,6 +915,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordonator.async_inchide()
         raise
 
+    # Apă Brașov are separat un device de furnizor și device-uri pentru locații.
+    # Nu modificăm automat titlul config entry-ului după datele primei locații,
+    # deoarece asta redenumește greșit grupul furnizorului și poate produce duplicate
+    # în device registry după mai multe beta-uri.
     await _migrare_unique_ids(hass, entry, coordonator)
     hass.data[DOMENIU][entry.entry_id] = coordonator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORME)

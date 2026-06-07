@@ -34,6 +34,7 @@ from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
 from .orange_device import alias_loc_orange, info_device_orange, slug_loc_orange
 from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .naming import build_provider_slug, extract_street_slug
+from .furnizori.apa_brasov import nume_scurt_locatie_apa_brasov
 from .licentiere import async_obtine_licenta_globala, mascheaza_cheia_licenta
 from .facturi_agregate import colecteaza_facturi_agregate, sumar_facturi
 from .storage_citiri import async_incarca_cache_citiri, obtine_citire_cache
@@ -987,6 +988,24 @@ SENZORI_CONT_NOVA: tuple[DescriereSenzorCont, ...] = (
 )
 
 
+
+SENZORI_CONT_APA_BRASOV: tuple[DescriereSenzorCont, ...] = (
+    DescriereSenzorCont(key="de_plata", name="De plată", icon="mdi:cash-clock", native_unit_of_measurement="RON", functie_valoare=lambda i, c: round(float(_valoare_consum(i, "de_plata", c.id_cont) or 0.0), 2)),
+    DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "sold_curent", c.id_cont)),
+    DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:receipt-text-check", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "valoare_ultima_factura", c.id_cont)),
+    DescriereSenzorCont(key="id_ultima_factura", name="ID ultima factură", icon="mdi:file-document-outline", functie_valoare=lambda i, c: _valoare_consum(i, "id_ultima_factura", c.id_cont)),
+    DescriereSenzorCont(key="numar_facturi", name="Număr facturi", icon="mdi:file-document-multiple-outline", functie_valoare=lambda i, c: _valoare_consum(i, "numar_facturi", c.id_cont)),
+    DescriereSenzorCont(key="factura_restanta", name="Factură restantă", icon="mdi:alert-circle", functie_valoare=lambda i, c: _valoare_consum(i, "factura_restanta", c.id_cont)),
+    DescriereSenzorCont(key="urmatoarea_scadenta", name="Următoarea scadență", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "urmatoarea_scadenta", c.id_cont)),
+    DescriereSenzorCont(key="index_contor", name="Index contor", icon="mdi:counter", native_unit_of_measurement="m³", functie_valoare=lambda i, c: _valoare_consum(i, "index_contor", c.id_cont)),
+    DescriereSenzorCont(key="ultim_consum", name="Ultimul consum", icon="mdi:water", native_unit_of_measurement="m³", functie_valoare=lambda i, c: _valoare_consum(i, "ultim_consum", c.id_cont)),
+    DescriereSenzorCont(key="citire_index_permisa", name="Citire index permisă", icon="mdi:clock-check-outline", functie_valoare=lambda i, c: _valoare_consum(i, "citire_index_permisa", c.id_cont)),
+    DescriereSenzorCont(key="perioada_citire", name="Perioadă citire index", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "perioada_citire", c.id_cont)),
+    DescriereSenzorCont(key="zile_pana_citire_index", name="Zile până la citire index", icon="mdi:calendar-arrow-right", native_unit_of_measurement="zile", functie_valoare=lambda i, c: _valoare_consum(i, "zile_pana_citire_index", c.id_cont)),
+    DescriereSenzorCont(key="numar_plati", name="Număr plăți", icon="mdi:cash-check", functie_valoare=lambda i, c: _valoare_consum(i, "numar_plati", c.id_cont)),
+    DescriereSenzorCont(key="ultima_plata", name="Ultima plată", icon="mdi:cash-fast", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "ultima_plata", c.id_cont)),
+)
+
 SENZORI_CONT_MYELECTRICA: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="date_client", name="Date client", icon="mdi:account-circle", functie_valoare=lambda i, c: c.nume),
     DescriereSenzorCont(key="date_contract", name="Date contract", icon="mdi:file-document-outline", functie_valoare=lambda i, c: c.stare),
@@ -1173,6 +1192,16 @@ async def async_setup_entry(
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_EBLOC:
                 entitati.append(SenzorContEbloc(coordonator, cont, descriere))
+
+    elif instantaneu and instantaneu.furnizor == "apa_brasov":
+        # Apă Brașov poate fi configurată cu toate locațiile din cont. Păstrăm
+        # un dispozitiv principal pentru furnizor, cu senzori de rezumat, la fel
+        # ca la ceilalți furnizori multi-cont, iar fiecare loc de consum rămâne
+        # pe propriul dispozitiv.
+        entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
+        for cont in instantaneu.conturi:
+            for descriere in SENZORI_CONT_APA_BRASOV:
+                entitati.append(SenzorContApaBrasov(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "apa_canal":
         for descriere in SENZORI_APA_CANAL:
@@ -1889,6 +1918,102 @@ class SenzorContDeer(EntitateUtilitatiRomania, SensorEntity):
                     attrs[key] = raw.get(key)
         return attrs
 
+
+
+
+def _nume_loc_apa_brasov(cont) -> str:
+    return nume_scurt_locatie_apa_brasov(
+        getattr(cont, "adresa", None) or getattr(cont, "nume", None),
+        getattr(cont, "id_cont", None),
+    )
+
+
+def _slug_loc_apa_brasov(cont) -> str:
+    return build_provider_slug("apa_brasov", _nume_loc_apa_brasov(cont), getattr(cont, "id_cont", None))
+
+
+def info_device_apa_brasov(entry_id: str, cont) -> DeviceInfo:
+    ident = getattr(cont, "id_cont", "apa_brasov")
+    nume = _nume_loc_apa_brasov(cont)
+    return DeviceInfo(
+        identifiers={(DOMENIU, f"{entry_id}_apa_brasov_{ident}")},
+        name=f"Apă Brașov - {nume}",
+        manufacturer="Compania Apa Brașov",
+        model="Apă și canal",
+    )
+
+
+class SenzorContApaBrasov(EntitateUtilitatiRomania, SensorEntity):
+    entity_description: DescriereSenzorCont
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: DescriereSenzorCont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self.entity_description = descriere
+        slug = _slug_loc_apa_brasov(cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_apa_brasov_{cont.id_cont}_{descriere.key}"
+        self._attr_name = descriere.name
+        self._attr_suggested_object_id = f"{slug}_{descriere.key}"
+        self.entity_id = f"sensor.{slug}_{descriere.key}"
+        self._attr_device_info = info_device_apa_brasov(coordonator.intrare.entry_id, cont)
+
+    @property
+    def available(self):
+        if self.coordinator.data is None:
+            return False
+        return any(
+            getattr(cont, "id_cont", None) == getattr(self.cont, "id_cont", None)
+            for cont in self.coordinator.data.conturi
+        )
+
+    @property
+    def _cont_actual(self):
+        return _cont_curent_dupa_id(self.coordinator, getattr(self.cont, "id_cont", None)) or self.cont
+
+    @property
+    def native_value(self):
+        if self.coordinator.data is None:
+            return None
+        return self.entity_description.functie_valoare(self.coordinator.data, self._cont_actual)
+
+    @property
+    def extra_state_attributes(self):
+        cont = self._cont_actual
+        raw = _date_brute_cont(cont)
+        attrs = {
+            "id_cont": cont.id_cont,
+            "id_contract": cont.id_contract,
+            "nume_cont": cont.nume,
+            "adresa": cont.adresa,
+            "tip_serviciu": cont.tip_serviciu,
+            "tip_utilitate": cont.tip_utilitate,
+        }
+
+        if self.coordinator.data is None:
+            return attrs
+
+        factura = _ultima_factura(self.coordinator.data, id_cont=cont.id_cont)
+        if factura is not None:
+            attrs.update({
+                "invoice_id": factura.id_factura,
+                "issue_date": factura.data_emitere.isoformat() if factura.data_emitere else None,
+                "due_date": factura.data_scadenta.isoformat() if factura.data_scadenta else None,
+                "status": factura.stare,
+                "amount": factura.valoare,
+            })
+
+        if self.entity_description.key in {"numar_facturi", "valoare_ultima_factura", "id_ultima_factura"}:
+            facturi = raw.get("invoices") or []
+            attrs["facturi"] = facturi[-12:] if isinstance(facturi, list) else []
+        elif self.entity_description.key in {"numar_plati", "ultima_plata"}:
+            plati = raw.get("payments") or []
+            attrs["plati"] = plati[-12:] if isinstance(plati, list) else []
+        elif self.entity_description.key in {"index_contor", "citire_index_permisa", "perioada_citire", "zile_pana_citire_index"}:
+            attrs["last_meter_reading"] = raw.get("last_meter_reading")
+        elif self.entity_description.key == "ultim_consum":
+            attrs["last_consumption"] = raw.get("last_consumption")
+
+        return attrs
 
 
 class SenzorContEbloc(EntitateUtilitatiRomania, SensorEntity):

@@ -29,6 +29,7 @@ from .furnizori.hidroelectrica_helper import build_usage_entity, safe_get
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
 from .naming import build_provider_slug
+from .furnizori.apa_brasov import nume_scurt_locatie_apa_brasov
 
 from .storage_citiri import async_salveaza_citire
 
@@ -294,7 +295,8 @@ class ButonActualizareAcum(EntitateUtilitatiRomania, ButtonEntity):
         self._attr_unique_id = f"{coordonator.intrare.entry_id}_actualizare_acum"
         self._attr_name = "Actualizează acum"
         self._attr_icon = "mdi:refresh"
-    
+
+
     async def async_press(self) -> None:
         await self.coordinator.async_request_refresh()
 

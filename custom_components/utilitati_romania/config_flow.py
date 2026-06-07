@@ -53,6 +53,7 @@ from .const import (
 )
 from .exceptions import EroareAutentificare, EroareConectare
 from .furnizori.apa_canal import ClientFurnizorApaCanal, OptiuneContractApaCanal
+from .furnizori.apa_brasov import ClientFurnizorApaBrasov, OptiuneContractApaBrasov, nume_scurt_locatie_apa_brasov
 from .furnizori.myelectrica import ClientApiMyElectrica
 from .furnizori.digi_api import (
     AddressOption,
@@ -96,6 +97,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         self._api_eon: EonApiClient | None = None
         self._date_utilizator_curente: dict[str, Any] | None = None
         self._contracte_apa_canal: list[OptiuneContractApaCanal] = []
+        self._contracte_apa_brasov: list[OptiuneContractApaBrasov] = []
 
         self._api_digi: DigiApiClient | None = None
         self._api_myelectrica: ClientApiMyElectrica | None = None
@@ -186,6 +188,27 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                             erori["base"] = "fara_contracte"
                         else:
                             return await self.async_step_selectare_contract_apa_canal()
+                elif self._furnizor == "apa_brasov":
+                    client_apa_brasov = ClientFurnizorApaBrasov(
+                        sesiune=async_get_clientsession(self.hass),
+                        utilizator=user_input[CONF_UTILIZATOR],
+                        parola=user_input[CONF_PAROLA],
+                        optiuni=user_input,
+                    )
+                    try:
+                        self._contracte_apa_brasov = await client_apa_brasov.async_obtine_contracte_disponibile()
+                    except EroareAutentificare:
+                        erori["base"] = "autentificare_esuata"
+                    except EroareConectare:
+                        erori["base"] = "nu_se_poate_conecta"
+                    except Exception:
+                        _LOGGER.exception("Eroare neașteptată în fluxul de configurare Apă Brașov")
+                        erori["base"] = "necunoscuta"
+                    else:
+                        if not self._contracte_apa_brasov:
+                            erori["base"] = "fara_contracte"
+                        else:
+                            return await self.async_step_selectare_contract_apa_brasov()
                 else:
                     client = clasa_furnizor(
                         sesiune=async_get_clientsession(self.hass),
@@ -321,6 +344,106 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
             errors=erori,
         )
     
+
+    async def async_step_selectare_contract_apa_brasov(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        erori: dict[str, str] = {}
+
+        if not self._contracte_apa_brasov:
+            return await self.async_step_credentiale_furnizor(self._date_utilizator_curente)
+
+        if user_input is not None:
+            selectie = str(user_input.get("contract_apa_brasov") or "")
+
+            if selectie == "__all__":
+                utilizator_normalizat = self._date_utilizator_curente[CONF_UTILIZATOR].strip().lower()
+                await self.async_set_unique_id(f"{self._furnizor}::{utilizator_normalizat}::toate_locatiile")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title="Apă Brașov",
+                    data={
+                        CONF_FURNIZOR: self._furnizor,
+                        CONF_CHEIE_LICENTA: self._cheie_licenta,
+                        CONF_UTILIZATOR: self._date_utilizator_curente[CONF_UTILIZATOR],
+                        CONF_PAROLA: self._date_utilizator_curente[CONF_PAROLA],
+                        CONF_INTERVAL_ACTUALIZARE: int(
+                            self._date_utilizator_curente.get(
+                                CONF_INTERVAL_ACTUALIZARE,
+                                IMPLICIT_INTERVAL_ACTUALIZARE_ORE,
+                            )
+                        ),
+                        CONF_ACCOUNT_ID: "__all__",
+                        CONF_CONTRACT_ID: "__all__",
+                        CONF_PREMISE_LABEL: "Toate locațiile",
+                        "apa_brasov_selector_value": "",
+                        "apa_brasov_context_id": "",
+                    },
+                )
+
+            contract = next(
+                (
+                    item
+                    for item in self._contracte_apa_brasov
+                    if f"{item.loccons_id}|{item.selector_value}" == selectie
+                ),
+                None,
+            )
+            if contract is None:
+                erori["base"] = "contract_invalid"
+            else:
+                unique = contract.loccons_id or contract.selector_value or self._date_utilizator_curente[CONF_UTILIZATOR].lower()
+                await self.async_set_unique_id(f"{self._furnizor}::{unique}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"Apă Brașov - {nume_scurt_locatie_apa_brasov(contract.eticheta, contract.loccons_id)}",
+                    data={
+                        CONF_FURNIZOR: self._furnizor,
+                        CONF_CHEIE_LICENTA: self._cheie_licenta,
+                        CONF_UTILIZATOR: self._date_utilizator_curente[CONF_UTILIZATOR],
+                        CONF_PAROLA: self._date_utilizator_curente[CONF_PAROLA],
+                        CONF_INTERVAL_ACTUALIZARE: int(
+                            self._date_utilizator_curente.get(
+                                CONF_INTERVAL_ACTUALIZARE,
+                                IMPLICIT_INTERVAL_ACTUALIZARE_ORE,
+                            )
+                        ),
+                        CONF_ACCOUNT_ID: contract.loccons_id,
+                        CONF_CONTRACT_ID: contract.loccons_id,
+                        CONF_PREMISE_LABEL: contract.eticheta,
+                        "apa_brasov_selector_value": contract.selector_value,
+                        "apa_brasov_context_id": contract.context_id or "",
+                    },
+                )
+
+        options = [
+            {
+                "value": "__all__",
+                "label": "Apă Brașov - toate locațiile",
+            },
+            *[
+                {
+                    "value": f"{item.loccons_id}|{item.selector_value}",
+                    "label": f"Apă Brașov - {nume_scurt_locatie_apa_brasov(item.eticheta, item.loccons_id)}",
+                }
+                for item in self._contracte_apa_brasov
+            ],
+        ]
+
+        return self.async_show_form(
+            step_id="selectare_contract_apa_brasov",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("contract_apa_brasov"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=options,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+            errors=erori,
+        )
     async def _proceseaza_flux_myelectrica(
         self,
         user_input: dict[str, Any],

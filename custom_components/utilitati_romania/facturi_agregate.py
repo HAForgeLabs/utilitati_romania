@@ -19,6 +19,7 @@ from .naming import normalize_text
 
 _PROVIDER_LABELS = {
     "apa_canal": "Apă Canal Sibiu",
+    "apa_brasov": "Apă Brașov",
     "deer": "DEER",
     "digi": "Digi",
     "engie": "ENGIE",
@@ -403,7 +404,7 @@ def _build_invoice_item(
         "can_refresh": _refresh_button_entity_id(coordonator) is not None,
     }
 
-    if instantaneu.furnizor in {"ebloc", "apa_canal"}:
+    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov"}:
         id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
 
         citire_permisa = _consum_value(instantaneu, "citire_index_permisa", id_cont)

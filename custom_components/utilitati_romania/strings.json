@@ -76,6 +76,13 @@
           "contract_apa_canal": "Contract / adresă"
         }
       },
+      "selectare_contract_apa_brasov": {
+        "title": "Selectare contract Apă Brașov",
+        "description": "Alege locul de consum pe care vrei să îl configurezi.",
+        "data": {
+          "contract_apa_brasov": "Contract / adresă"
+        }
+      },
       "admin_global": {
         "title": "Administrare integrare",
         "description": "Configurează licența globală pentru întreaga integrare.",

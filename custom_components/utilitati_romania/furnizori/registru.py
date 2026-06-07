@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .apa_canal import ClientFurnizorApaCanal
+from .apa_brasov import ClientFurnizorApaBrasov
 from .baza import ClientFurnizor
 from .digi import ClientFurnizorDigi
 from .eon import ClientFurnizorEon
@@ -18,6 +19,7 @@ FURNIZORI: dict[str, type[ClientFurnizor]] = {
     ClientFurnizorDigi.cheie_furnizor: ClientFurnizorDigi,
     ClientFurnizorEon.cheie_furnizor: ClientFurnizorEon,
     ClientFurnizorApaCanal.cheie_furnizor: ClientFurnizorApaCanal,
+    ClientFurnizorApaBrasov.cheie_furnizor: ClientFurnizorApaBrasov,
     ClientFurnizorHidroelectrica.cheie_furnizor: ClientFurnizorHidroelectrica,
     ClientFurnizorMyElectrica.cheie_furnizor: ClientFurnizorMyElectrica,
     ClientFurnizorDeer.cheie_furnizor: ClientFurnizorDeer,
