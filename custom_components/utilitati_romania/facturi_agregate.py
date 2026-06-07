@@ -21,6 +21,7 @@ _PROVIDER_LABELS = {
     "apa_canal": "Apă Canal Sibiu",
     "deer": "DEER",
     "digi": "Digi",
+    "engie": "ENGIE",
     "eon": "E.ON",
     "ebloc": "e-bloc.ro",
     "hidroelectrica": "Hidroelectrica",
@@ -779,6 +780,42 @@ def _combina_itemuri_grupate(current: dict[str, Any], item: dict[str, Any]) -> d
     return display
 
 
+
+def _factura_latest_key(factura: FacturaUtilitate) -> tuple[str, str]:
+    """Cheie stabilă pentru alegerea ultimei facturi pe cont."""
+    id_cont = str(getattr(factura, "id_cont", None) or "").strip()
+    if id_cont:
+        return ("cont", id_cont)
+    id_contract = str(getattr(factura, "id_contract", None) or "").strip()
+    if id_contract:
+        return ("contract", id_contract)
+    return ("global", "")
+
+
+def _latest_invoice_ids_by_group(facturi: list[FacturaUtilitate]) -> set[str]:
+    """Returnează id-urile ultimelor facturi, câte una pentru fiecare cont."""
+    latest: dict[tuple[str, str], FacturaUtilitate] = {}
+    for factura in facturi or []:
+        key = _factura_latest_key(factura)
+        current = latest.get(key)
+        if current is None:
+            latest[key] = factura
+            continue
+        factura_sort = (
+            _sort_key_for_date(getattr(factura, "data_emitere", None)),
+            _sort_key_for_date(getattr(factura, "data_scadenta", None)),
+            str(getattr(factura, "id_factura", "") or ""),
+        )
+        current_sort = (
+            _sort_key_for_date(getattr(current, "data_emitere", None)),
+            _sort_key_for_date(getattr(current, "data_scadenta", None)),
+            str(getattr(current, "id_factura", "") or ""),
+        )
+        if factura_sort > current_sort:
+            latest[key] = factura
+    return {str(getattr(factura, "id_factura", "") or "") for factura in latest.values()}
+
+
 def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
@@ -794,8 +831,19 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
         if not isinstance(instantaneu, InstantaneuFurnizor):
             continue
 
+        facturi_de_afisat = list(instantaneu.facturi or [])
+        if instantaneu.furnizor == "engie":
+            # Pentru MyENGIE păstrăm în card doar ultima factură pe fiecare loc de consum.
+            # Istoricul vechi poate veni fără indicator explicit de plată și ar fi marcat
+            # greșit ca restant de logica generică a dashboardului.
+            latest_ids = _latest_invoice_ids_by_group(facturi_de_afisat)
+            facturi_de_afisat = [
+                factura for factura in facturi_de_afisat
+                if str(getattr(factura, "id_factura", "") or "") in latest_ids
+            ]
+
         # 1. Facturi reale, dacă există
-        for factura in instantaneu.facturi or []:
+        for factura in facturi_de_afisat:
             item = _apply_manual_invoice_status(hass, _build_invoice_item(maybe_coord, instantaneu, factura))
 
             # Pentru cardul de "ultima factură" ignorăm documentele de tip credit/storno.

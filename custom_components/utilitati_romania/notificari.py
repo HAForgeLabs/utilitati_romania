@@ -169,7 +169,7 @@ class ManagerNotificari:
 
         for factura in facturi:
             factura_id = factura.get("id")
-            furnizor = self._safe_text(factura.get("furnizor"), "Furnizor necunoscut")
+            furnizor = self._format_furnizor(factura.get("furnizor"))
             suma = factura.get("suma")
             moneda = self._safe_text(factura.get("moneda"), "lei")
             scadenta = factura.get("scadenta")
@@ -186,7 +186,7 @@ class ManagerNotificari:
             if self._float_or_none(suma) == 0:
                 continue
 
-            locatie = self._format_locatie(adresa, nume_cont)
+            locatie = self._format_locatie(adresa, nume_cont, furnizor)
 
             if not platita and self._preferinte.get("facturi_noi", True):
                 key_emitere = f"{factura_id}_emisa"
@@ -256,7 +256,7 @@ class ManagerNotificari:
         for fereastra in ferestre:
             start = fereastra.get("start")
             end = fereastra.get("end")
-            furnizor = self._safe_text(fereastra.get("furnizor"), "Furnizor necunoscut")
+            furnizor = self._format_furnizor(fereastra.get("furnizor"))
             cont = fereastra.get("cont")
             adresa = self._safe_text(fereastra.get("adresa"))
             nume_cont = self._safe_text(fereastra.get("nume_cont"))
@@ -271,7 +271,7 @@ class ManagerNotificari:
                 continue
 
             key_index = f"{furnizor}_{cont}_index_start_{start}"
-            locatie = self._format_locatie(adresa, nume_cont)
+            locatie = self._format_locatie(adresa, nume_cont, furnizor)
 
             if start_d <= azi <= end_d and (fortat or key_index not in self._date_notificate):
                 await self._trimite(
@@ -320,8 +320,39 @@ class ManagerNotificari:
     def _safe_text(value: Any, default: str = "") -> str:
         if value is None:
             return default
+        if isinstance(value, dict):
+            return ManagerNotificari._format_adresa_dict(value) or default
+        if isinstance(value, (list, tuple, set)):
+            return default
         text = str(value).strip()
         return text or default
+
+    @staticmethod
+    def _format_adresa_dict(value: dict[str, Any]) -> str:
+        valori: list[str] = []
+        for cheie in (
+            "street", "street_name", "streetName", "Street",
+            "number", "street_number", "streetNumber", "building", "block",
+            "entrance", "floor", "apartment",
+            "postal_code", "postalCode", "postcode",
+            "city", "City", "locality",
+            "county", "County", "district", "district_code",
+        ):
+            item = value.get(cheie)
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text and text not in valori:
+                valori.append(text)
+        return ", ".join(valori)
+
+
+    @staticmethod
+    def _format_furnizor(value: Any) -> str:
+        text = ManagerNotificari._safe_text(value, "Furnizor necunoscut")
+        if text.lower() == "engie":
+            return "ENGIE"
+        return text
 
     @staticmethod
     def _float_or_none(value: Any) -> float | None:
@@ -350,7 +381,9 @@ class ManagerNotificari:
         return f"{suma} {moneda}".strip()
 
     @staticmethod
-    def _format_locatie(adresa: str, nume_cont: str) -> str:
+    def _format_locatie(adresa: str, nume_cont: str, furnizor: str = "") -> str:
+        if furnizor.strip().lower() == "engie" and nume_cont:
+            return f" — {nume_cont}"
         if adresa and nume_cont:
             if adresa.lower() == nume_cont.lower():
                 return f" — {adresa}"
