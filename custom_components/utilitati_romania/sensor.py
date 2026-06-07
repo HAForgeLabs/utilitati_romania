@@ -323,6 +323,67 @@ def _valoare_ultima_factura_rezumat(instantaneu: InstantaneuFurnizor):
     return _valoare_ultima_factura(instantaneu)
 
 
+
+def _rest_factura_model(factura: FacturaUtilitate | None) -> float | None:
+    if factura is None:
+        return None
+    raw = getattr(factura, "date_brute", None)
+    if isinstance(raw, dict):
+        for cheie in ("rest_plata", "amountToPay", "amountRemaining", "remaining", "remainingValue", "restToPay", "rest"):
+            try:
+                valoare = raw.get(cheie)
+                if valoare not in (None, ""):
+                    return float(valoare)
+            except (TypeError, ValueError):
+                continue
+    try:
+        return float(getattr(factura, "valoare", None))
+    except (TypeError, ValueError):
+        return None
+
+
+def _este_factura_activa_model(factura: FacturaUtilitate | None) -> bool:
+    if factura is None:
+        return False
+    rest = _rest_factura_model(factura)
+    if rest is not None:
+        return rest > 0
+    stare = str(getattr(factura, "stare", None) or "").strip().lower()
+    if any(text in stare for text in ("platita", "paid", "reversed", "storno", "cancel")):
+        return False
+    try:
+        return float(getattr(factura, "valoare", None) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _este_factura_pozitiva_model(factura: FacturaUtilitate | None) -> bool:
+    if factura is None:
+        return False
+    stare = str(getattr(factura, "stare", None) or "").strip().lower()
+    if any(text in stare for text in ("reversed", "storno", "cancel")):
+        return False
+    try:
+        if float(getattr(factura, "valoare", None) or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    rest = _rest_factura_model(factura)
+    return rest is not None and rest > 0
+
+
+def _factura_reprezentativa_model(facturi: list[FacturaUtilitate]) -> FacturaUtilitate | None:
+    if not facturi:
+        return None
+    active = [f for f in facturi if _este_factura_activa_model(f)]
+    if active:
+        return sorted(active, key=lambda f: (f.data_scadenta or date.max, f.data_emitere or date.min))[0]
+    pozitive = [f for f in facturi if _este_factura_pozitiva_model(f)]
+    if pozitive:
+        return sorted(pozitive, key=lambda f: f.data_emitere or date.min, reverse=True)[0]
+    return sorted(facturi, key=lambda f: f.data_emitere or date.min, reverse=True)[0]
+
+
 def _ultima_factura(
     instantaneu: InstantaneuFurnizor,
     categorie: str | None = None,
@@ -335,6 +396,8 @@ def _ultima_factura(
         facturi = [f for f in facturi if f.id_cont == id_cont]
     if not facturi:
         return None
+    if instantaneu.furnizor == "nova":
+        return _factura_reprezentativa_model(facturi)
     return sorted(facturi, key=lambda f: f.data_emitere or date.min, reverse=True)[0]
 
 
@@ -362,6 +425,26 @@ def _id_ultima_factura(
             return v
     factura = _ultima_factura(instantaneu, categorie, id_cont)
     return factura.id_factura if factura else None
+
+
+def _tipuri_active_cont(cont) -> list[str]:
+    raw = _date_brute_cont(cont)
+    tipuri = raw.get("tipuri_servicii_active")
+    if isinstance(tipuri, list):
+        return sorted({str(tip).strip() for tip in tipuri if str(tip).strip()})
+    tip = str(getattr(cont, "tip_serviciu", None) or getattr(cont, "tip_utilitate", None) or "").strip()
+    return [tip] if tip else []
+
+
+def _tipuri_servicii_rezumat(instantaneu: InstantaneuFurnizor) -> list[str]:
+    tipuri: set[str] = set()
+    for cont in instantaneu.conturi or []:
+        tipuri.update(_tipuri_active_cont(cont))
+    return sorted(tipuri)
+
+
+def _numara_conturi_cu_serviciu(instantaneu: InstantaneuFurnizor, tip: str) -> int:
+    return sum(1 for cont in instantaneu.conturi or [] if tip in _tipuri_active_cont(cont))
 
 
 def _valoare_adevarata(valoare: Any) -> bool:
@@ -427,8 +510,12 @@ def _scadenta_urmatoare(instantaneu: InstantaneuFurnizor):
     if instantaneu.furnizor == "digi":
         return _valoare_consum_global(instantaneu, "urmatoarea_scadenta")
 
+    facturi = list(instantaneu.facturi or [])
+    if instantaneu.furnizor == "nova":
+        facturi = [f for f in facturi if _este_factura_activa_model(f)]
+
     dates = []
-    for f in instantaneu.facturi:
+    for f in facturi:
         if f.data_scadenta:
             dates.append(f.data_scadenta)
     return min(dates).isoformat() if dates else None
@@ -632,9 +719,9 @@ def _eon_valoare_ultima_factura(cont):
 SENZORI_REZUMAT: tuple[DescriereSenzorRezumat, ...] = (
     DescriereSenzorRezumat(key="numar_conturi", name="Număr conturi", icon="mdi:folder-account", functie_valoare=lambda i: len(i.conturi)),
     DescriereSenzorRezumat(key="numar_facturi", name="Număr facturi", icon="mdi:file-document-multiple", functie_valoare=lambda i: len(i.facturi)),
-    DescriereSenzorRezumat(key="tipuri_servicii", name="Tipuri servicii", icon="mdi:shape-outline", functie_valoare=lambda i: ", ".join(sorted({str(c.tip_serviciu) for c in i.conturi if c.tip_serviciu})) or None),
-    DescriereSenzorRezumat(key="numar_conturi_curent", name="Număr conturi curent", icon="mdi:lightning-bolt", functie_valoare=lambda i: sum(1 for c in i.conturi if c.tip_serviciu == "curent")),
-    DescriereSenzorRezumat(key="numar_conturi_gaz", name="Număr conturi gaz", icon="mdi:fire-circle", functie_valoare=lambda i: sum(1 for c in i.conturi if c.tip_serviciu == "gaz")),
+    DescriereSenzorRezumat(key="tipuri_servicii", name="Tipuri servicii", icon="mdi:shape-outline", functie_valoare=lambda i: ", ".join(_tipuri_servicii_rezumat(i)) or None),
+    DescriereSenzorRezumat(key="numar_conturi_curent", name="Număr conturi curent", icon="mdi:lightning-bolt", functie_valoare=lambda i: _numara_conturi_cu_serviciu(i, "curent")),
+    DescriereSenzorRezumat(key="numar_conturi_gaz", name="Număr conturi gaz", icon="mdi:fire-circle", functie_valoare=lambda i: _numara_conturi_cu_serviciu(i, "gaz")),
     DescriereSenzorRezumat(key="este_prosumator", name="Este prosumator", icon="mdi:solar-power-variant", functie_valoare=lambda i: "da" if _este_prosumator(i) else "nu"),
 )
 
@@ -879,6 +966,20 @@ SENZORI_CONT_ORANGE: tuple[DescriereSenzorCont, ...] = (
 )
 
 
+SENZORI_CONT_NOVA: tuple[DescriereSenzorCont, ...] = (
+    DescriereSenzorCont(key="de_plata", name="De plată", icon="mdi:cash-clock", native_unit_of_measurement="RON", functie_valoare=lambda i, c: round(float(_valoare_consum(i, "de_plata", c.id_cont) or 0.0), 2)),
+    DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "sold_curent", c.id_cont)),
+    DescriereSenzorCont(key="sold_prosumator", name="Sold prosumator", icon="mdi:solar-power-variant", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "sold_prosumator", c.id_cont)),
+    DescriereSenzorCont(key="este_prosumator", name="Este prosumator", icon="mdi:transmission-tower-export", functie_valoare=lambda i, c: _valoare_consum(i, "este_prosumator", c.id_cont)),
+    DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:receipt-text-check", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_ultima_factura(i, c.id_cont)),
+    DescriereSenzorCont(key="id_ultima_factura", name="ID ultima factură", icon="mdi:file-document-outline", functie_valoare=lambda i, c: _id_ultima_factura(i, c.id_cont)),
+    DescriereSenzorCont(key="urmatoarea_scadenta", name="Următoarea scadență", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "urmatoarea_scadenta", c.id_cont)),
+    DescriereSenzorCont(key="factura_restanta", name="Factură restantă", icon="mdi:alert-circle", functie_valoare=lambda i, c: _valoare_consum(i, "factura_restanta", c.id_cont)),
+    DescriereSenzorCont(key="numar_facturi", name="Număr facturi", icon="mdi:file-document-multiple-outline", functie_valoare=lambda i, c: _valoare_consum(i, "numar_facturi", c.id_cont)),
+    DescriereSenzorCont(key="numar_plati", name="Număr plăți", icon="mdi:cash-check", functie_valoare=lambda i, c: _valoare_consum(i, "numar_plati", c.id_cont)),
+)
+
+
 SENZORI_CONT_MYELECTRICA: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="date_client", name="Date client", icon="mdi:account-circle", functie_valoare=lambda i, c: c.nume),
     DescriereSenzorCont(key="date_contract", name="Date contract", icon="mdi:file-document-outline", functie_valoare=lambda i, c: c.stare),
@@ -1017,6 +1118,14 @@ async def async_setup_entry(
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_MYELECTRICA:
                 entitati.append(SenzorContMyElectrica(coordonator, cont, descriere))
+
+    elif instantaneu and instantaneu.furnizor == "nova":
+        entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
+        for cont in instantaneu.conturi:
+            for descriere in SENZORI_CONT_NOVA:
+                if descriere.key == "sold_prosumator" and not _cont_este_prosumator(cont):
+                    continue
+                entitati.append(SenzorContNova(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "deer":
         entitati.extend(SenzorRezumat(coordonator, d) for d in SENZORI_REZUMAT_DEER)
@@ -1497,6 +1606,105 @@ class SenzorContOrange(EntitateUtilitatiRomania, SensorEntity):
             if factura_raw.get("history_item"):
                 attrs["history_item"] = factura_raw.get("history_item")
 
+        return attrs
+
+
+def _tip_nova(cont) -> str:
+    tipuri = _tipuri_active_cont(cont)
+    if "curent" in tipuri and "gaz" in tipuri:
+        return "mixt"
+    if "gaz" in tipuri:
+        return "gaz"
+    if "curent" in tipuri:
+        return "curent"
+    tip = str(getattr(cont, "tip_serviciu", None) or getattr(cont, "tip_utilitate", None) or "").lower()
+    return tip or "cont"
+
+
+def _slug_loc_nova(cont) -> str:
+    tip = _tip_nova(cont).replace("mixt", "energie_electrica_gaz")
+    return f"{build_provider_slug('nova', getattr(cont, 'adresa', None), getattr(cont, 'id_cont', None))}_{tip}"
+
+
+def info_device_nova(entry_id: str, cont) -> DeviceInfo:
+    ident = getattr(cont, "id_cont", "nova")
+    tip = _tip_nova(cont)
+    if tip == "mixt":
+        tip_afisat = "Energie electrică și gaz"
+    elif tip == "gaz":
+        tip_afisat = "Gaz"
+    elif tip == "curent":
+        tip_afisat = "Energie electrică"
+    else:
+        tip_afisat = "Cont"
+    adresa = getattr(cont, "adresa", None)
+    nume = adresa or getattr(cont, "nume", None) or ident
+    return DeviceInfo(
+        identifiers={(DOMENIU, f"{entry_id}_nova_{ident}")},
+        name=f"Nova - {tip_afisat} - {nume}",
+        manufacturer="Nova Power & Gas",
+        model=tip_afisat,
+    )
+
+
+class SenzorContNova(EntitateUtilitatiRomania, SensorEntity):
+    entity_description: DescriereSenzorCont
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: DescriereSenzorCont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self.entity_description = descriere
+        slug = _slug_loc_nova(cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_nova_{cont.id_cont}_{descriere.key}"
+        self._attr_name = descriere.name
+        self._attr_suggested_object_id = f"{slug}_{descriere.key}"
+        self.entity_id = f"sensor.{slug}_{descriere.key}"
+        self._attr_device_info = info_device_nova(coordonator.intrare.entry_id, cont)
+
+    @property
+    def available(self):
+        if self.coordinator.data is None:
+            return False
+        return any(getattr(cont, "id_cont", None) == getattr(self.cont, "id_cont", None) for cont in self.coordinator.data.conturi)
+
+    @property
+    def _cont_actual(self):
+        return _cont_curent_dupa_id(self.coordinator, getattr(self.cont, "id_cont", None)) or self.cont
+
+    @property
+    def native_value(self):
+        if self.coordinator.data is None:
+            return None
+        return self.entity_description.functie_valoare(self.coordinator.data, self._cont_actual)
+
+    @property
+    def extra_state_attributes(self):
+        cont = self._cont_actual
+        raw = _date_brute_cont(cont)
+        attrs = {
+            "id_cont": cont.id_cont,
+            "id_contract": cont.id_contract,
+            "nume_cont": cont.nume,
+            "tip_serviciu": cont.tip_serviciu,
+            "tip_utilitate": cont.tip_utilitate,
+            "tipuri_servicii_active": _tipuri_active_cont(cont),
+            "adresa": cont.adresa,
+            "este_prosumator": cont.este_prosumator,
+            "nova_account_id": raw.get("nova_account_id"),
+        }
+        if self.coordinator.data is None:
+            return attrs
+
+        factura = _ultima_factura(self.coordinator.data, id_cont=cont.id_cont)
+        if factura is not None:
+            attrs.update({
+                "invoice_id": factura.id_factura,
+                "issue_date": factura.data_emitere.isoformat() if factura.data_emitere else None,
+                "due_date": factura.data_scadenta.isoformat() if factura.data_scadenta else None,
+                "status": factura.stare,
+                "amount": factura.valoare,
+                "remaining": factura.date_brute.get("rest_plata") if isinstance(factura.date_brute, dict) else None,
+            })
         return attrs
 
 
