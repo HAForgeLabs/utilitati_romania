@@ -125,15 +125,17 @@ def _status_in(value: Any, candidates: set[str]) -> bool:
     return bool(token) and token in candidates
 
 _UNPAID_RAW_KEYS = (
+    "rest",
+    "rest_plata",
+    "sold",
+    "remaining",
     "amount_remaining",
     "AmountRemaining",
     "remainingAmount",
     "UnpaidValue",
-    "rest_plata",
     "restToPay",
     "amountToPay",
     "remainingValue",
-    "remaining",
     "amountRemaining",
 )
 
@@ -226,6 +228,43 @@ def _cont_for_factura(
     return None
 
 
+
+
+def _factura_este_ultima_curenta(
+    instantaneu: InstantaneuFurnizor,
+    factura: FacturaUtilitate,
+    cont: ContUtilitate | None,
+) -> bool:
+    """Verifică dacă factura este factura curentă pentru cont.
+
+    Unii furnizori expun soldul curent doar la nivel de cont. Dacă aplicăm acel
+    sold tuturor facturilor din istoric, cardul ajunge să multiplice restanța cu
+    numărul de facturi istorice. Folosim fallback-ul de cont doar pentru factura
+    curentă identificabilă.
+    """
+    id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
+    raw = _raw_dict(factura)
+
+    factura_id = str(getattr(factura, "id_factura", None) or "").strip()
+    last_id = str(_consum_value(instantaneu, "id_ultima_factura", id_cont) or "").strip()
+    if factura_id and last_id and (factura_id == last_id or factura_id in last_id or last_id in factura_id):
+        return True
+
+    for key in ("invoice_number", "number", "series_number", "serie_numar"):
+        value = str(raw.get(key) or "").strip()
+        if value and last_id and (value == last_id or value in last_id or last_id in value):
+            return True
+
+    amount = _to_float(getattr(factura, "valoare", None))
+    last_amount = _to_float(_consum_value(instantaneu, "valoare_ultima_factura", id_cont))
+    due_date = _format_date(getattr(factura, "data_scadenta", None))
+    last_due = _format_date(_consum_value(instantaneu, "urmatoarea_scadenta", id_cont))
+    if amount is not None and last_amount is not None and abs(amount - last_amount) < 0.01:
+        if not last_due or due_date == last_due:
+            return True
+
+    return False
+
 def _extract_unpaid_amount(
     instantaneu: InstantaneuFurnizor,
     factura: FacturaUtilitate,
@@ -239,6 +278,11 @@ def _extract_unpaid_amount(
             return value
 
     id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
+
+    # Apă Brașov expune soldul curent la nivel de locație, dar include și istoric
+    # de facturi. Nu aplicăm soldul curent tuturor facturilor istorice.
+    if instantaneu.furnizor in {"apa_brasov"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
+        return None
 
     for key in ("sold_factura", "de_plata", "total_neachitat", "sold_curent"):
         value = _to_float(_consum_value(instantaneu, key, id_cont))
@@ -712,6 +756,34 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
         )
         return (locatie, furnizor, normalize_text(identificator_serviciu).lower())
 
+    if furnizor == "digi":
+        identificator_serviciu = (
+            item.get("invoice_title")
+            or item.get("tip_serviciu")
+            or item.get("tip_utilitate")
+            or item.get("invoice_id")
+            or ""
+        )
+        return (locatie, furnizor, normalize_text(identificator_serviciu).lower())
+
+    if furnizor == "apa_brasov":
+        # Apă Brașov are câte o factură curentă pentru fiecare loc de consum.
+        # Dacă grupăm doar după titlul generic al facturii („Factură apă/canal”),
+        # factura plătită de pe o locație poate fi combinată cu factura restantă
+        # de pe altă locație și dispare din card. Identificatorul stabil al
+        # locației păstrează rândurile separate, dar tot sub gruparea comună
+        # „Apă Brașov” atunci când utilizatorul grupează manual furnizorul.
+        identificator_locatie = (
+            item.get("id_cont")
+            or item.get("id_contract")
+            or item.get("adresa_originala")
+            or item.get("nume_cont")
+            or item.get("invoice_id")
+            or item.get("invoice_title")
+            or ""
+        )
+        return (locatie, furnizor, normalize_text(identificator_locatie).lower())
+
     return (locatie, furnizor)
 
 
@@ -725,6 +797,35 @@ def _valoare_neplatita_item(item: dict[str, Any]) -> float:
     return round(max(float(amount or 0), 0.0), 2)
 
 
+def _numar_neplatite_item(item: dict[str, Any]) -> int:
+    """Returnează numărul de facturi neplătite reprezentate de un rând din card."""
+    if item.get("status") != "unpaid":
+        return 0
+
+    # La DIGI facturile de servicii diferite pot veni în aceeași structură de cont,
+    # dar în card le afișăm deja ca rânduri separate. Dacă folosim `unpaid_count`
+    # sau lista comună de invoice-uri, antetul grupei dublează numărul de neplătite
+    # deși totalul valoric este corect. Pentru fiecare rând DIGI afișat contăm o
+    # singură factură restantă.
+    if normalize_text(item.get("furnizor")).lower() == "digi":
+        return 1
+
+    explicit_count = item.get("unpaid_count")
+    try:
+        count = int(explicit_count)
+    except (TypeError, ValueError):
+        count = 0
+
+    if count > 0:
+        return count
+
+    unpaid_invoice_ids = item.get("unpaid_invoice_ids")
+    if isinstance(unpaid_invoice_ids, list) and unpaid_invoice_ids:
+        return len(unpaid_invoice_ids)
+
+    return 1
+
+
 def _initializeaza_agregare_item(item: dict[str, Any]) -> dict[str, Any]:
     count = 1 if item.get("status") == "unpaid" else 0
     total = _valoare_neplatita_item(item)
@@ -736,6 +837,7 @@ def _initializeaza_agregare_item(item: dict[str, Any]) -> dict[str, Any]:
 
     invoice_id = item.get("invoice_id")
     item["invoice_ids"] = [invoice_id] if invoice_id not in (None, "") else []
+    item["unpaid_invoice_ids"] = item["invoice_ids"][:] if count else []
     return item
 
 
@@ -756,10 +858,14 @@ def _combina_itemuri_grupate(current: dict[str, Any], item: dict[str, Any]) -> d
         other = item
 
     invoice_ids = []
+    unpaid_invoice_ids = []
     for source in (current, item):
         for invoice_id in source.get("invoice_ids") or []:
             if invoice_id not in (None, "") and invoice_id not in invoice_ids:
                 invoice_ids.append(invoice_id)
+        for invoice_id in source.get("unpaid_invoice_ids") or []:
+            if invoice_id not in (None, "") and invoice_id not in unpaid_invoice_ids:
+                unpaid_invoice_ids.append(invoice_id)
 
     unpaid_count = current_unpaid_count + item_unpaid_count
     unpaid_total = round(current_unpaid_total + item_unpaid_total, 2)
@@ -767,6 +873,7 @@ def _combina_itemuri_grupate(current: dict[str, Any], item: dict[str, Any]) -> d
     display["unpaid_count"] = unpaid_count
     display["unpaid_total"] = unpaid_total
     display["invoice_ids"] = invoice_ids
+    display["unpaid_invoice_ids"] = unpaid_invoice_ids
 
     if unpaid_count > 0:
         display["status"] = "unpaid"
@@ -833,8 +940,8 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             continue
 
         facturi_de_afisat = list(instantaneu.facturi or [])
-        if instantaneu.furnizor == "engie":
-            # Pentru MyENGIE păstrăm în card doar ultima factură pe fiecare loc de consum.
+        if instantaneu.furnizor in {"engie", "apa_brasov"}:
+            # Pentru MyENGIE și Apă Brașov păstrăm în card doar ultima factură pe fiecare loc de consum.
             # Istoricul vechi poate veni fără indicator explicit de plată și ar fi marcat
             # greșit ca restant de logica generică a dashboardului.
             latest_ids = _latest_invoice_ids_by_group(facturi_de_afisat)
@@ -977,7 +1084,7 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
             if status in {"paid", "credit"}:
                 paid += 1
             elif status == "unpaid":
-                unpaid += max(int(item.get("unpaid_count") or 1), 1)
+                unpaid += _numar_neplatite_item(item)
             else:
                 unknown += 1
 

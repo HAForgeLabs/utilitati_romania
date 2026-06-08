@@ -338,11 +338,24 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   _providerUnpaidCount(provider) {
     if (this._status(provider) !== "unpaid") return 0;
 
-    const explicitCount = this._num(provider?.unpaid_count);
-    if (explicitCount > 1) return Math.round(explicitCount);
+    const providerKey = String(provider?.furnizor || provider?.furnizor_key || provider?.provider || provider?.provider_key || "").toLowerCase();
+    const providerLabel = String(provider?.furnizor_label || provider?.supplier || provider?.name || "").toLowerCase();
 
-    if (Array.isArray(provider?.invoice_ids) && provider.invoice_ids.length > 1) {
-      return provider.invoice_ids.length;
+    // DIGI poate întoarce în aceeași structură lista facturilor neplătite de pe
+    // tot contul, chiar dacă în dashboard afișăm deja rânduri separate pe
+    // servicii/locuri de consum. În antet trebuie numărate rândurile afișate,
+    // nu lista comună din payload, altfel apare 4 neplătite pentru 2 rânduri.
+    if (providerKey === "digi" || providerLabel === "digi") {
+      return 1;
+    }
+
+    const explicitCount = this._num(provider?.unpaid_count);
+    if (Number.isFinite(explicitCount) && explicitCount > 0) {
+      return Math.round(explicitCount);
+    }
+
+    if (Array.isArray(provider?.unpaid_invoice_ids) && provider.unpaid_invoice_ids.length > 0) {
+      return provider.unpaid_invoice_ids.length;
     }
 
     const invoiceAmount = this._num(this._providerInvoiceAmount(provider));

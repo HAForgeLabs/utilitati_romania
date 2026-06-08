@@ -580,11 +580,24 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   _providerUnpaidCount(provider) {
     if (this._providerEffectiveStatus(provider) !== "unpaid") return 0;
 
-    const explicitCount = this._toNumber(provider?.unpaid_count);
-    if (explicitCount > 1) return Math.round(explicitCount);
+    const providerKey = String(provider?.furnizor || provider?.furnizor_key || "").toLowerCase();
+    const providerLabel = String(provider?.furnizor_label || "").toLowerCase();
 
-    if (Array.isArray(provider?.invoice_ids) && provider.invoice_ids.length > 1) {
-      return provider.invoice_ids.length;
+    // La DIGI, fiecare rând afișat în card reprezintă factura curentă a unui
+    // serviciu/loc de consum. Structura brută poate conține lista comună de
+    // facturi neplătite ale contului, iar folosirea acelei liste dublează
+    // numărul afișat în antet, deși valoarea totală este corectă.
+    if (providerKey === "digi" || providerLabel === "digi") {
+      return 1;
+    }
+
+    const explicitCount = this._toNumber(provider?.unpaid_count);
+    if (Number.isFinite(explicitCount) && explicitCount >= 0) {
+      return Math.round(explicitCount);
+    }
+
+    if (Array.isArray(provider?.unpaid_invoice_ids) && provider.unpaid_invoice_ids.length > 0) {
+      return provider.unpaid_invoice_ids.length;
     }
 
     const invoiceAmount = this._toNumber(this._providerInvoiceAmount(provider));

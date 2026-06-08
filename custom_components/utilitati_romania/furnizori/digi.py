@@ -151,13 +151,28 @@ class ClientFurnizorDigi(ClientFurnizor):
             due_date = _parseaza_data(latest.get("due_date"))
             numar_servicii = _numar_servicii_din_latest(latest)
 
+            facturi_neachitate = [
+                item for item in (entry.history or [])
+                if float(item.get("rest") or 0.0) > 0
+                or "neach" in str(item.get("status") or "").lower()
+            ]
+            rest = round(
+                sum(
+                    max(float(item.get("rest") or item.get("amount") or 0.0), 0.0)
+                    for item in facturi_neachitate
+                ),
+                2,
+            )
+
             total_sold += max(rest, 0.0)
             total_ultima_factura += amount
             total_numar_servicii += numar_servicii
             exista_restanta = exista_restanta or rest > 0
 
-            if rest > 0 and due_date:
-                scadente_restante.append(due_date)
+            for item_neachitat in facturi_neachitate:
+                scadenta_item = _parseaza_data(item_neachitat.get("due_date"))
+                if scadenta_item:
+                    scadente_restante.append(scadenta_item)
 
             if issue_date and (latest_global_issue_date is None or issue_date > latest_global_issue_date):
                 latest_global_issue_date = issue_date

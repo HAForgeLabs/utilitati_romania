@@ -1632,12 +1632,16 @@ class SenzorContDigi(EntitateUtilitatiRomania, SensorEntity):
 
         slug_strada = _slug_strada_digi(cont)
 
+        id_cont = str(getattr(cont, "id_cont", None) or slug_strada or "cont").strip()
+        id_cont_slug = build_provider_slug("digi", id_cont, id_cont)
+        object_slug = f"{slug_strada}_{id_cont_slug}" if slug_strada not in id_cont_slug else id_cont_slug
+
         self._attr_unique_id = (
-            f"{coordonator.intrare.entry_id}_digi_{slug_strada}_{descriere.key}"
+            f"{coordonator.intrare.entry_id}_digi_{id_cont}_{descriere.key}"
         )
         self._attr_name = descriere.name.strip()
-        self._attr_suggested_object_id = f"digi_{slug_strada}_{descriere.key}"
-        self.entity_id = f"sensor.digi_{slug_strada}_{descriere.key}"
+        self._attr_suggested_object_id = f"digi_{object_slug}_{descriere.key}"
+        self.entity_id = f"sensor.digi_{object_slug}_{descriere.key}"
         self._attr_device_info = info_device_digi(coordonator.intrare.entry_id, cont)
 
     @property
