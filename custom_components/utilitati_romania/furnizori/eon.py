@@ -804,10 +804,12 @@ class ClientFurnizorEon(ClientFurnizor):
                 )
 
             factura_id = _safe_str(loc.get("id_ultima_factura"))
+            sold_factura_loc = round(_to_float(loc.get("sold_factura"), 0.0), 2)
+            factura_restanta_loc = bool(loc.get("factura_restanta"))
             valoare_factura_consum = round(_to_float(loc.get("valoare_ultima_factura"), 0.0), 2)
-            if not factura_id and factura_restanta and sold_factura > 0:
+            if not factura_id and factura_restanta_loc and sold_factura_loc > 0:
                 factura_id = f"sold-{id_cont}"
-                valoare_factura_consum = round(sold_factura, 2)
+                valoare_factura_consum = round(sold_factura_loc, 2)
 
             if factura_id:
                 facturi.append(
