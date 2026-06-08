@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -29,13 +29,24 @@ def _admin_device_info(entry: ConfigEntry) -> DeviceInfo:
     )
 
 
-def _mobile_notify_service_names(hass: HomeAssistant) -> list[str]:
+def _mobile_notify_service_names(
+    hass: HomeAssistant,
+    stored_value: str | None = None,
+) -> list[str]:
     services = hass.services.async_services().get("notify", {})
     options = sorted(
         service_name
         for service_name in services.keys()
         if str(service_name).startswith("mobile_app_")
     )
+
+    # Unele servicii mobile_app sunt înregistrate mai târziu decât platforma select.
+    # Păstrăm opțiunea salvată în listă ca selecția să nu pară pierdută după restart.
+    stored = str(stored_value or "").strip()
+    if stored and stored != _NOTIFY_OPTION_NONE and stored.startswith("mobile_app_") and stored not in options:
+        options.append(stored)
+        options.sort()
+
     return [_NOTIFY_OPTION_NONE, *options]
 
 
@@ -60,8 +71,10 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
         self._attr_unique_id = f"{entry.entry_id}_admin_dispozitiv_mobil_open_provider"
         self._attr_name = "Dispozitiv mobil pentru deschidere furnizori"
         self._attr_device_info = _admin_device_info(entry)
-        self._attr_options = _mobile_notify_service_names(hass)
-        self._attr_current_option = self._option_from_config_entry()
+        stored_value = self._option_from_config_entry()
+        self._attr_options = _mobile_notify_service_names(hass, stored_value)
+        self._attr_current_option = stored_value if stored_value in self._attr_options else _NOTIFY_OPTION_NONE
+        self._remove_service_listener = None
 
     def _option_from_config_entry(self) -> str:
         value = str(self._entry.options.get(CONF_MOBILE_NOTIFY_SERVICE) or "").strip()
@@ -70,18 +83,22 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
 
-        options = _mobile_notify_service_names(self.hass)
-        self._attr_options = options
+        self._remove_service_listener = self.hass.bus.async_listen(
+            "service_registered",
+            self._async_notify_service_registered,
+        )
+
+        await self._async_refresh_options(write_state=False)
 
         stored_value = self._option_from_config_entry()
-        if stored_value in options:
+        if stored_value in self._attr_options:
             self._attr_current_option = stored_value
             self.async_write_ha_state()
             return
 
         restored_state = await self.async_get_last_state()
         restored_value = str(restored_state.state).strip() if restored_state else ""
-        if restored_value in options:
+        if restored_value in self._attr_options:
             self._attr_current_option = restored_value
             await self._async_save_selected_option(restored_value)
         else:
@@ -89,8 +106,37 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
 
         self.async_write_ha_state()
 
+    async def async_will_remove_from_hass(self) -> None:
+        if self._remove_service_listener is not None:
+            self._remove_service_listener()
+            self._remove_service_listener = None
+
+    @callback
+    def _async_notify_service_registered(self, event) -> None:
+        if event.data.get("domain") != "notify":
+            return
+        self.hass.async_create_task(self._async_refresh_options())
+
+    async def _async_refresh_options(self, write_state: bool = True) -> None:
+        stored_value = self._option_from_config_entry()
+        current_value = str(self._attr_current_option or "").strip()
+        preferred_value = stored_value or current_value
+
+        options = _mobile_notify_service_names(self.hass, preferred_value)
+        self._attr_options = options
+
+        if preferred_value in options:
+            self._attr_current_option = preferred_value
+        elif current_value in options:
+            self._attr_current_option = current_value
+        else:
+            self._attr_current_option = _NOTIFY_OPTION_NONE
+
+        if write_state:
+            self.async_write_ha_state()
+
     async def async_select_option(self, option: str) -> None:
-        options = _mobile_notify_service_names(self.hass)
+        options = _mobile_notify_service_names(self.hass, option)
         self._attr_options = options
         selected_option = option if option in options else _NOTIFY_OPTION_NONE
         self._attr_current_option = selected_option
