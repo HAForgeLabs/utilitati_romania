@@ -326,6 +326,26 @@ def _cheie_contract_optiune(text: str, loccons_id: str) -> str:
     return cod or loccons_id or text.strip().lower()
 
 
+def _id_stabil_contract_apa_brasov(eticheta: str | None, fallback: str | None = None) -> str:
+    """Returnează un identificator stabil pentru device/entity registry.
+
+    Portalul poate întoarce pe pagini diferite identificatori numerici diferiți
+    pentru același contract sau loc de consum. Dacă folosim acele valori drept
+    `id_cont`, Home Assistant creează câte un device nou la fiecare reload.
+    Identificatorul stabil trebuie derivat din contract + adresă, adică din
+    informația vizibilă și stabilă din dropdown-ul portalului.
+    """
+    sursa = _curata_text(eticheta or "")
+    cheie = _cheie_contract_optiune(sursa, str(fallback or ""))
+    cheie = _normalizeaza_text_pentru_potrivire(cheie)
+    cheie = re.sub(r"[^A-Z0-9]+", "_", cheie).strip("_").lower()
+    if cheie:
+        return cheie[:120]
+    fallback_curat = _normalizeaza_text_pentru_potrivire(str(fallback or "apa_brasov"))
+    fallback_curat = re.sub(r"[^A-Z0-9]+", "_", fallback_curat).strip("_").lower()
+    return fallback_curat[:120] or "apa_brasov"
+
+
 def _este_loccons_numeric(valoare: str | None) -> bool:
     return bool(valoare and re.fullmatch(r"\d{3,}", str(valoare).strip()))
 
@@ -1233,10 +1253,14 @@ class ClientFurnizorApaBrasov(ClientFurnizor):
         loccons_id_initial: str,
         eticheta: str,
     ) -> tuple[ContUtilitate, list[FacturaUtilitate], list[ConsumUtilitate], dict[str, Any]]:
-        loccons_final = str(date_brute.get("loccons_id") or loccons_id_initial)
+        loccons_portal = str(date_brute.get("loccons_id") or loccons_id_initial)
         contract = date_brute.get("contract") or {}
         adresa = contract.get("address") or eticheta
-        id_contract = str(contract.get("contract_id") or loccons_final)
+        # `id_cont` este folosit de Home Assistant în unique_id/device identifiers.
+        # Nu folosim aici `loccons_id` numeric întors de portal, pentru că poate
+        # diferi între pagini/reload-uri. Folosim o cheie stabilă din contract + adresă.
+        loccons_final = _id_stabil_contract_apa_brasov(eticheta or adresa, loccons_portal)
+        id_contract = _cod_contract_din_text(eticheta or adresa or "") or str(contract.get("contract_id") or loccons_portal or loccons_final)
 
         nume_locatie = nume_scurt_locatie_apa_brasov(adresa or eticheta, loccons_final)
 
