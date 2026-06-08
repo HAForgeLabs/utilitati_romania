@@ -1486,6 +1486,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .filter(([entityId, state]) => {
         if (!entityId.startsWith("text.")) return false;
         if (entityId.includes("cod_licenta")) return false;
+
+        // Entitățile vechi de grupare pot rămâne în registry după ștergerea
+        // sau refacerea unor furnizori. Home Assistant le expune ca
+        // unavailable, iar panoul nu trebuie să le mai afișeze în setări.
+        if (["unavailable", "unknown"].includes(String(state?.state || "").toLowerCase())) return false;
+
         const name = String(state?.attributes?.friendly_name || state?.attributes?.name || entityId).toLowerCase();
         return name.includes("grupare facturi") || entityId.includes("grupare_facturi");
       })
