@@ -445,6 +445,16 @@ def _tipuri_servicii_rezumat(instantaneu: InstantaneuFurnizor) -> list[str]:
     return sorted(tipuri)
 
 
+def _numar_conturi_rezumat(instantaneu: InstantaneuFurnizor) -> int:
+    if instantaneu.furnizor == "digi":
+        extra = getattr(instantaneu, "extra", None) or {}
+        try:
+            return int(extra.get("addresses_count") or 0)
+        except Exception:
+            pass
+    return len(instantaneu.conturi or [])
+
+
 def _numara_conturi_cu_serviciu(instantaneu: InstantaneuFurnizor, tip: str) -> int:
     return sum(1 for cont in instantaneu.conturi or [] if tip in _tipuri_active_cont(cont))
 
@@ -725,7 +735,7 @@ def _eon_valoare_ultima_factura(cont):
     return round(valoare, 2)
 
 SENZORI_REZUMAT: tuple[DescriereSenzorRezumat, ...] = (
-    DescriereSenzorRezumat(key="numar_conturi", name="Număr conturi", icon="mdi:folder-account", functie_valoare=lambda i: len(i.conturi)),
+    DescriereSenzorRezumat(key="numar_conturi", name="Număr conturi", icon="mdi:folder-account", functie_valoare=lambda i: _numar_conturi_rezumat(i)),
     DescriereSenzorRezumat(key="numar_facturi", name="Număr facturi", icon="mdi:file-document-multiple", functie_valoare=lambda i: len(i.facturi)),
     DescriereSenzorRezumat(key="tipuri_servicii", name="Tipuri servicii", icon="mdi:shape-outline", functie_valoare=lambda i: ", ".join(_tipuri_servicii_rezumat(i)) or None),
     DescriereSenzorRezumat(key="numar_conturi_curent", name="Număr conturi curent", icon="mdi:lightning-bolt", functie_valoare=lambda i: _numara_conturi_cu_serviciu(i, "curent")),
@@ -1514,9 +1524,15 @@ class SenzorContMyElectrica(EntitateUtilitatiRomania, SensorEntity):
 def info_device_digi(entry_id: str, cont) -> DeviceInfo:
     ident = getattr(cont, "id_cont", "digi")
     nume = getattr(cont, "nume", "Digi")
+    raw = getattr(cont, "date_brute", None) or {}
+    service_label = str(raw.get("service_label") or getattr(cont, "tip_serviciu", None) or "").strip()
+    if service_label and service_label.lower() not in {"servicii digi", "servicii", "telecom"}:
+        nume_device = f"Digi - {nume} - {service_label}"
+    else:
+        nume_device = f"Digi - {nume}"
     return DeviceInfo(
         identifiers={(DOMENIU, f"{entry_id}_digi_{ident}")},
-        name=f"Digi - {nume}",
+        name=nume_device,
         manufacturer="Digi România",
         model="Servicii",
     )
