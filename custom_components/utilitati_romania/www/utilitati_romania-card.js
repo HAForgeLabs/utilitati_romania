@@ -112,6 +112,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (normalized.includes("telecom") || normalized.includes("internet") || normalized.includes("telefon") || normalized.includes("tv")) return "Telecomunicații";
     if (normalized.includes("apa") || normalized.includes("canal")) return "Apă / canal";
     if (normalized.includes("gaz")) return "Gaze naturale";
+    if (normalized.includes("salubritate") || normalized.includes("deseuri") || normalized.includes("gunoi")) return "Salubritate";
 
     return raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
   }
@@ -1532,6 +1533,7 @@ _buildProviderRefreshButton(provider) {
       ebloc: "App. e-bloc",
       orange: "App. Orange",
       rervest: "App. RER Vest",
+      comprest: "Portal Comprest",
     };
     return labels[key] || "";
   }

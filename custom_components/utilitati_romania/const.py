@@ -56,6 +56,7 @@ FURNIZOR_DEER = "deer"
 FURNIZOR_EBLOC = "ebloc"
 FURNIZOR_ORANGE = "orange"
 FURNIZOR_RERVEST = "rervest"
+FURNIZOR_COMPREST = "comprest"
 FURNIZOR_ENGIE = "engie"
 
 CONF_DATE_TOKEN_EON = "date_token_eon"

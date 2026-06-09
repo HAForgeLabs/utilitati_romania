@@ -654,21 +654,6 @@ class DigiApiClient:
 
         rows: list[InvoiceSummary] = parsed["rows"]
 
-        _LOGGER.warning(
-            "Diagnostic Digi: pagina facturi parsata: %s",
-            json.dumps(
-                {
-                    "addresses_count": parsed_debug.get("addresses_count"),
-                    "current_rows_count": parsed_debug.get("current_rows_count"),
-                    "archive_rows_count": parsed_debug.get("archive_rows_count"),
-                    "cfg_ids_count": parsed_debug.get("cfg_ids_count"),
-                    "rows_count": len(rows),
-                    "rows": [_digi_safe_row_debug(row) for row in rows[:12]],
-                },
-                ensure_ascii=False,
-            ),
-        )
-
         recent_ids_by_address: dict[str, list[str]] = {}
         for row in rows:
             bucket = recent_ids_by_address.setdefault(row.address_key, [])
@@ -719,30 +704,6 @@ class DigiApiClient:
                 history=items,
                 unpaid_count=unpaid_count,
             )
-
-        _LOGGER.warning(
-            "Diagnostic Digi: facturi grupate pe adrese/servicii: %s",
-            json.dumps(
-                {
-                    "addresses_count": len(invoices_by_address),
-                    "addresses": [
-                        {
-                            "address_key": _digi_mask_address_key(address_key),
-                            "address": _digi_mask_address(entry.address),
-                            "latest": _digi_safe_invoice_debug(entry.latest or {}),
-                            "history_count": len(entry.history or []),
-                            "unpaid_count": entry.unpaid_count,
-                            "history": [
-                                _digi_safe_invoice_debug(item)
-                                for item in (entry.history or [])[:8]
-                            ],
-                        }
-                        for address_key, entry in invoices_by_address.items()
-                    ],
-                },
-                ensure_ascii=False,
-            ),
-        )
 
         return DigiData(
             account_label=None,

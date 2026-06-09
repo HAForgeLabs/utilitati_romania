@@ -20,6 +20,7 @@ from .naming import normalize_text
 _PROVIDER_LABELS = {
     "apa_canal": "Apă Canal Sibiu",
     "apa_brasov": "Apă Brașov",
+    "comprest": "Comprest",
     "deer": "DEER",
     "digi": "Digi",
     "engie": "ENGIE",

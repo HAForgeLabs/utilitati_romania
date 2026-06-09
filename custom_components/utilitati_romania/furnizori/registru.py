@@ -3,6 +3,7 @@ from __future__ import annotations
 from .apa_canal import ClientFurnizorApaCanal
 from .apa_brasov import ClientFurnizorApaBrasov
 from .baza import ClientFurnizor
+from .comprest import ClientFurnizorComprest
 from .digi import ClientFurnizorDigi
 from .eon import ClientFurnizorEon
 from .ebloc import ClientFurnizorEbloc
@@ -15,6 +16,7 @@ from .orange import ClientFurnizorOrange
 from .rervest import ClientFurnizorRerVest
 
 FURNIZORI: dict[str, type[ClientFurnizor]] = {
+    ClientFurnizorComprest.cheie_furnizor: ClientFurnizorComprest,
     ClientFurnizorNova.cheie_furnizor: ClientFurnizorNova,
     ClientFurnizorDigi.cheie_furnizor: ClientFurnizorDigi,
     ClientFurnizorEon.cheie_furnizor: ClientFurnizorEon,

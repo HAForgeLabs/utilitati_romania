@@ -377,6 +377,12 @@ def _provider_open_target(provider: str | None) -> dict[str, str] | None:
             "fallback": "https://rervest.ro/contul-meu/",
         }
 
+    if key == "comprest":
+        return {
+            "mode": "url",
+            "fallback": "https://client.comprest.ro/",
+        }
+
     return None
 
 
