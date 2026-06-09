@@ -383,6 +383,12 @@ def _provider_open_target(provider: str | None) -> dict[str, str] | None:
             "fallback": "https://client.comprest.ro/",
         }
 
+    if key == "apa_oradea":
+        return {
+            "mode": "url",
+            "fallback": "https://plataonline.apaoradea.ro/",
+        }
+
     return None
 
 
