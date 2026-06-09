@@ -293,6 +293,29 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return provider?.furnizor_label || provider?.furnizor || provider?.provider || "Furnizor";
   }
 
+  _providerUtilityType(provider) {
+    const candidates = [
+      provider?.tip_utilitate,
+      provider?.tip_serviciu,
+      provider?.service_type,
+      provider?.serviciu,
+      provider?.description,
+      provider?.invoice_description,
+      provider?.categorie,
+      provider?.utility_type,
+    ];
+    const raw = candidates.map((value) => String(value ?? "").trim()).find((value) => value && !["-", "—", "none", "null", "undefined"].includes(value.toLowerCase()));
+    if (!raw) return "";
+
+    const normalized = this._normalizeText(raw);
+    if (normalized.includes("digi energy") || normalized.includes("energie") || normalized.includes("electric") || normalized === "curent") return "Energie electrică";
+    if (normalized.includes("telecom") || normalized.includes("internet") || normalized.includes("telefon") || normalized.includes("tv")) return "Telecomunicații";
+    if (normalized.includes("apa") || normalized.includes("canal")) return "Apă / canal";
+    if (normalized.includes("gaz")) return "Gaze naturale";
+
+    return raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
   _providerKey(provider) {
     return String(provider?.furnizor || provider?.provider || this._providerName(provider)).trim().toLowerCase();
   }
@@ -821,14 +844,17 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const warning = status === "unpaid" && days !== null && days <= 5;
     const key = this._invoiceKey(location, provider);
     const expanded = this._expandedInvoices.has(key);
+    const utilityType = this._providerUtilityType(provider);
+    const utilityLine = utilityType ? `<span class="invoice-utility">${this._escape(utilityType)}</span>` : "";
     return `
       <article class="invoice-row ${status} ${warning ? "warning" : ""} ${expanded ? "expanded" : ""}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
-        <div class="invoice-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._providerInvoice(provider))}</span></div>
+        <div class="invoice-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._providerInvoice(provider))}</span>${utilityLine}</div>
         <div class="invoice-quick"><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span></div>
         <button class="invoice-toggle" data-toggle-invoice="${this._escape(key)}" title="Detalii factură" aria-label="Detalii factură"><ha-icon icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
         <div class="invoice-details">
           <div class="invoice-meta"><span>Scadență</span><strong>${this._escape(this._date(due))}</strong></div>
+          ${utilityType ? `<div class="invoice-meta"><span>Utilitate</span><strong>${this._escape(utilityType)}</strong></div>` : ""}
           <div class="invoice-meta amount"><span>Valoare</span><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong></div>
           <span class="pill ${status}">${this._escape(this._statusLabel(status))}</span>
           <div class="invoice-actions">
@@ -1676,6 +1702,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .due.soon { border-left-color:#ff914d; }
       .due.late { border-left-color:#e5484d; }
       .due span,.location-compact span,.invoice-main span,.invoice-meta span,.reading-main span,.reading-period span,.reading-current span { display:block; color:#6b7b90; font-size:13px; margin-top:3px; }
+      .invoice-main .invoice-utility { color:#4f6f94; font-size:12px; font-weight:800; letter-spacing:.02em; }
       .due-right { text-align:right; }
       .due-right small { color:#6b7b90; font-weight:800; }
       .location-compact { justify-content:space-between; }
@@ -1692,9 +1719,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .invoice-toolbar label { color:#6b7b90; font-size:12px; text-transform:uppercase; letter-spacing:.08em; font-weight:900; }
       .invoice-toolbar select { border:1px solid rgba(17,32,51,.10); border-radius:14px; padding:10px 36px 10px 12px; background:#f7f9fc; color:#142033; font-weight:800; }
       .invoice-toolbar span { margin-left:auto; color:#6b7b90; font-weight:800; }
-      .invoice-row { display:grid; grid-template-columns:42px minmax(160px,1fr) 130px 130px auto 42px; align-items:center; }
+      .invoice-row { display:grid; grid-template-columns:42px minmax(180px,1fr) minmax(100px,120px) minmax(105px,130px) minmax(100px,125px) max-content max-content; align-items:center; column-gap:16px; }
       .invoice-row.warning { background:#fff5ec; }
       .invoice-details { display:contents; }
+      .invoice-meta { min-width:0; }
+      .invoice-meta strong { display:block; overflow-wrap:anywhere; }
+      .invoice-details > .pill { justify-self:start; align-self:center; }
       .invoice-quick { display:none; }
       .invoice-toggle { display:none; width:42px; height:42px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#fff; color:#112033; place-items:center; }
       .reading-row { display:grid; grid-template-columns:42px minmax(150px,1fr) minmax(210px,1.1fr) 110px auto; }
@@ -1704,7 +1734,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .reading-input { width:100%; border:1px solid rgba(17,32,51,.12); border-radius:14px; padding:11px 12px; font:inherit; background:#fff; color:#142033; outline:none; }
       .reading-input:focus { border-color:#4ea1ff; box-shadow:0 0 0 3px rgba(78,161,255,.16); }
       .reading-control .action-message { grid-column:1 / -1; margin-top:0; }
-      .pill { padding:7px 10px; border-radius:999px; font-size:12px; font-weight:900; text-align:center; white-space:nowrap; }
+      .pill { display:inline-flex; align-items:center; justify-content:center; width:max-content; max-width:100%; padding:7px 12px; border-radius:999px; font-size:12px; font-weight:900; text-align:center; white-space:nowrap; line-height:1.15; }
       .pill.paid,.pill.credit,.pill.open { background:#e9f8ee; color:#14783c; }
       .pill.unpaid,.pill.closed { background:#fff0e6; color:#b55415; }
       .pill.unknown,.pill.missing { background:#edf1f7; color:#526276; }
@@ -1715,7 +1745,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .row-action { width:38px; height:38px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#fff; display:grid; place-items:center; color:#112033; }
       .row-action.busy ha-icon { animation:spin 1s linear infinite; }
       .row-action.disabled { color:#9aa7b7; background:#edf1f7; cursor:default; }
-      .invoice-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+      .invoice-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:nowrap; min-width:max-content; }
       .provider-app-action { width:38px; height:38px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#fff; color:#112033; display:grid; place-items:center; box-shadow:none; }
       .provider-app-action ha-icon { width:20px; height:20px; }
       .provider-app-action span { display:none; }
@@ -1844,7 +1874,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         .invoice-details { display:none; grid-column:2 / 4; grid-template-columns:1fr; gap:10px; margin-top:12px; padding-top:12px; border-top:1px solid rgba(17,32,51,.07); }
         .invoice-row.expanded .invoice-details { display:grid; }
         .invoice-details .invoice-meta,.invoice-details .pill,.invoice-details .row-action,.invoice-details .invoice-actions { justify-self:start; }
-        .invoice-actions { align-items:flex-start; }
+        .invoice-actions { align-items:flex-start; justify-content:flex-start; flex-wrap:wrap; min-width:0; }
         .invoice-toggle { display:grid; grid-column:3; grid-row:1; }
         .reading-row { grid-template-columns:42px 1fr; }
         .reading-period,.reading-current,.reading-row .pill,.reading-controls { grid-column:2; justify-self:stretch; }

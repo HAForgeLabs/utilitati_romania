@@ -93,6 +93,29 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return this._normalizeStatus(provider?.status || provider?.payment_status || provider?.status_raw);
   }
 
+  _providerUtilityType(provider) {
+    const candidates = [
+      provider?.tip_utilitate,
+      provider?.tip_serviciu,
+      provider?.service_type,
+      provider?.serviciu,
+      provider?.description,
+      provider?.invoice_description,
+      provider?.categorie,
+      provider?.utility_type,
+    ];
+    const raw = candidates.map((value) => String(value ?? "").trim()).find((value) => value && !["-", "—", "none", "null", "undefined"].includes(value.toLowerCase()));
+    if (!raw) return "";
+
+    const normalized = this._normalizeText(raw);
+    if (normalized.includes("digi energy") || normalized.includes("energie") || normalized.includes("electric") || normalized === "curent") return "Energie electrică";
+    if (normalized.includes("telecom") || normalized.includes("internet") || normalized.includes("telefon") || normalized.includes("tv")) return "Telecomunicații";
+    if (normalized.includes("apa") || normalized.includes("canal")) return "Apă / canal";
+    if (normalized.includes("gaz")) return "Gaze naturale";
+
+    return raw.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
   _providerInvoiceAmount(provider) {
     return provider?.amount ?? provider?.suma ?? provider?.valoare ?? provider?.total ?? null;
   }
@@ -1428,7 +1451,8 @@ _buildProviderRefreshButton(provider) {
     const statusLabel = this._statusLabel(status);
     const issueDate = this._formatDate(provider.issue_date || provider.data_emitere);
     const dueDate = this._formatDate(provider.due_date || provider.data_scadenta || provider.scadenta || provider.dueDate);
-    const tipServiciu = provider.tip_serviciu || "—";
+    const utilityType = this._providerUtilityType(provider);
+    const tipServiciu = utilityType || provider.tip_serviciu || "—";
     const numeCont = provider.nume_cont || "—";
     const readingData = this._getReadingData(location, provider);
     const dueDateMeta = this._buildDueDateMeta(provider, status);
@@ -1452,6 +1476,7 @@ _buildProviderRefreshButton(provider) {
               ${readingData.isOpen ? this._buildReadingBadge("Citire deschisă") : ""}
             </div>
             <div class="row-title">${this._escapeHtml(title)}</div>
+            ${utilityType ? `<div class="row-utility">${this._escapeHtml(utilityType)}</div>` : ""}
           </div>
 
           <div class="row-amount-block">
@@ -2500,6 +2525,17 @@ _buildProviderRefreshButton(provider) {
       .row-title {
         font-size: 0.84rem;
         color: var(--secondary-text-color);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .row-utility {
+        margin-top: 2px;
+        font-size: 0.78rem;
+        color: var(--secondary-text-color);
+        font-weight: 600;
+        opacity: 0.88;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
