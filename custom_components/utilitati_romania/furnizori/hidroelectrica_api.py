@@ -55,6 +55,21 @@ from .hidroelectrica_const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _mascheaza_hidro(valoare: Any, pastrat: int = 4) -> str:
+    """Maschează identificatorii Hidroelectrica înainte de scrierea în log."""
+    if valoare in (None, ""):
+        return ""
+    text = str(valoare).strip()
+    if len(text) <= pastrat * 2:
+        return "*" * len(text)
+    return f"{text[:pastrat]}...{text[-pastrat:]}"
+
+
+def _lungime_lista_hidro(valoare: Any) -> int:
+    """Returnează lungimea dacă valoarea este listă, altfel 0."""
+    return len(valoare) if isinstance(valoare, list) else 0
+
 # SSL bypass — serverul SEW Hidroelectrica are certificat problematic
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -445,20 +460,74 @@ class ClientApiHidroelectrica:
         """
         resp = await self.async_fetch_user_setting()
         data = resp.get("result", {}).get("Data", {})
+        if not isinstance(data, dict):
+            data = {}
+
+        table1 = data.get("Table1", []) or []
+        table2 = data.get("Table2", []) or []
+        _LOGGER.warning(
+            "[HIDRO DEBUG] GetUserSetting: Table1=%s, Table2=%s.",
+            _lungime_lista_hidro(table1),
+            _lungime_lista_hidro(table2),
+        )
 
         accounts: list[dict] = []
         seen: set[tuple[str, str, str]] = set()
 
-        for table_key in ("Table1", "Table2"):
-            for entry in data.get(table_key, []) or []:
+        for table_key, table_rows in (("Table1", table1), ("Table2", table2)):
+            if not isinstance(table_rows, list):
+                _LOGGER.warning(
+                    "[HIDRO DEBUG] GetUserSetting.%s nu este lista: tip=%s.",
+                    table_key,
+                    type(table_rows).__name__,
+                )
+                continue
+
+            for index, entry in enumerate(table_rows):
+                if not isinstance(entry, dict):
+                    _LOGGER.warning(
+                        "[HIDRO DEBUG] GetUserSetting.%s[%s] ignorat: tip=%s.",
+                        table_key,
+                        index,
+                        type(entry).__name__,
+                    )
+                    continue
+
                 uan = str(entry.get("UtilityAccountNumber") or "").strip()
                 account_number = str(entry.get("AccountNumber") or "").strip()
                 address = str(entry.get("Address") or "").strip()
+                pod = str(entry.get("Pod") or "").strip()
+                equipment_no = str(entry.get("EquipmentNo") or "").strip()
+                is_default = entry.get("IsDefaultAccount", False)
+
+                _LOGGER.warning(
+                    "[HIDRO DEBUG] GetUserSetting.%s[%s]: "
+                    "UtilityAccountNumber=%s, AccountNumber=%s, Pod=%s, "
+                    "EquipmentNo=%s, IsDefaultAccount=%s, are_adresa=%s.",
+                    table_key,
+                    index,
+                    _mascheaza_hidro(uan),
+                    _mascheaza_hidro(account_number),
+                    _mascheaza_hidro(pod),
+                    _mascheaza_hidro(equipment_no),
+                    is_default,
+                    bool(address),
+                )
+
                 if not uan:
                     continue
 
                 unique_key = (uan, account_number, address)
                 if unique_key in seen:
+                    _LOGGER.warning(
+                        "[HIDRO DEBUG] Cont duplicat ignorat din %s[%s]: "
+                        "UtilityAccountNumber=%s, AccountNumber=%s, are_adresa=%s.",
+                        table_key,
+                        index,
+                        _mascheaza_hidro(uan),
+                        _mascheaza_hidro(account_number),
+                        bool(address),
+                    )
                     continue
 
                 seen.add(unique_key)
@@ -466,10 +535,30 @@ class ClientApiHidroelectrica:
                     "contractAccountID": uan,
                     "accountNumber": account_number,
                     "address": address,
-                    "pod": entry.get("Pod", ""),
-                    "equipmentNo": entry.get("EquipmentNo", ""),
-                    "isDefault": entry.get("IsDefaultAccount", False),
+                    "pod": pod,
+                    "equipmentNo": equipment_no,
+                    "isDefault": is_default,
+                    "_debug_source_table": table_key,
+                    "_debug_source_index": index,
                 })
+
+        _LOGGER.warning(
+            "[HIDRO DEBUG] Conturi Hidroelectrica extrase dupa deduplicare: %s.",
+            len(accounts),
+        )
+        for index, account in enumerate(accounts):
+            _LOGGER.warning(
+                "[HIDRO DEBUG] Cont extras[%s]: UtilityAccountNumber=%s, "
+                "AccountNumber=%s, Pod=%s, EquipmentNo=%s, source=%s[%s], are_adresa=%s.",
+                index,
+                _mascheaza_hidro(account.get("contractAccountID")),
+                _mascheaza_hidro(account.get("accountNumber")),
+                _mascheaza_hidro(account.get("pod")),
+                _mascheaza_hidro(account.get("equipmentNo")),
+                account.get("_debug_source_table"),
+                account.get("_debug_source_index"),
+                bool(account.get("address")),
+            )
 
         return accounts
 
