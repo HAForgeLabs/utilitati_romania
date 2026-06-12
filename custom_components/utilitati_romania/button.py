@@ -36,16 +36,6 @@ from .storage_citiri import async_salveaza_citire
 _LOGGER = logging.getLogger(__name__)
 
 
-def _mascheaza_hidro(valoare, pastrat: int = 4) -> str:
-    """Maschează identificatorii Hidroelectrica înainte de scrierea în log."""
-    if valoare in (None, ""):
-        return ""
-    text = str(valoare).strip()
-    if len(text) <= pastrat * 2:
-        return "*" * len(text)
-    return f"{text[:pastrat]}...{text[-pastrat:]}"
-
-
 def _cont_curent_dupa_id(coordonator: CoordonatorUtilitatiRomania, id_cont: str | None):
     data = getattr(coordonator, "data", None)
     conturi = getattr(data, "conturi", None) or []
@@ -359,23 +349,6 @@ class ButonTrimiteIndexHidro(EntitateUtilitatiRomania, ButtonEntity):
         pod = meta.get("pod") or ""
         instalare = meta.get("instalare") or ""
         account_number = meta.get("account_number") or ""
-        contract_account_id = meta.get("contract_account_id") or ""
-
-        _LOGGER.warning(
-            "[HIDRO DEBUG] Trimite index: entity_id=%s, id_cont=%s, "
-            "UtilityAccountNumber=%s, AccountNumber=%s, Pod=%s, Instalare=%s, "
-            "previous_meter_read=%s, usage_entities=%s, index=%s.",
-            self.entity_id,
-            _mascheaza_hidro(getattr(self.cont, "id_cont", None)),
-            _mascheaza_hidro(contract_account_id),
-            _mascheaza_hidro(account_number),
-            _mascheaza_hidro(pod),
-            _mascheaza_hidro(instalare),
-            len(prev_data),
-            len(usage_entities),
-            index_value,
-        )
-
         await api.async_get_meter_value(
             user_id=user_id,
             pod_value=pod,

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-import logging
 from typing import Any
 
 from ..exceptions import EroareAutentificare, EroareConectare
@@ -10,32 +9,6 @@ from ..modele import ConsumUtilitate, ContUtilitate, FacturaUtilitate, Instantan
 from .baza import ClientFurnizor
 from .hidroelectrica_api import ClientApiHidroelectrica, EroareApiHidroelectrica, EroareAutentificareHidroelectrica
 from .hidroelectrica_helper import parse_romanian_amount, safe_get
-
-_LOGGER = logging.getLogger(__name__)
-
-
-def _mascheaza_hidro(valoare: Any, pastrat: int = 4) -> str:
-    """Maschează identificatorii Hidroelectrica înainte de scrierea în log."""
-    if valoare in (None, ""):
-        return ""
-    text = str(valoare).strip()
-    if len(text) <= pastrat * 2:
-        return "*" * len(text)
-    return f"{text[:pastrat]}...{text[-pastrat:]}"
-
-
-def _numar_randuri_previous_meter_read(payload: dict[str, Any] | None) -> int:
-    """Numără liniile din GetPreviousMeterRead."""
-    data = safe_get(payload or {}, "result", "Data", default=[])
-    return len(data) if isinstance(data, list) else 0
-
-
-def _numar_randuri_istoric_index(payload: dict[str, Any] | None) -> int:
-    """Numără liniile extrase din istoricul de index."""
-    try:
-        return len(_extract_history_rows(payload))
-    except Exception:
-        return 0
 
 
 def _parseaza_data(text: str | None) -> date | None:
@@ -415,32 +388,13 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
         consumuri: list[ConsumUtilitate] = []
         exista_prosumator = False
 
-        _LOGGER.warning(
-            "[HIDRO DEBUG] async_obtine_instantaneu: conturi_brute=%s.",
-            len(conturi_brute),
-        )
-
         azi = datetime.now().date()
         de_la = (azi - timedelta(days=365 * 2)).strftime('%Y-%m-%d')
         pana_la = azi.strftime('%Y-%m-%d')
 
-        id_conturi_generate: list[str] = []
-
-        for index_cont_brut, cont in enumerate(conturi_brute):
+        for cont in conturi_brute:
             uan = str(cont.get('contractAccountID') or '').strip()
             account_number = str(cont.get('accountNumber') or '').strip()
-            _LOGGER.warning(
-                "[HIDRO DEBUG] Cont brut[%s]: UtilityAccountNumber=%s, AccountNumber=%s, "
-                "Pod initial=%s, EquipmentNo=%s, source=%s[%s], are_adresa=%s.",
-                index_cont_brut,
-                _mascheaza_hidro(uan),
-                _mascheaza_hidro(account_number),
-                _mascheaza_hidro(cont.get('pod')),
-                _mascheaza_hidro(cont.get('equipmentNo')),
-                cont.get('_debug_source_table'),
-                cont.get('_debug_source_index'),
-                bool(cont.get('address')),
-            )
             if not uan:
                 continue
 
@@ -496,38 +450,8 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
                     history_payload = None
 
             id_cont_unic = account_number or uan
-            id_conturi_generate.append(id_cont_unic)
-            if id_conturi_generate.count(id_cont_unic) > 1:
-                _LOGGER.warning(
-                    "[HIDRO DEBUG] id_cont duplicat generat pentru Hidroelectrica: "
-                    "id_cont=%s, UtilityAccountNumber=%s, AccountNumber=%s, Pod=%s, Instalare=%s.",
-                    _mascheaza_hidro(id_cont_unic),
-                    _mascheaza_hidro(uan),
-                    _mascheaza_hidro(account_number),
-                    _mascheaza_hidro(pod),
-                    _mascheaza_hidro(instalare),
-                )
-
             este_prosumator_din_istoric = _istoric_are_registru_productie(history_payload)
             exista_prosumator = exista_prosumator or este_prosumator_din_istoric
-
-            _LOGGER.warning(
-                "[HIDRO DEBUG] Locatie procesata: id_cont=%s, UtilityAccountNumber=%s, "
-                "AccountNumber=%s, Pod=%s, Instalare=%s, facturi=%s, usage=%s, "
-                "previous_meter_read=%s, istoric_index=%s, citire_permisa=%s, prosumator=%s, are_adresa=%s.",
-                _mascheaza_hidro(id_cont_unic),
-                _mascheaza_hidro(uan),
-                _mascheaza_hidro(account_number),
-                _mascheaza_hidro(pod),
-                _mascheaza_hidro(instalare),
-                len(lista_facturi),
-                len(lista_usage),
-                _numar_randuri_previous_meter_read(previous_payload),
-                _numar_randuri_istoric_index(history_payload),
-                _citire_permisa(window_data),
-                este_prosumator_din_istoric,
-                bool(adresa_cont),
-            )
 
             conturi.append(ContUtilitate(
                 id_cont=id_cont_unic,

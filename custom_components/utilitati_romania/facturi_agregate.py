@@ -281,9 +281,10 @@ def _extract_unpaid_amount(
 
     id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
 
-    # Apă Brașov expune soldul curent la nivel de locație, dar include și istoric
-    # de facturi. Nu aplicăm soldul curent tuturor facturilor istorice.
-    if instantaneu.furnizor in {"apa_brasov"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
+    # Unii furnizori expun soldul curent la nivel de locație, dar includ și
+    # istoricul facturilor. Nu aplicăm soldul curent tuturor facturilor istorice,
+    # altfel dashboardul multiplică artificial totalul neplătit.
+    if instantaneu.furnizor in {"apa_brasov", "hidroelectrica"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
         return None
 
     for key in ("sold_factura", "de_plata", "total_neachitat", "sold_curent"):
@@ -842,12 +843,11 @@ def _numar_neplatite_item(item: dict[str, Any]) -> int:
     if item.get("status") != "unpaid":
         return 0
 
-    # La DIGI facturile de servicii diferite pot veni în aceeași structură de cont,
-    # dar în card le afișăm deja ca rânduri separate. Dacă folosim `unpaid_count`
-    # sau lista comună de invoice-uri, antetul grupei dublează numărul de neplătite
-    # deși totalul valoric este corect. Pentru fiecare rând DIGI afișat contăm o
-    # singură factură restantă.
-    if normalize_text(item.get("furnizor")).lower() == "digi":
+    # La unii furnizori istoricul și sumarul curent pot ajunge în același rând
+    # afișat în dashboard. Rândul este deja agregarea vizibilă pentru utilizator,
+    # deci la numărătoarea din antet trebuie contată o singură factură restantă.
+    # Altfel, valoarea financiară rămâne corectă, dar badge-ul „Neplătite” se dublează.
+    if normalize_text(item.get("furnizor")).lower() in {"digi", "hidroelectrica"}:
         return 1
 
     explicit_count = item.get("unpaid_count")
@@ -980,10 +980,10 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             continue
 
         facturi_de_afisat = list(instantaneu.facturi or [])
-        if instantaneu.furnizor in {"engie", "apa_brasov"}:
-            # Pentru MyENGIE și Apă Brașov păstrăm în card doar ultima factură pe fiecare loc de consum.
-            # Istoricul vechi poate veni fără indicator explicit de plată și ar fi marcat
-            # greșit ca restant de logica generică a dashboardului.
+        if instantaneu.furnizor in {"engie", "apa_brasov", "hidroelectrica"}:
+            # Pentru MyENGIE, Apă Brașov și Hidroelectrica păstrăm în card doar ultima factură
+            # pe fiecare loc de consum. Istoricul vechi poate veni fără indicator explicit de
+            # plată și ar fi marcat greșit ca restant de logica generică a dashboardului.
             latest_ids = _latest_invoice_ids_by_group(facturi_de_afisat)
             facturi_de_afisat = [
                 factura for factura in facturi_de_afisat
