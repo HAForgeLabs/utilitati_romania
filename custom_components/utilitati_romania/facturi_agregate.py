@@ -386,6 +386,40 @@ def _location_fields(
         None,
     )
 
+
+
+def _asigura_cheie_locatie_hidroelectrica(item: dict[str, Any]) -> None:
+    """Păstrează separat contractele Hidroelectrica în dashboard.
+
+    Hidroelectrica poate avea mai multe contracte/locuri de consum în același
+    cont, iar adresele pot produce aceeași etichetă scurtă în interfață. Dacă
+    cheia de locație rămâne doar eticheta/adresa scurtată, dashboardul poate
+    grupa două contracte distincte într-un singur loc de consum.
+
+    Nu modificăm numele afișat și nu atingem identificatorii entităților Home
+    Assistant; stabilizăm doar cheia internă folosită de agregatorul de facturi.
+    Grupările manuale rămân prioritare și nu sunt suprascrise.
+    """
+    if normalize_text(item.get("furnizor")).lower() != "hidroelectrica":
+        return
+
+    if item.get("eticheta_grupare_manuala"):
+        return
+
+    identificator = (
+        item.get("id_cont")
+        or item.get("id_contract")
+        or item.get("nume_cont")
+        or item.get("invoice_id")
+    )
+    identificator_text = str(identificator or "").strip()
+    if not identificator_text:
+        return
+
+    baza = str(item.get("locatie_cheie") or "locatie").strip() or "locatie"
+    item["locatie_cheie"] = f"{baza}__hidro_{normalize_text(identificator_text).lower()}"
+
+
 def _build_invoice_item(
     coordonator: CoordonatorUtilitatiRomania,
     instantaneu: InstantaneuFurnizor,
@@ -449,6 +483,8 @@ def _build_invoice_item(
         "refresh_button_entity_id": _refresh_button_entity_id(coordonator),
         "can_refresh": _refresh_button_entity_id(coordonator) is not None,
     }
+
+    _asigura_cheie_locatie_hidroelectrica(item)
 
     if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea"}:
         id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
@@ -693,7 +729,7 @@ def _build_hidroelectrica_fallback_item(
         cont,
     )
 
-    return {
+    item = {
         "entry_id": coordonator.intrare.entry_id,
         "entry_title": coordonator.intrare.title,
         "furnizor": instantaneu.furnizor,
@@ -722,6 +758,8 @@ def _build_hidroelectrica_fallback_item(
         "refresh_button_entity_id": _refresh_button_entity_id(coordonator),
         "can_refresh": _refresh_button_entity_id(coordonator) is not None,
     }
+    _asigura_cheie_locatie_hidroelectrica(item)
+    return item
 
 
 
