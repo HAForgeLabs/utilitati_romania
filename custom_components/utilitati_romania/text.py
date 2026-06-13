@@ -144,6 +144,21 @@ class TextCodLicentaNoua(RestoreEntity, TextEntity):
         self._attr_entity_category = EntityCategory.CONFIG
         self._attr_native_value = ""
 
+
+    def _alias_afisare_grupare(self, cont) -> str:
+        """Returnează denumirea afișată pentru rândul de grupare facturi.
+
+        Păstrăm cheile și entity_id-urile existente, dar evităm titlurile
+        identice în panoul de setări atunci când două locuri de consum au
+        aceeași adresă normalizată.
+        """
+        nume_cont = str(getattr(cont, "nume", "") or "").strip()
+
+        if self._furnizor == "hidroelectrica" and nume_cont:
+            return nume_cont
+
+        return build_facturi_location_label(cont)
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
 
@@ -174,7 +189,12 @@ class TextGrupareFacturi(RestoreEntity, TextEntity):
         self._furnizor = coordonator.cheie_furnizor
         self._id_cont = str(cont.id_cont)
 
-        alias = build_facturi_location_label(cont)
+        # Pentru entitățile de configurare afișate în dashboard folosim o
+        # denumire cât mai apropiată de device-ul locului de consum. La unii
+        # furnizori, mai ales Hidroelectrica, adresa din facturi poate fi
+        # identică pentru două locații apropiate, în timp ce numele contului
+        # este deja clar și distinct în Home Assistant.
+        alias = self._alias_afisare_grupare(cont)
         slug = normalize_facturi_location_key(cont) or "locatie"
         provider_name = str(coordonator.intrare.title or coordonator.cheie_furnizor).strip()
 
@@ -188,6 +208,21 @@ class TextGrupareFacturi(RestoreEntity, TextEntity):
         self._attr_device_info = _grupare_facturi_device_info()
         self._attr_entity_category = EntityCategory.CONFIG
         self._attr_native_value = ""
+
+
+    def _alias_afisare_grupare(self, cont) -> str:
+        """Returnează denumirea afișată pentru rândul de grupare facturi.
+
+        Păstrăm cheile și entity_id-urile existente, dar evităm titlurile
+        identice în panoul de setări atunci când două locuri de consum au
+        aceeași adresă normalizată.
+        """
+        nume_cont = str(getattr(cont, "nume", "") or "").strip()
+
+        if self._furnizor == "hidroelectrica" and nume_cont:
+            return nume_cont
+
+        return build_facturi_location_label(cont)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

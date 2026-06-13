@@ -1527,7 +1527,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .map(([entityId, state]) => {
         const friendly = String(state?.attributes?.friendly_name || state?.attributes?.name || entityId);
         const matched = bestProviderEntry(entityId, friendly);
-        const label = matched?.label || fallbackLabel(entityId, friendly);
+        const friendlyLabel = fallbackLabel(entityId, friendly);
+        // Pentru rândurile de configurare este mai sigur să afișăm denumirea
+        // entității text, deoarece aceasta este construită din device/cont.
+        // Datele agregate din facturi pot conține aceeași adresă pentru două
+        // locații diferite și fac lista de setări ambiguă.
+        const label = friendlyLabel || matched?.label || fallbackLabel(entityId, friendly);
         const savedValue = state?.state && !["unknown", "unavailable"].includes(state.state) ? state.state : "";
         return {
           entityId,
