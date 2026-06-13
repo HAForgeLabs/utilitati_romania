@@ -389,6 +389,98 @@ def _location_fields(
 
 
 
+
+def _text_punct_nova(value: Any) -> str:
+    """Normalizează valorile de identificare pentru punctele de consum Nova."""
+    return str(value or "").strip()
+
+
+def _identificator_punct_nova(raw: dict[str, Any]) -> str:
+    """Alege cel mai stabil identificator disponibil pentru punctul de consum Nova."""
+    for key in (
+        "meteringPointNumber",
+        "meteringPointCode",
+        "meteringPointId",
+        "specificIdForUtilityType",
+        "contractId",
+    ):
+        value = _text_punct_nova(raw.get(key))
+        if value:
+            return value
+    puncte = raw.get("meteringPoints")
+    if isinstance(puncte, list):
+        for punct in puncte:
+            if not isinstance(punct, dict):
+                continue
+            for key in (
+                "meteringPointNumber",
+                "meteringPointCode",
+                "number",
+                "specificIdForUtilityType",
+                "meteringPointId",
+                "id",
+                "contractId",
+            ):
+                value = _text_punct_nova(punct.get(key))
+                if value:
+                    return value
+    return ""
+
+
+def _adresa_punct_nova(raw: dict[str, Any], cont: ContUtilitate | None) -> str | None:
+    """Extrage adresa punctului de consum Nova din factură sau din cont."""
+    for key in ("meteringPointAddress", "address", "serviceAddress"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    puncte = raw.get("meteringPoints")
+    if isinstance(puncte, list):
+        for punct in puncte:
+            if not isinstance(punct, dict):
+                continue
+            value = punct.get("address") or punct.get("meteringPointAddress")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    adresa_cont = getattr(cont, "adresa", None) if cont else None
+    return adresa_cont if isinstance(adresa_cont, str) and adresa_cont.strip() else None
+
+
+def _asigura_cheie_locatie_nova(
+    item: dict[str, Any],
+    factura: FacturaUtilitate,
+    cont: ContUtilitate | None,
+) -> None:
+    """Separă în dashboard locurile de consum Nova din același cont client.
+
+    Nova poate returna un singur cont client cu mai multe puncte de consum, iar
+    facturile conțin identificatorul punctului prin meteringPointNumber sau
+    meteringPointCode. Entitățile existente rămân neschimbate; ajustăm doar cheia
+    internă folosită de dashboard pentru gruparea facturilor pe loc de consum.
+    """
+    if normalize_text(item.get("furnizor")).lower() != "nova":
+        return
+
+    if item.get("eticheta_grupare_manuala"):
+        return
+
+    raw = _raw_dict(factura)
+    identificator = _identificator_punct_nova(raw)
+    if not identificator:
+        return
+
+    adresa = _adresa_punct_nova(raw, cont)
+    baza_locatie = adresa or item.get("adresa_originala") or item.get("eticheta_locatie") or identificator
+    baza_cheie = normalize_facturi_location_key(baza_locatie)
+    item["locatie_cheie"] = f"{baza_cheie}__nova_{normalize_text(identificator).lower()}"
+
+    if adresa:
+        item["eticheta_locatie"] = build_facturi_location_label(adresa)
+        item["adresa_originala"] = adresa
+
+    item["id_punct_consum"] = identificator
+    item["cod_punct_consum"] = _text_punct_nova(raw.get("meteringPointCode")) or None
+    item["numar_punct_consum"] = _text_punct_nova(raw.get("meteringPointNumber")) or None
+
 def _asigura_cheie_locatie_hidroelectrica(item: dict[str, Any]) -> None:
     """Păstrează separat contractele Hidroelectrica în dashboard.
 
@@ -485,6 +577,7 @@ def _build_invoice_item(
         "can_refresh": _refresh_button_entity_id(coordonator) is not None,
     }
 
+    _asigura_cheie_locatie_nova(item, factura, cont)
     _asigura_cheie_locatie_hidroelectrica(item)
 
     if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea"}:
@@ -806,6 +899,18 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
             or ""
         )
         return (locatie, furnizor, normalize_text(identificator_serviciu).lower())
+
+    if furnizor == "nova":
+        identificator_punct = (
+            item.get("id_punct_consum")
+            or item.get("numar_punct_consum")
+            or item.get("cod_punct_consum")
+            or item.get("id_contract")
+            or item.get("id_cont")
+            or item.get("invoice_id")
+            or ""
+        )
+        return (locatie, furnizor, normalize_text(identificator_punct).lower())
 
     if furnizor in {"apa_brasov", "apa_oradea"}:
         # Apă Brașov are câte o factură curentă pentru fiecare loc de consum.

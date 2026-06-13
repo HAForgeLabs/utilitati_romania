@@ -440,7 +440,59 @@ def _tipuri_active_cont(cont) -> list[str]:
     return [tip] if tip else []
 
 
+
+
+def _tip_serviciu_punct_nova(punct: dict[str, Any]) -> str | None:
+    """Normalizează tipul utilității pentru un punct de consum Nova."""
+    text = normalize_text(
+        punct.get("utilityType")
+        or punct.get("utility")
+        or punct.get("serviceType")
+        or punct.get("commodity")
+        or punct.get("type")
+        or ""
+    ).lower()
+    if text in {"gas", "gaz", "natural gas", "gaze"}:
+        return "gaz"
+    if text in {"electricity", "electric", "energie", "energie electrica", "curent", "power"}:
+        return "curent"
+    return text or None
+
+
+def _puncte_consum_nova(instantaneu: InstantaneuFurnizor) -> list[dict[str, Any]]:
+    """Returnează punctele de consum Nova, deduplicate pe identificator stabil."""
+    puncte: list[dict[str, Any]] = []
+    vazute: set[str] = set()
+    for cont in instantaneu.conturi or []:
+        raw = _date_brute_cont(cont)
+        for punct in raw.get("metering_points", []) or []:
+            if not isinstance(punct, dict):
+                continue
+            ident = str(
+                punct.get("meteringPointId")
+                or punct.get("number")
+                or punct.get("specificIdForUtilityType")
+                or punct.get("contractId")
+                or ""
+            ).strip()
+            if not ident:
+                ident = str(punct)
+            if ident in vazute:
+                continue
+            vazute.add(ident)
+            puncte.append(punct)
+    return puncte
+
 def _tipuri_servicii_rezumat(instantaneu: InstantaneuFurnizor) -> list[str]:
+    if instantaneu.furnizor == "nova":
+        tipuri_puncte = {
+            tip
+            for punct in _puncte_consum_nova(instantaneu)
+            if (tip := _tip_serviciu_punct_nova(punct))
+        }
+        if tipuri_puncte:
+            return sorted(tipuri_puncte)
+
     tipuri: set[str] = set()
     for cont in instantaneu.conturi or []:
         tipuri.update(_tipuri_active_cont(cont))
@@ -454,10 +506,21 @@ def _numar_conturi_rezumat(instantaneu: InstantaneuFurnizor) -> int:
             return int(extra.get("addresses_count") or 0)
         except Exception:
             pass
+
+    if instantaneu.furnizor == "nova":
+        puncte = _puncte_consum_nova(instantaneu)
+        if puncte:
+            return len(puncte)
+
     return len(instantaneu.conturi or [])
 
 
 def _numara_conturi_cu_serviciu(instantaneu: InstantaneuFurnizor, tip: str) -> int:
+    if instantaneu.furnizor == "nova":
+        puncte = _puncte_consum_nova(instantaneu)
+        if puncte:
+            return sum(1 for punct in puncte if _tip_serviciu_punct_nova(punct) == tip)
+
     return sum(1 for cont in instantaneu.conturi or [] if tip in _tipuri_active_cont(cont))
 
 

@@ -666,8 +666,6 @@ class ClientFurnizorNova(ClientFurnizor):
         except EroareRaspunsNova as err:
             raise EroareParsare(str(err)) from err
 
-        _logheaza_diagnostic_nova(date_brute)
-
         conturi = self._mapeaza_conturi(date_brute)
         facturi = self._mapeaza_facturi(date_brute)
         consumuri = self._mapeaza_consumuri(date_brute, conturi)
