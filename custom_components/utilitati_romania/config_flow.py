@@ -589,57 +589,70 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         erori["base"] = "autentificare_esuata"
         return self.async_show_form(step_id="credentiale_furnizor", errors=erori)
 
+    def _schema_cod_2fa_eon(self) -> vol.Schema:
+        """Returnează schema simplă pentru codul 2FA E.ON.
+
+        Folosim un câmp string simplu, nu selector text, pentru că în anumite
+        versiuni/frontend-uri Home Assistant selectorul poate randa formularul
+        fără câmp vizibil. Schema simplă este mai robustă și se comportă ca un
+        input text normal.
+        """
+        return vol.Schema({vol.Required("cod_email", default=""): str})
+
+    def _afiseaza_formular_cod_2fa_eon(self, erori: dict[str, str] | None = None) -> ConfigFlowResult:
+        """Afișează formularul pentru codul 2FA E.ON."""
+        destinatar = self._api_eon.pending_email_masked if self._api_eon else "aplicația E.ON"
+        return self.async_show_form(
+            step_id="eon_cod_email",
+            data_schema=self._schema_cod_2fa_eon(),
+            errors=erori or {},
+            description_placeholders={"destinatar": destinatar},
+        )
+
     async def async_step_eon_cod_email(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         erori: dict[str, str] = {}
+
+        if self._api_eon is None:
+            erori["base"] = "autentificare_esuata"
+            return self._afiseaza_formular_cod_2fa_eon(erori)
+
         if user_input is not None:
             cod = str(user_input.get("cod_email") or "").strip()
             if not cod:
                 erori["base"] = "cod_invalid"
-            elif not self._api_eon:
-                erori["base"] = "autentificare_esuata"
-            else:
-                try:
-                    ok = await self._api_eon.async_mfa_complete(cod)
-                except Exception:
-                    _LOGGER.exception("Eroare neașteptată la completarea MFA E.ON")
-                    ok = False
-                if ok:
-                    token_data = self._api_eon.export_token_data()
-                    unique = (self._date_utilizator_curente or {}).get(CONF_UTILIZATOR, "eon").lower()
-                    try:
-                        contracte = await self._api_eon.async_fetch_contracts_list()
-                        if isinstance(contracte, list) and contracte:
-                            unique = str(contracte[0].get("accountContract") or unique)
-                    except Exception:
-                        pass
-                    await self.async_set_unique_id(f"{self._furnizor}::{unique}")
-                    self._abort_if_unique_id_configured()
-                    return self.async_create_entry(
-                        title=obtine_clasa_furnizor(self._furnizor).nume_prietenos,
-                        data={
-                            CONF_FURNIZOR: self._furnizor,
-                            CONF_CHEIE_LICENTA: self._cheie_licenta,
-                            CONF_DATE_TOKEN_EON: token_data,
-                            **(self._date_utilizator_curente or {}),
-                        },
-                    )
-                erori["base"] = "cod_invalid"
+                return self._afiseaza_formular_cod_2fa_eon(erori)
 
-        destinatar = self._api_eon.pending_email_masked if self._api_eon else "email"
-        return self.async_show_form(
-            step_id="eon_cod_email",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("cod_email"): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.TEXT)
-                    )
-                }
-            ),
-            errors=erori,
-            description_placeholders={"destinatar": destinatar},
-        )
+            try:
+                ok = await self._api_eon.async_mfa_complete(cod)
+            except Exception:
+                _LOGGER.exception("Eroare neașteptată la completarea MFA E.ON")
+                ok = False
+
+            if ok:
+                token_data = self._api_eon.export_token_data()
+                unique = (self._date_utilizator_curente or {}).get(CONF_UTILIZATOR, "eon").lower()
+                try:
+                    contracte = await self._api_eon.async_fetch_contracts_list()
+                    if isinstance(contracte, list) and contracte:
+                        unique = str(contracte[0].get("accountContract") or unique)
+                except Exception:
+                    pass
+                await self.async_set_unique_id(f"{self._furnizor}::{unique}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=obtine_clasa_furnizor(self._furnizor).nume_prietenos,
+                    data={
+                        CONF_FURNIZOR: self._furnizor,
+                        CONF_CHEIE_LICENTA: self._cheie_licenta,
+                        CONF_DATE_TOKEN_EON: token_data,
+                        **(self._date_utilizator_curente or {}),
+                    },
+                )
+            erori["base"] = "cod_invalid"
+
+        return self._afiseaza_formular_cod_2fa_eon(erori)
 
     async def _proceseaza_flux_digi(
         self,
@@ -1058,8 +1071,23 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         erori: dict[str, str] = {}
-        if user_input is not None and self._api_eon:
-            ok = await self._api_eon.async_mfa_complete(str(user_input.get("cod_email") or "").strip())
+
+        if self._api_eon is None:
+            erori["base"] = "autentificare_esuata"
+            return self._afiseaza_formular_cod_2fa_eon(erori)
+
+        if user_input is not None:
+            cod = str(user_input.get("cod_email") or "").strip()
+            if not cod:
+                erori["base"] = "cod_invalid"
+                return self._afiseaza_formular_cod_2fa_eon(erori)
+
+            try:
+                ok = await self._api_eon.async_mfa_complete(cod)
+            except Exception:
+                _LOGGER.exception("Eroare neașteptată la completarea MFA E.ON la reautentificare")
+                ok = False
+
             if ok:
                 intrare = self._get_reauth_entry()
                 return self.async_update_reload_and_abort(
@@ -1072,19 +1100,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                 )
             erori["base"] = "cod_invalid"
 
-        destinatar = self._api_eon.pending_email_masked if self._api_eon else "email"
-        return self.async_show_form(
-            step_id="eon_cod_email",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("cod_email"): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.TEXT)
-                    )
-                }
-            ),
-            errors=erori,
-            description_placeholders={"destinatar": destinatar},
-        )
+        return self._afiseaza_formular_cod_2fa_eon(erori)
 
     async def async_step_digi_reauth_metoda_2fa(
         self, user_input: dict[str, Any] | None = None
