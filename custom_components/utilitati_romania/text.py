@@ -218,9 +218,12 @@ class TextGrupareFacturi(RestoreEntity, TextEntity):
         )
         self.async_write_ha_state()
 
+        # După schimbarea unei grupări, senzorul agregat trebuie recalculat
+        # imediat. Dacă apelul rămâne neblocant, dashboardul poate afișa
+        # temporar gruparea veche până la următorul refresh periodic.
         await self.hass.services.async_call(
             "homeassistant",
             "update_entity",
             {"entity_id": "sensor.administrare_integrare_facturi_utilitati"},
-            blocking=False,
+            blocking=True,
         )
