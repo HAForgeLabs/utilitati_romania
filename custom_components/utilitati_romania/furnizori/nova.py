@@ -961,50 +961,82 @@ def _valoare_adevarata_nova(valoare: Any) -> bool:
 
 
 def _logheaza_diagnostic_nova(date_brute: dict[str, Any]) -> None:
-    """Scrie in log un diagnostic anonimizat pentru investigarea conturilor Nova multi-locatie."""
+    """Scrie in log un diagnostic anonimizat pentru investigarea conturilor Nova.
+
+    Folosim warning intentionat in beta, ca mesajele sa apara direct in
+    Settings -> System -> Logs, fara configurare manuala de logger.
+    """
 
     try:
         puncte = date_brute.get("metering_points", []) or []
         facturi = date_brute.get("invoices", []) or []
         balanta = date_brute.get("invoice_balance", {}) or {}
+        accounts_data = date_brute.get("accounts_data", []) or []
 
-        _LOGGER.debug(
-            "Diagnostic Nova: conturi si puncte consum: %s",
+        _LOGGER.warning(
+            "[NOVA DEBUG] Sumar global: %s",
             json.dumps(
                 {
                     "logged_account": _nova_safe_account_debug(date_brute.get("account", {}) or {}),
                     "viewed_account": _nova_safe_account_debug(date_brute.get("viewed_account", {}) or {}),
+                    "associated_accounts_count": len(date_brute.get("associated_accounts", []) or []),
+                    "accounts_data_count": len(accounts_data),
                     "metering_points_count": len(puncte),
-                    "metering_points": [_nova_safe_metering_point_debug(punct) for punct in puncte[:12]],
-                    "raw_counts": {
-                        "invoices": len(facturi),
-                        "payments": len(date_brute.get("payments", []) or []),
-                        "self_readings": len(date_brute.get("self_readings", []) or []),
-                        "metering_points_self_readings": len(date_brute.get("metering_points_self_readings", []) or []),
-                        "legal_notifications": len(date_brute.get("legal_notifications", []) or []),
-                        "incidents": len(date_brute.get("incidents", []) or []),
-                    },
+                    "invoices_count": len(facturi),
+                    "payments_count": len(date_brute.get("payments", []) or []),
+                    "self_readings_count": len(date_brute.get("self_readings", []) or []),
+                    "metering_points_self_readings_count": len(date_brute.get("metering_points_self_readings", []) or []),
+                    "global_balance": _nova_safe_balance_debug(balanta),
                 },
                 ensure_ascii=False,
                 default=str,
             ),
         )
 
-        _LOGGER.debug(
-            "Diagnostic Nova: facturi si solduri: %s",
+        for index, cont_date in enumerate(accounts_data[:10]):
+            if not isinstance(cont_date, dict):
+                continue
+            cont_puncte = [p for p in cont_date.get("metering_points", []) or [] if isinstance(p, dict)]
+            cont_facturi = [f for f in cont_date.get("invoices", []) or [] if isinstance(f, dict)]
+            cont_plati = [p for p in cont_date.get("payments", []) or [] if isinstance(p, dict)]
+            cont_balanta = cont_date.get("invoice_balance", {}) if isinstance(cont_date.get("invoice_balance"), dict) else {}
+            portal_summary = cont_date.get("portal_summary", {}) if isinstance(cont_date.get("portal_summary"), dict) else {}
+
+            _LOGGER.warning(
+                "[NOVA DEBUG] Cont[%s]: %s",
+                index,
+                json.dumps(
+                    {
+                        "account_id": _nova_mask_identifier(cont_date.get("account_id"), "cont_anonimizat"),
+                        "is_viewed_account": bool(cont_date.get("is_viewed_account")),
+                        "account": _nova_safe_account_debug(cont_date.get("account", {}) or {}),
+                        "metering_points_count": len(cont_puncte),
+                        "metering_points": [_nova_safe_metering_point_debug(punct) for punct in cont_puncte[:8]],
+                        "invoices_count": len(cont_facturi),
+                        "invoices": [_nova_safe_invoice_debug(factura) for factura in cont_facturi[:8]],
+                        "payments_count": len(cont_plati),
+                        "invoice_balance": _nova_safe_balance_debug(cont_balanta),
+                        "portal_summary_keys": sorted(str(key) for key in portal_summary.keys())[:40],
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+
+        _LOGGER.warning(
+            "[NOVA DEBUG] Facturi agregate: %s",
             json.dumps(
                 {
-                    "balance": _nova_safe_balance_debug(balanta),
                     "invoices_count": len(facturi),
                     "invoices": [_nova_safe_invoice_debug(factura) for factura in facturi[:12]],
+                    "metering_points": [_nova_safe_metering_point_debug(punct) for punct in puncte[:12]],
                 },
                 ensure_ascii=False,
                 default=str,
             ),
         )
     except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("Diagnostic Nova: nu s-a putut genera diagnosticul anonimizat: %s", err)
-
+        _LOGGER.warning("[NOVA DEBUG] Nu s-a putut genera diagnosticul anonimizat: %s", err)
 
 def _nova_safe_account_debug(cont: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cont, dict):

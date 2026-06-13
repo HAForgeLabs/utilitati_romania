@@ -40,10 +40,34 @@ def _float_ro(valoare: Any) -> float | None:
 
 
 def _este_identificator_criptat(valoare: str | None) -> bool:
+    """Detectează identificatorii tehnici care nu sunt numere lizibile de factură.
+
+    Portalul Hidroelectrica poate returna pentru anumite contracte un token
+    intern în câmpurile de factură. Acesta nu trebuie afișat în Home Assistant
+    ca „ID ultima factură”. Numerele reale de factură sunt păstrate, dar
+    valorile lungi, de tip token/base64, sunt ignorate.
+    """
     if not valoare:
         return False
-    valoare = str(valoare).strip()
-    return valoare.endswith('==') or ('+' in valoare and '/' in valoare)
+
+    text = str(valoare).strip()
+    if not text:
+        return False
+
+    if text.endswith('==') or (len(text) >= 20 and any(ch in text for ch in '+/=')):
+        return True
+
+    # Tokenurile interne sunt de regulă șiruri lungi, fără separatori uzuali,
+    # cu litere mari/mici și cifre amestecate. Nu blocăm ID-uri scurte sau
+    # numere de factură cu separatori normali.
+    if len(text) >= 32 and all(ch.isalnum() for ch in text):
+        are_litera_mica = any(ch.islower() for ch in text)
+        are_litera_mare = any(ch.isupper() for ch in text)
+        are_cifra = any(ch.isdigit() for ch in text)
+        if are_litera_mica and are_litera_mare and are_cifra:
+            return True
+
+    return False
 
 
 def _alias_din_adresa(adresa: str | None, fallback: str) -> str:

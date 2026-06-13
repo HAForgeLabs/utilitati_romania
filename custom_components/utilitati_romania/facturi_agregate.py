@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-import re
 from typing import Any
 
 from homeassistant.helpers import entity_registry as er
@@ -390,48 +389,6 @@ def _location_fields(
 
 
 
-
-def _este_identificator_tehnic_hidroelectrica(value: Any) -> bool:
-    """Detectează identificatorii tehnici care nu trebuie afișați ca număr de factură."""
-    text = str(value or "").strip()
-    if not text:
-        return False
-
-    lowered = text.lower()
-    if lowered.startswith("hidroelectrica_"):
-        return True
-
-    # Portalul Hidroelectrica poate întoarce uneori tokenuri/base64 pentru documente.
-    # Acestea sunt utile intern pentru API, dar nu sunt numere lizibile de factură.
-    if text.endswith("=="):
-        return True
-    if "+" in text and "/" in text:
-        return True
-    if len(text) > 36 and re.fullmatch(r"[A-Za-z0-9_+\-/=]+", text):
-        return True
-
-    return False
-
-
-def _id_factura_afisabil_hidroelectrica(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text or _este_identificator_tehnic_hidroelectrica(text):
-        return ""
-    return text
-
-
-def _curata_factura_hidroelectrica_afisata(item: dict[str, Any]) -> None:
-    """Elimină tokenurile tehnice Hidroelectrica din câmpurile afișate în dashboard."""
-    if normalize_text(item.get("furnizor")).lower() != "hidroelectrica":
-        return
-
-    invoice_id = _id_factura_afisabil_hidroelectrica(item.get("invoice_id"))
-    item["invoice_id"] = invoice_id
-
-    invoice_title = str(item.get("invoice_title") or "").strip()
-    if _este_identificator_tehnic_hidroelectrica(invoice_title):
-        item["invoice_title"] = invoice_id or "Ultima factură"
-
 def _asigura_cheie_locatie_hidroelectrica(item: dict[str, Any]) -> None:
     """Păstrează separat contractele Hidroelectrica în dashboard.
 
@@ -529,7 +486,6 @@ def _build_invoice_item(
     }
 
     _asigura_cheie_locatie_hidroelectrica(item)
-    _curata_factura_hidroelectrica_afisata(item)
 
     if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea"}:
         id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
@@ -766,7 +722,7 @@ def _build_hidroelectrica_fallback_item(
         is_paid = None
         unpaid_amount = None
 
-    factura_id_text = _id_factura_afisabil_hidroelectrica(factura_id)
+    factura_id_text = str(factura_id or "").strip()
     location_key, location_label, manual_group_label = _location_fields(
         coordonator,
         instantaneu,
@@ -788,7 +744,7 @@ def _build_hidroelectrica_fallback_item(
         "nume_cont": getattr(cont, "nume", None),
         "tip_utilitate": getattr(cont, "tip_utilitate", None),
         "tip_serviciu": getattr(cont, "tip_serviciu", None),
-        "invoice_id": factura_id_text,
+        "invoice_id": factura_id_text or f"hidroelectrica_{id_cont}_ultima",
         "invoice_title": factura_id_text or "Ultima factură",
         "issue_date": None,
         "due_date": _format_date(data_scadenta),
@@ -1119,25 +1075,10 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                         current["due_date"] = fallback_item.get("due_date")
                     if fallback_item.get("amount") is not None:
                         current["amount"] = fallback_item.get("amount")
-                    fallback_invoice_id = _id_factura_afisabil_hidroelectrica(fallback_item.get("invoice_id"))
-                    current_invoice_id = _id_factura_afisabil_hidroelectrica(current.get("invoice_id"))
-                    if fallback_invoice_id and not current_invoice_id:
-                        current["invoice_id"] = fallback_invoice_id
-
-                    fallback_invoice_title = str(fallback_item.get("invoice_title") or "").strip()
-                    current_invoice_title = str(current.get("invoice_title") or "").strip()
-                    if (
-                        fallback_invoice_title
-                        and fallback_invoice_title != "Ultima factură"
-                        and not _este_identificator_tehnic_hidroelectrica(fallback_invoice_title)
-                        and (
-                            not current_invoice_title
-                            or current_invoice_title == "Ultima factură"
-                            or _este_identificator_tehnic_hidroelectrica(current_invoice_title)
-                        )
-                    ):
-                        current["invoice_title"] = fallback_invoice_title
-                    _curata_factura_hidroelectrica_afisata(current)
+                    if fallback_item.get("invoice_id"):
+                        current["invoice_id"] = fallback_item.get("invoice_id")
+                    if fallback_item.get("invoice_title"):
+                        current["invoice_title"] = fallback_item.get("invoice_title")
 
     
     items = list(grouped.values())
