@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any
+import json
+import logging
 
 from ..exceptions import EroareAutentificare, EroareConectare
 from ..modele import ConsumUtilitate, ContUtilitate, FacturaUtilitate, InstantaneuFurnizor
 from .baza import ClientFurnizor
 from .hidroelectrica_api import ClientApiHidroelectrica, EroareApiHidroelectrica, EroareAutentificareHidroelectrica
 from .hidroelectrica_helper import parse_romanian_amount, safe_get
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _parseaza_data(text: str | None) -> date | None:
@@ -69,6 +73,76 @@ def _este_identificator_criptat(valoare: str | None) -> bool:
 
     return False
 
+
+
+def _mascheaza_valoare_debug(valoare: Any) -> str | None:
+    """Returnează o variantă scurtă/mascată pentru logurile de diagnostic."""
+    if valoare in (None, ''):
+        return None
+    text = str(valoare).strip()
+    if not text:
+        return None
+    if len(text) <= 8:
+        return text
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def _rezumat_candidat_factura(sursa: dict[str, Any]) -> dict[str, Any]:
+    """Construiește un rezumat sigur pentru câmpurile posibile de număr factură."""
+    campuri = (
+        'exbel',
+        'invoiceNo',
+        'InvoiceNo',
+        'invoiceNumber',
+        'invoicenumber',
+        'invoiceId',
+        'billNo',
+        'billNumber',
+        'documentNo',
+        'documentNumber',
+    )
+    candidati: dict[str, Any] = {}
+    for camp in campuri:
+        if camp not in sursa:
+            continue
+        valoare = sursa.get(camp)
+        if valoare in (None, ''):
+            candidati[camp] = None
+            continue
+        text = str(valoare).strip()
+        candidati[camp] = {
+            'valoare_mascata': _mascheaza_valoare_debug(text),
+            'lungime': len(text),
+            'token_tehnic': _este_identificator_criptat(text),
+        }
+    return candidati
+
+
+def _log_hidro_invoice_debug(
+    context: str,
+    *,
+    id_cont: str | None,
+    id_contract: str | None,
+    sursa: dict[str, Any] | None,
+    selectat: str | None,
+) -> None:
+    """Log temporar pentru diagnosticarea ID-ului ultimei facturi Hidroelectrica."""
+    if not isinstance(sursa, dict):
+        sursa = {}
+    payload = {
+        'context': context,
+        'id_cont': _mascheaza_valoare_debug(id_cont),
+        'id_contract': _mascheaza_valoare_debug(id_contract),
+        'selected_invoice_id': _mascheaza_valoare_debug(selectat),
+        'selected_is_token_like': _este_identificator_criptat(selectat),
+        'issue_date': str(sursa.get('invoiceDate') or sursa.get('billdate') or sursa.get('billDate') or sursa.get('date') or ''),
+        'due_date': str(sursa.get('dueDate') or sursa.get('duedate') or sursa.get('scadenta') or ''),
+        'amount': str(sursa.get('amount') or sursa.get('billamount') or ''),
+        'remaining': str(sursa.get('remainingAmount') or sursa.get('rembalance') or sursa.get('amount_remaining') or ''),
+        'keys_present': sorted(str(k) for k in sursa.keys()),
+        'invoice_candidates': _rezumat_candidat_factura(sursa),
+    }
+    _LOGGER.warning('[HIDRO INVOICE DEBUG] %s', json.dumps(payload, ensure_ascii=False, default=str))
 
 def _alias_din_adresa(adresa: str | None, fallback: str) -> str:
     if not adresa:
@@ -513,6 +587,13 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
                     este_prosumator=pros,
                     date_brute={**intrare, 'rest_plata': rest_plata},
                 )
+                _log_hidro_invoice_debug(
+                    'istoric_factura',
+                    id_cont=id_cont_unic,
+                    id_contract=uan,
+                    sursa=intrare,
+                    selectat=factura.id_factura or None,
+                )
                 facturi_cont.append(factura)
                 if factura.id_factura:
                     facturi_cont_ids.add(factura.id_factura)
@@ -535,6 +616,13 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
             billamount = _float_ro(bill.get('billamount'))
             duedate = _parseaza_data(str(bill.get('duedate') or ''))
             numar_factura = _extrage_numar_factura_lizibil(bill)
+            _log_hidro_invoice_debug(
+                'bill_curent_initial',
+                id_cont=id_cont_unic,
+                id_contract=uan,
+                sursa=bill,
+                selectat=numar_factura,
+            )
             este_prosumator_cont = este_prosumator_din_istoric
             consumuri.append(ConsumUtilitate(cheie='este_prosumator', valoare='da' if este_prosumator_cont else 'nu', unitate=None, id_cont=id_cont_unic, tip_utilitate='curent', tip_serviciu='curent'))
             exista_prosumator = exista_prosumator or este_prosumator_cont
@@ -553,10 +641,29 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
             if billamount is not None:
                 consumuri.append(ConsumUtilitate(cheie='valoare_ultima_factura', valoare=round(billamount, 2), unitate='RON', id_cont=id_cont_unic, tip_utilitate='curent', tip_serviciu='curent'))
 
+            sursa_numar_factura = 'bill_curent' if numar_factura else None
             if not numar_factura and facturi_sortate:
                 candidati = [f for f in sorted(facturi_sortate, key=lambda f: f.data_emitere, reverse=True) if f.id_factura]
                 if candidati:
                     numar_factura = candidati[0].id_factura
+                    sursa_numar_factura = 'istoric_factura_sortata'
+                    _log_hidro_invoice_debug(
+                        'fallback_istoric_pentru_id_ultima_factura',
+                        id_cont=id_cont_unic,
+                        id_contract=uan,
+                        sursa=candidati[0].date_brute,
+                        selectat=numar_factura,
+                    )
+            _LOGGER.warning(
+                '[HIDRO INVOICE DEBUG] Selectie finala id_ultima_factura: %s',
+                json.dumps({
+                    'id_cont': _mascheaza_valoare_debug(id_cont_unic),
+                    'id_contract': _mascheaza_valoare_debug(uan),
+                    'sursa': sursa_numar_factura,
+                    'valoare_selectata': _mascheaza_valoare_debug(numar_factura),
+                    'selected_is_token_like': _este_identificator_criptat(numar_factura),
+                }, ensure_ascii=False, default=str),
+            )
             if numar_factura:
                 consumuri.append(ConsumUtilitate(cheie='id_ultima_factura', valoare=numar_factura, unitate=None, id_cont=id_cont_unic, tip_utilitate='curent', tip_serviciu='curent'))
 
