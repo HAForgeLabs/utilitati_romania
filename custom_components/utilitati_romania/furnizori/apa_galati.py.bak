@@ -64,18 +64,19 @@ URL_FORM_LOGIN_SCRIPTCASE = (
 
 
 def _debug_login(etapa: str, **date: Any) -> None:
-    """Diagnostic dezactivat implicit pentru Apă Canal Galați."""
-    return
+    """Scrie diagnostic temporar pentru autentificarea Apă Canal Galați.
 
-
-
-def _fragment_log(text: str, limita: int = 220) -> str:
-    """Returnează un fragment scurt, curățat, util pentru diagnostic.
-
-    Nu este folosit pentru date personale, ci pentru răspunsuri tehnice Scriptcase.
+    Nu includem utilizator, parolă, token complet sau valori de sesiune.
     """
-    curat = re.sub(r"\s+", " ", _curata_text(text or "")).strip()
-    return curat[:limita]
+    try:
+        _LOGGER.warning(
+            "[APA GALATI LOGIN DEBUG] %s: %s",
+            etapa,
+            json.dumps(date, ensure_ascii=False, sort_keys=True),
+        )
+    except Exception:
+        _LOGGER.warning("[APA GALATI LOGIN DEBUG] %s: %s", etapa, date)
+
 
 def _rezumat_text(text: str) -> dict[str, Any]:
     normal = _curata_text(text)
@@ -96,40 +97,17 @@ def _rezumat_cookies(sesiune: aiohttp.ClientSession) -> list[str]:
             rezultat.append(cookie.key)
     return sorted(set(rezultat))
 
-async def _citeste_text_raspuns(raspuns: aiohttp.ClientResponse) -> str:
-    """Citește răspunsurile portalului Apă Canal Galați cu fallback de encoding.
-
-    Portalul Scriptcase poate returna pagini HTML în encoding Windows-1250 / ISO-8859-2,
-    dar fără charset corect în header. aiohttp încearcă implicit UTF-8 și poate arunca
-    UnicodeDecodeError. Citim bytes și decodăm controlat, ca să nu pice integrarea.
-    """
-    continut = await raspuns.read()
-    if not continut:
-        return ""
-
-    encodari: list[str] = []
-    charset = raspuns.charset
-    if charset:
-        encodari.append(charset)
-    encodari.extend(["utf-8", "windows-1250", "iso-8859-2", "latin-1"])
-
-    incercate: set[str] = set()
-    for encoding in encodari:
-        enc = encoding.lower().strip()
-        if not enc or enc in incercate:
-            continue
-        incercate.add(enc)
-        try:
-            return continut.decode(enc)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    return continut.decode("utf-8", errors="replace")
-
 
 def _debug_date(etapa: str, **date: Any) -> None:
-    """Diagnostic dezactivat implicit pentru extragerea datelor Apă Canal Galați."""
-    return
-
+    """Scrie diagnostic temporar pentru extragerea datelor Apă Canal Galați."""
+    try:
+        _LOGGER.warning(
+            "[APA GALATI DATA DEBUG] %s: %s",
+            etapa,
+            json.dumps(date, ensure_ascii=False, sort_keys=True),
+        )
+    except Exception:
+        _LOGGER.warning("[APA GALATI DATA DEBUG] %s: %s", etapa, date)
 
 
 def _campuri_scriptcase(html_text: str, limita: int = 24) -> list[str]:
@@ -170,9 +148,10 @@ class ClientApiApaGalati:
         self._parola = parola
         self._autentificat = False
         self._script_case_session: str | None = None
-        # Scriptcase generează dinamic script_case_init la deschiderea paginii /app/.
-        # Nu folosim o valoare hardcodată, pentru că se schimbă de la o sesiune la alta.
-        self._script_case_init: str = "1"
+        # În HAR-ul portalului, loginul Scriptcase folosește 1907 pentru aplicația /app/.
+        # Dacă pagina inițială nu îl expune clar, folosim această valoare ca fallback,
+        # altfel validările AJAX se execută cu init=1 și portalul întoarce doar shell-uri goale.
+        self._script_case_init: str = "1907"
 
     def _headers(self, *, referer: str | None = None, ajax: bool = False) -> dict[str, str]:
         headers = {
@@ -202,7 +181,7 @@ class ClientApiApaGalati:
                 ssl=APA_GALATI_SSL_VERIFY,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as raspuns:
-                formular = await _citeste_text_raspuns(raspuns)
+                formular = await raspuns.text()
                 campuri = _extrage_campuri_formular_scriptcase(formular)
                 action = _extrage_form_action(formular) or URL_LOGIN
                 url_action = urljoin(URL_BAZA, action)
@@ -238,7 +217,7 @@ class ClientApiApaGalati:
                 ssl=APA_GALATI_SSL_VERIFY,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as raspuns:
-                text = await _citeste_text_raspuns(raspuns)
+                text = await raspuns.text()
                 _debug_login(
                     "POST formular login Scriptcase",
                     status=raspuns.status,
@@ -264,19 +243,16 @@ class ClientApiApaGalati:
                 are_parola=bool(self._parola),
                 lungime_parola=len(self._parola or ""),
             )
-            # Fluxul real din browser începe cu GET direct pe /app/, iar pagina
-            # returnată conține script_case_init-ul dinamic și csrf_token-ul.
-            # Nu pornim loginul din amc_form_php înainte de autentificare, fiindcă
-            # acolo putem obține un init greșit/vechi și rămânem cu sesiune parțială.
-            pagina_login = ""
+            pagina_login = await self._deschide_aplicatia_login_scriptcase()
             try:
-                async with self._sesiune.get(
+                if not pagina_login:
+                    async with self._sesiune.get(
                         URL_LOGIN,
                         headers=self._headers(),
                         ssl=APA_GALATI_SSL_VERIFY,
                         timeout=aiohttp.ClientTimeout(total=30),
                     ) as raspuns:
-                        pagina_login = await _citeste_text_raspuns(raspuns)
+                        pagina_login = await raspuns.text()
                         _debug_login(
                             "GET login",
                             status=raspuns.status,
@@ -294,7 +270,7 @@ class ClientApiApaGalati:
                 # Browserul deschide aplicația de login prin POST din meniul Scriptcase,
                 # așa că încercăm același bootstrap înainte să declarăm conexiunea eșuată.
                 bootstrap_data = {
-                    "nmgp_parms": f"script_case_init?#?{self._script_case_init or '1'}?#?script_case_session?#?{self._script_case_session or ''}",
+                    "nmgp_parms": f"script_case_init?#?{self._script_case_init or '1907'}?#?script_case_session?#?{self._script_case_session or ''}",
                     "script_case_init": self._script_case_init or "1907",
                     "script_case_session": self._script_case_session or "",
                     "nm_apl_menu": "amc",
@@ -307,7 +283,7 @@ class ClientApiApaGalati:
                         ssl=APA_GALATI_SSL_VERIFY,
                         timeout=aiohttp.ClientTimeout(total=30),
                     ) as raspuns:
-                        pagina_login = await _citeste_text_raspuns(raspuns)
+                        pagina_login = await raspuns.text()
                         _debug_login(
                             "POST bootstrap login",
                             status=raspuns.status,
@@ -324,36 +300,12 @@ class ClientApiApaGalati:
             if not pagina_login:
                 raise EroareConectareApaGalati("Apa Canal Galați nu a returnat pagina de login")
 
-            # Extragem datele Scriptcase direct din formularul real de login.
-            # În unele răspunsuri, valoarea poate fi în input hidden cu atributul
-            # value înainte de name, caz în care regexul simplu nu o prinde.
-            campuri_login = _extrage_campuri_formular_scriptcase(pagina_login)
-            init_din_formular = (
-                campuri_login.get("script_case_init")
-                or _init_din_nmgp_parms(campuri_login.get("nmgp_parms") or "")
-            )
-            sesiune_din_formular = campuri_login.get("script_case_session")
-            csrf_din_formular = campuri_login.get("csrf_token")
-
-            sesiune_din_pagina = sesiune_din_formular or _extrage_script_case_session(pagina_login)
-            if sesiune_din_pagina:
-                self._script_case_session = sesiune_din_pagina
-            elif not self._script_case_session:
-                self._script_case_session = self._cookie_scriptcase_session()
-
-            init_din_pagina = init_din_formular or _extrage_script_case_init(pagina_login)
-            if init_din_pagina and init_din_pagina != "1":
-                self._script_case_init = init_din_pagina
-            elif not self._script_case_init:
-                self._script_case_init = "1"
-
-            csrf = csrf_din_formular or _extrage_csrf(pagina_login)
+            self._script_case_session = _extrage_script_case_session(pagina_login) or self._cookie_scriptcase_session()
+            self._script_case_init = _extrage_script_case_init(pagina_login) or self._script_case_init or "1907"
+            csrf = _extrage_csrf(pagina_login)
             _debug_login(
                 "date login extrase",
                 script_case_init=self._script_case_init,
-                init_din_formular=init_din_formular,
-                init_din_pagina=init_din_pagina,
-                campuri_login=sorted(campuri_login.keys())[:12],
                 are_script_case_session=bool(self._script_case_session),
                 lungime_script_case_session=len(self._script_case_session or ""),
                 are_csrf=bool(csrf),
@@ -384,57 +336,60 @@ class ClientApiApaGalati:
             else:
                 _debug_login("ajax submit omis", motiv="csrf_lipsa")
 
-            # În browser, submitul final către /app/ apare cu status 0, dar este totuși
-            # inițiat înainte de deschiderea meniului /amc/. Îl executăm și noi, însă nu
-            # folosim pagina returnată drept criteriu de succes, pentru că Scriptcase poate
-            # întoarce din nou pagina de login chiar dacă sesiunea a fost modificată.
-            data_finala: list[tuple[str, str]] = [
-                ("nm_form_submit", "1"),
-                ("nmgp_idioma_novo", ""),
-                ("nmgp_schema_f", ""),
-                ("nmgp_url_saida", ""),
-                ("bok", "OK"),
-                ("nmgp_opcao", "alterar"),
-                ("nmgp_ancora", ""),
-                ("nmgp_num_form", ""),
-                ("nmgp_parms", ""),
-                ("script_case_init", self._script_case_init or "1"),
-                ("script_case_session", self._script_case_session or ""),
-                ("NM_cancel_return_new", ""),
-            ]
-            if csrf:
-                data_finala.append(("csrf_token", csrf))
-            data_finala.extend((("login", self._utilizator), ("pswd", self._parola)))
-            try:
-                async with self._sesiune.post(
-                    URL_LOGIN,
-                    headers={
-                        **self._headers(referer=URL_LOGIN),
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Upgrade-Insecure-Requests": "1",
-                    },
-                    data=data_finala,
-                    allow_redirects=False,
-                    ssl=APA_GALATI_SSL_VERIFY,
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as raspuns:
-                    text_final = await _citeste_text_raspuns(raspuns)
-                    _debug_login(
-                        "POST login final executat",
-                        status=raspuns.status,
-                        url_final=str(raspuns.url),
-                        cookies=_rezumat_cookies(self._sesiune),
-                        fragment=_fragment_log(text_final),
-                        **_rezumat_text(text_final),
-                    )
-                    # Nu suprascriem sesiunea validă cu valori goale din pagina de login.
-                    self._script_case_session = _extrage_script_case_session(text_final) or self._script_case_session or self._cookie_scriptcase_session()
-            except Exception as err:
-                # Un timeout aici poate fi acceptabil, pentru că browserul abandonează
-                # navigarea finală; verificarea reală se face imediat prin /amc/.
-                _debug_login("POST login final exceptie tolerata", tip=type(err).__name__, mesaj=str(err)[:160])
+            # În HAR, după ajax_app_submit_form browserul pornește submitul final către /app/ dar
+            # acea navigare apare anulată (status 0), iar imediat după aceea se deschide /amc/.
+            # În aiohttp, dacă așteptăm răspunsul complet de la POST-ul final /app/, portalul poate
+            # întoarce din nou pagina de login și sesiunea rămâne într-o stare incompletă. De aceea,
+            # pentru Scriptcase este mai stabil să folosim AJAX-ul ca validare și să deschidem direct meniul.
+            _debug_login(
+                "POST login final omis",
+                motiv="fluxul browserului anuleaza navigarea finala si continua direct catre /amc/",
+                script_case_init=self._script_case_init,
+                are_script_case_session=bool(self._script_case_session),
+            )
 
             pagina_meniu = await self._deschide_meniu(necesita_login=False)
+            if _pare_login(pagina_meniu):
+                # Fallback pentru cazul în care o instanță Scriptcase cere totuși submitul final.
+                data = {
+                    "nm_form_submit": "1",
+                    "nmgp_idioma_novo": "",
+                    "nmgp_schema_f": "",
+                    "nmgp_url_saida": "",
+                    "bok": "OK",
+                    "nmgp_opcao": "alterar",
+                    "nmgp_ancora": "",
+                    "nmgp_num_form": "",
+                    "nmgp_parms": "",
+                    "script_case_init": self._script_case_init,
+                    "script_case_session": self._script_case_session or "",
+                    "NM_cancel_return_new": "",
+                    "login": self._utilizator,
+                    "pswd": self._parola,
+                }
+                if csrf:
+                    data["csrf_token"] = csrf
+                try:
+                    async with self._sesiune.post(
+                        URL_LOGIN,
+                        headers={**self._headers(referer=URL_LOGIN), "Content-Type": "application/x-www-form-urlencoded"},
+                        data=data,
+                        allow_redirects=False,
+                        ssl=APA_GALATI_SSL_VERIFY,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as raspuns:
+                        text = await raspuns.text()
+                        _debug_login(
+                            "POST login final fallback",
+                            status=raspuns.status,
+                            url_final=str(raspuns.url),
+                            cookies=_rezumat_cookies(self._sesiune),
+                            **_rezumat_text(text),
+                        )
+                        self._script_case_session = _extrage_script_case_session(text) or self._script_case_session or self._cookie_scriptcase_session()
+                except aiohttp.ClientError as err:
+                    _debug_login("POST login final fallback exceptie", tip=type(err).__name__, mesaj=str(err)[:160])
+                pagina_meniu = await self._deschide_meniu(necesita_login=False)
             _debug_login(
                 "verificare meniu dupa login",
                 autentificat=not _pare_login(pagina_meniu),
@@ -471,7 +426,7 @@ class ClientApiApaGalati:
                 ssl=APA_GALATI_SSL_VERIFY,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as raspuns:
-                text = await _citeste_text_raspuns(raspuns)
+                text = await raspuns.text()
                 _debug_login(
                     f"AJAX {actiune}",
                     status=raspuns.status,
@@ -479,7 +434,6 @@ class ClientApiApaGalati:
                     are_error="error" in (text or "").lower() or "erro" in (text or "").lower(),
                     are_login="login" in (text or "").lower(),
                     are_csrf="csrf" in (text or "").lower(),
-                    fragment=_fragment_log(text) if actiune == "ajax_app_submit_form" else "",
                     cookies=_rezumat_cookies(self._sesiune),
                 )
                 return text
@@ -511,7 +465,7 @@ class ClientApiApaGalati:
             ssl=APA_GALATI_SSL_VERIFY,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as raspuns:
-            text = await _citeste_text_raspuns(raspuns)
+            text = await raspuns.text()
             _debug_login(
                 "POST meniu",
                 status=raspuns.status,
@@ -526,7 +480,7 @@ class ClientApiApaGalati:
             self._script_case_session = _extrage_script_case_session(text) or self._script_case_session
             return text
 
-    async def _pregateste_modul(self, cheie: str, init: str) -> str:
+    async def _pregateste_modul(self, cheie: str, init: str) -> None:
         """Deschide aplicația intermediară Scriptcase pentru modulul cerut.
 
         În browser, accesul la un grid nu se face direct prin POST /grfr/ sau /grlc/.
@@ -539,7 +493,7 @@ class ClientApiApaGalati:
         """
         item = MENU_ITEM_MODULE.get(cheie)
         if not item:
-            return init
+            return
 
         url_form = f"{URL_MENIU}amc_form_php.php?sc_item_menu={item}&sc_apl_menu=spc&sc_apl_link=%2F&sc_usa_grupo="
         try:
@@ -549,23 +503,14 @@ class ClientApiApaGalati:
                 ssl=APA_GALATI_SSL_VERIFY,
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as raspuns:
-                text = await _citeste_text_raspuns(raspuns)
-                campuri_form = _extrage_campuri_formular_scriptcase(text)
-                init_form = _init_din_nmgp_parms(campuri_form.get("nmgp_parms") or "") or campuri_form.get("script_case_init")
-                sesiune_form = campuri_form.get("script_case_session")
-                if init_form and init_form != "1":
-                    init = init_form
-                if sesiune_form:
-                    self._script_case_session = sesiune_form
+                text = await raspuns.text()
                 _debug_date(
                     "pregatire_modul_form",
                     cheie=cheie,
                     init=init,
-                    init_form=init_form,
                     status=raspuns.status,
                     lungime=len(text or ""),
                     pare_login=_pare_login(text or ""),
-                    campuri=sorted(campuri_form.keys())[:8],
                     are_script_case_init="script_case_init" in (text or ""),
                 )
         except Exception as err:
@@ -590,7 +535,7 @@ class ClientApiApaGalati:
                 ssl=APA_GALATI_SSL_VERIFY,
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as raspuns:
-                text = await _citeste_text_raspuns(raspuns)
+                text = await raspuns.text()
                 _debug_date(
                     "pregatire_modul_spc",
                     cheie=cheie,
@@ -602,12 +547,11 @@ class ClientApiApaGalati:
                 )
         except Exception as err:
             _debug_date("pregatire_modul_spc_exceptie", cheie=cheie, tip=type(err).__name__, mesaj=str(err)[:160])
-        return init
 
     async def _pagina_modul(self, url: str, init: str, *, cheie: str) -> str:
         if not self._autentificat:
             await self.async_login()
-        init = await self._pregateste_modul(cheie, init)
+        await self._pregateste_modul(cheie, init)
         data = {
             "nmgp_parms": "",
             "nmgp_url_saida": "/spc/",
@@ -622,8 +566,8 @@ class ClientApiApaGalati:
                 ssl=APA_GALATI_SSL_VERIFY,
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as raspuns:
-                text = await _citeste_text_raspuns(raspuns)
-                _LOGGER.debug(
+                text = await raspuns.text()
+                _LOGGER.warning(
                     "[APA GALATI DEBUG] Modul %s: status=%s, lungime=%s, pare_login=%s, spanuri=%s",
                     cheie,
                     raspuns.status,
@@ -680,7 +624,7 @@ class ClientApiApaGalati:
             "plati": _extrage_plati(pagini["plati"]),
             "pagini": pagini,
         }
-        _LOGGER.debug(
+        _LOGGER.warning(
             "[APA GALATI DEBUG] Date extrase: client=%s, contracte=%s, locatii=%s, consumuri=%s, facturi=%s, plati=%s",
             bool(date["client"]),
             len(date["contracte"]),

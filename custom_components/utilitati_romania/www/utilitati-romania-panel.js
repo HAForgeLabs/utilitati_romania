@@ -148,6 +148,10 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     }
   }
 
+  _pluralRo(count, singular, plural) {
+    return `${count} ${count === 1 ? singular : plural}`;
+  }
+
   _date(value) {
     if (!value || value === "-") return "—";
     const text = String(value).trim();
@@ -782,8 +786,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const credit = providers.filter((provider) => this._status(provider) === "credit").length;
     const totalUnpaid = providers.reduce((sum, provider) => sum + this._providerUnpaidTotal(provider), 0);
     const parts = [];
-    if (unpaid) parts.push(`${unpaid} neplătite`);
-    if (paid) parts.push(`${paid} plătite`);
+    if (unpaid) parts.push(this._pluralRo(unpaid, "neplătită", "neplătite"));
+    if (paid) parts.push(this._pluralRo(paid, "plătită", "plătite"));
     if (credit) parts.push(`${credit} credit`);
     if (totalUnpaid > 0) parts.push(`total neplătit ${this._money(totalUnpaid, "RON")}`);
     return parts.join(" · ") || `${entries.length} facturi`;

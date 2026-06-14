@@ -571,15 +571,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                 user_input.get(CONF_INTERVAL_ACTUALIZARE, IMPLICIT_INTERVAL_ACTUALIZARE_ORE)
             ),
         }
-        _LOGGER.warning(
-            "[EON FLOW DEBUG] Pornire login E.ON: %s",
-            _rezumat_debug_eon(
-                step="credentiale_furnizor",
-                are_utilizator=bool(user_input.get(CONF_UTILIZATOR)),
-                are_parola=bool(user_input.get(CONF_PAROLA)),
-                interval=self._date_utilizator_curente[CONF_INTERVAL_ACTUALIZARE],
-            ),
-        )
         self._api_eon = EonApiClient(
             async_get_clientsession(self.hass),
             user_input[CONF_UTILIZATOR],
@@ -588,18 +579,10 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         try:
             ok = await self._api_eon.async_login()
         except Exception:
-            _LOGGER.exception("[EON FLOW DEBUG] Excepție neașteptată în autentificarea E.ON")
+            _LOGGER.exception("Eroare neașteptată în autentificarea E.ON")
             erori["base"] = "necunoscuta"
             return self.async_show_form(step_id="credentiale_furnizor", errors=erori)
 
-        _LOGGER.warning(
-            "[EON FLOW DEBUG] Rezultat login E.ON: %s",
-            _rezumat_debug_eon(
-                login_ok=ok,
-                mfa_required=bool(self._api_eon and self._api_eon.mfa_required),
-                are_destinatar_mfa=bool(self._api_eon and self._api_eon.pending_email_masked),
-            ),
-        )
 
         if ok:
             token_data = self._api_eon.export_token_data()
@@ -623,16 +606,8 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
             )
 
         if self._api_eon and self._api_eon.mfa_required:
-            _LOGGER.warning(
-                "[EON FLOW DEBUG] Login E.ON cere cod 2FA, se afișează formularul: %s",
-                _rezumat_debug_eon(are_api=True, are_destinatar=bool(self._api_eon.pending_email_masked)),
-            )
             return await self.async_step_eon_cod_email()
 
-        _LOGGER.warning(
-            "[EON FLOW DEBUG] Login E.ON respins fără pas 2FA: %s",
-            _rezumat_debug_eon(mfa_required=bool(self._api_eon and self._api_eon.mfa_required)),
-        )
         erori["base"] = "autentificare_esuata"
         return self.async_show_form(step_id="credentiale_furnizor", errors=erori)
 
@@ -655,17 +630,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         """Afișează formularul pentru codul 2FA E.ON."""
         destinatar = self._api_eon.pending_email_masked if self._api_eon else "aplicația E.ON"
         schema = self._schema_cod_2fa_eon()
-        _LOGGER.warning(
-            "[EON FLOW DEBUG] Afișare formular cod 2FA E.ON: %s",
-            _rezumat_debug_eon(
-                step_id=step_id,
-                are_api=bool(self._api_eon),
-                mfa_required=bool(self._api_eon and self._api_eon.mfa_required),
-                are_destinatar=bool(self._api_eon and self._api_eon.pending_email_masked),
-                erori=list((erori or {}).values()),
-                campuri_schema=[str(c.schema) for c in schema.schema.keys()],
-            ),
-        )
         return self.async_show_form(
             step_id=step_id,
             data_schema=schema,
@@ -677,15 +641,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         erori: dict[str, str] = {}
-        _LOGGER.warning(
-            "[EON FLOW DEBUG] Intrare în pasul cod 2FA E.ON: %s",
-            _rezumat_debug_eon(
-                step="eon_cod_email",
-                are_user_input=user_input is not None,
-                chei_user_input=list((user_input or {}).keys()),
-                are_api=bool(self._api_eon),
-            ),
-        )
 
         if self._api_eon is None:
             erori["base"] = "autentificare_esuata"
@@ -693,10 +648,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
 
         if user_input is not None:
             cod = str(user_input.get("cod_email") or "").strip()
-            _LOGGER.warning(
-                "[EON FLOW DEBUG] Submit cod 2FA E.ON: %s",
-                _rezumat_debug_eon(cod_prezent=bool(cod), lungime_cod=len(cod)),
-            )
             if not cod:
                 erori["base"] = "cod_invalid"
                 return self._afiseaza_formular_cod_2fa_eon(erori)
@@ -707,10 +658,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                 _LOGGER.exception("Eroare neașteptată la completarea MFA E.ON")
                 ok = False
 
-            _LOGGER.warning(
-                "[EON FLOW DEBUG] Rezultat validare cod 2FA E.ON: %s",
-                _rezumat_debug_eon(mfa_ok=ok),
-            )
 
             if ok:
                 token_data = self._api_eon.export_token_data()
@@ -1153,15 +1100,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         erori: dict[str, str] = {}
-        _LOGGER.warning(
-            "[EON FLOW DEBUG] Intrare în pasul cod 2FA E.ON reauth: %s",
-            _rezumat_debug_eon(
-                step="eon_cod_email_reauth",
-                are_user_input=user_input is not None,
-                chei_user_input=list((user_input or {}).keys()),
-                are_api=bool(self._api_eon),
-            ),
-        )
 
         if self._api_eon is None:
             erori["base"] = "autentificare_esuata"
@@ -1169,10 +1107,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
 
         if user_input is not None:
             cod = str(user_input.get("cod_email") or "").strip()
-            _LOGGER.warning(
-                "[EON FLOW DEBUG] Submit cod 2FA E.ON reauth: %s",
-                _rezumat_debug_eon(cod_prezent=bool(cod), lungime_cod=len(cod)),
-            )
             if not cod:
                 erori["base"] = "cod_invalid"
                 return self._afiseaza_formular_cod_2fa_eon(erori, step_id="eon_cod_email_reauth")
