@@ -224,6 +224,16 @@ class TextGrupareFacturi(RestoreEntity, TextEntity):
 
         return build_facturi_location_label(cont)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Atribute folosite de dashboard pentru afișarea clară a grupărilor."""
+        return {
+            "furnizor": self.provider_name,
+            "id_cont": self.id_cont,
+            "nume_loc_consum": self.location_alias,
+            "grupare_facturi_label": f"{self.provider_name} - {self.location_alias}",
+        }
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
 

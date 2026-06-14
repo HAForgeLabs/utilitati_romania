@@ -313,10 +313,34 @@ def _valoare_consum_eon(instantaneu: InstantaneuFurnizor, cheie: str, cont):
         return valori[0]
     return _valoare_consum(instantaneu, cheie, id_cont)
 
+
+def _este_id_factura_tehnic(valoare: Any) -> bool:
+    """Detectează tokenurile tehnice care nu trebuie afișate ca număr de factură."""
+    if valoare in (None, ""):
+        return False
+    text = str(valoare).strip()
+    if not text:
+        return False
+    if text.endswith("==") or (len(text) >= 20 and any(ch in text for ch in "+/=")):
+        return True
+    if len(text) >= 32 and all(ch.isalnum() for ch in text):
+        return any(ch.islower() for ch in text) and any(ch.isupper() for ch in text) and any(ch.isdigit() for ch in text)
+    return False
+
+
+def _id_factura_afisabil(valoare: Any) -> str | None:
+    """Returnează ID-ul facturii doar dacă pare lizibil pentru utilizator."""
+    if valoare in (None, "", "unknown", "Unknown", "Necunoscut"):
+        return None
+    text = str(valoare).strip()
+    if not text or _este_id_factura_tehnic(text):
+        return None
+    return text
+
 def _id_ultima_factura_rezumat(instantaneu: InstantaneuFurnizor):
     if instantaneu.furnizor in {"digi", "comprest"}:
-        valoare = _valoare_consum_global(instantaneu, "id_ultima_factura")
-        if valoare not in (None, "", "unknown", "Unknown", "Necunoscut"):
+        valoare = _id_factura_afisabil(_valoare_consum_global(instantaneu, "id_ultima_factura"))
+        if valoare is not None:
             return valoare
     return _id_ultima_factura(instantaneu)
 
@@ -424,11 +448,11 @@ def _id_ultima_factura(
     categorie: str | None = None,
 ):
     if id_cont is not None:
-        v = _valoare_consum(instantaneu, "id_ultima_factura", id_cont)
-        if v not in (None, "", "unknown", "Unknown"):
+        v = _id_factura_afisabil(_valoare_consum(instantaneu, "id_ultima_factura", id_cont))
+        if v is not None:
             return v
     factura = _ultima_factura(instantaneu, categorie, id_cont)
-    return factura.id_factura if factura else None
+    return _id_factura_afisabil(factura.id_factura) if factura else None
 
 
 def _tipuri_active_cont(cont) -> list[str]:
@@ -1099,6 +1123,9 @@ SENZORI_CONT_APA_ORADEA: tuple[DescriereSenzorCont, ...] = (
 )
 
 
+SENZORI_CONT_APA_GALATI: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA
+
+
 SENZORI_CONT_COMPREST: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="de_plata", name="De plată", icon="mdi:cash-clock", native_unit_of_measurement="RON", functie_valoare=lambda i, c: round(float(_valoare_consum(i, "de_plata", c.id_cont) or 0.0), 2)),
     DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: round(float(_valoare_consum(i, "sold_curent", c.id_cont) or 0.0), 2)),
@@ -1317,6 +1344,12 @@ async def async_setup_entry(
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_APA_ORADEA:
                 entitati.append(SenzorContApaOradea(coordonator, cont, descriere))
+
+    elif instantaneu and instantaneu.furnizor == "apa_galati":
+        entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
+        for cont in instantaneu.conturi:
+            for descriere in SENZORI_CONT_APA_GALATI:
+                entitati.append(SenzorContApaGalati(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "comprest":
         entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
@@ -2266,6 +2299,47 @@ class SenzorContApaOradea(EntitateUtilitatiRomania, SensorEntity):
                 for f in facturi[:12]
             ]
         return attrs
+
+
+def _nume_loc_apa_galati(cont) -> str:
+    raw = getattr(cont, "date_brute", None) or {}
+    nr_contract = _raw_get_suffix(raw, "nr_contract", "numar_contract", "contract")
+    cod_locatie = getattr(cont, "id_cont", None)
+    adresa = getattr(cont, "adresa", None) or _raw_get_suffix(raw, "adresa_factura", "adresa", "loc_consum", "punct_consum")
+    baza = adresa or getattr(cont, "nume", None) or "Loc consum"
+    detalii = nr_contract or cod_locatie
+    text = f"{baza} ({detalii})" if detalii and str(detalii) not in str(baza) else str(baza)
+    return re.sub(r"\s+", " ", text).strip() or str(cod_locatie or "loc_consum")
+
+
+def _slug_loc_apa_galati(cont) -> str:
+    raw = getattr(cont, "date_brute", None) or {}
+    baza = getattr(cont, "adresa", None) or _raw_get_suffix(raw, "adresa_factura", "adresa", "den_locatie") or getattr(cont, "nume", None)
+    return build_provider_slug("apa_galati", baza, getattr(cont, "id_cont", None))
+
+
+def info_device_apa_galati(entry_id: str, cont) -> DeviceInfo:
+    ident = getattr(cont, "id_cont", "apa_galati")
+    nume = _nume_loc_apa_galati(cont)
+    return DeviceInfo(
+        identifiers={(DOMENIU, f"{entry_id}_apa_galati_{ident}")},
+        name=f"Apă Canal Galați - {nume}",
+        manufacturer="Apă Canal S.A. Galați",
+        model="Apă / canal",
+    )
+
+
+class SenzorContApaGalati(SenzorContApaOradea):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: DescriereSenzorCont) -> None:
+        EntitateUtilitatiRomania.__init__(self, coordonator)
+        self.cont = cont
+        self.entity_description = descriere
+        slug = _slug_loc_apa_galati(cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_apa_galati_{cont.id_cont}_{descriere.key}"
+        self._attr_name = descriere.name
+        self._attr_suggested_object_id = f"{slug}_{descriere.key}"
+        self.entity_id = f"sensor.{slug}_{descriere.key}"
+        self._attr_device_info = info_device_apa_galati(coordonator.intrare.entry_id, cont)
 
 
 def _nume_loc_comprest(cont) -> str:

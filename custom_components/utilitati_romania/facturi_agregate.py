@@ -21,6 +21,7 @@ _PROVIDER_LABELS = {
     "apa_canal": "Apă Canal Sibiu",
     "apa_brasov": "Apă Brașov",
     "apa_oradea": "Apă Oradea",
+    "apa_galati": "Apă Canal Galați",
     "comprest": "Comprest",
     "deer": "DEER",
     "digi": "Digi",
@@ -580,7 +581,7 @@ def _build_invoice_item(
     _asigura_cheie_locatie_nova(item, factura, cont)
     _asigura_cheie_locatie_hidroelectrica(item)
 
-    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea"}:
+    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati"}:
         id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
 
         citire_permisa = _consum_value(instantaneu, "citire_index_permisa", id_cont)
@@ -912,7 +913,7 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
         )
         return (locatie, furnizor, normalize_text(identificator_punct).lower())
 
-    if furnizor in {"apa_brasov", "apa_oradea"}:
+    if furnizor in {"apa_brasov", "apa_oradea", "apa_galati"}:
         # Apă Brașov are câte o factură curentă pentru fiecare loc de consum.
         # Dacă grupăm doar după titlul generic al facturii („Factură apă/canal”),
         # factura plătită de pe o locație poate fi combinată cu factura restantă

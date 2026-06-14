@@ -293,6 +293,51 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return provider?.furnizor_label || provider?.furnizor || provider?.provider || "Furnizor";
   }
 
+  _hidroelectricaLocationLabel(location, provider) {
+    const candidates = [
+      provider?.nume_cont,
+      location?.locatie_label,
+      location?.eticheta_locatie,
+      location?.name,
+      provider?.adresa_originala,
+    ]
+      .map((value) => String(value ?? "").trim())
+      .filter((value) => value && !["-", "—", "none", "null", "undefined"].includes(value.toLowerCase()));
+
+    const parseStreetNumber = (raw) => {
+      const parts = String(raw || "").split(/[;,]+/).map((part) => part.trim()).filter(Boolean);
+      if (parts.length >= 2 && /^\d+[a-z]?$/i.test(parts[0])) {
+        return `${parts[1]} ${parts[0]}`.replace(/\s+/g, " ").trim();
+      }
+      const streetMatch = String(raw || "").match(/(?:str(?:ada)?\.?\s*)?([A-ZĂÂÎȘŞȚŢa-zăâîșşțţ0-9 .'-]+?)\s*(?:nr\.?\s*)?(\d+\s*[A-Za-z]?)(?:\b|,)/i);
+      if (streetMatch) {
+        const strada = String(streetMatch[1] || "").replace(/^(strada|str\.)\s+/i, "").trim();
+        const numar = String(streetMatch[2] || "").replace(/\s+/g, "").trim();
+        if (strada && numar) return `${strada} ${numar}`.trim();
+      }
+      return "";
+    };
+
+    for (const candidate of candidates) {
+      const parsed = parseStreetNumber(candidate);
+      if (parsed) return parsed;
+    }
+
+    const raw = candidates[0] || "";
+    if (!raw) return "";
+    const parts = raw.split(/[;,]+/).map((part) => part.trim()).filter(Boolean);
+    return parts.slice(0, 2).join(" ").replace(/\s+/g, " ").trim() || raw;
+  }
+
+  _providerDisplayName(location, provider) {
+    const base = this._providerName(provider);
+    if (this._providerKey(provider) === "hidroelectrica") {
+      const locatie = this._hidroelectricaLocationLabel(location, provider);
+      if (locatie && this._normalizeText(locatie) !== this._normalizeText(base)) return `${base} - ${locatie}`;
+    }
+    return base;
+  }
+
   _providerUtilityType(provider) {
     const candidates = [
       provider?.tip_utilitate,
@@ -797,6 +842,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       orange: "App. Orange",
       comprest: "Portal Comprest",
       apa_oradea: "Portal Apă Oradea",
+      apa_galati: "Portal Apă Canal Galați",
     };
     return labels[key] || "";
   }
@@ -849,10 +895,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const expanded = this._expandedInvoices.has(key);
     const utilityType = this._providerUtilityType(provider);
     const utilityLine = utilityType ? `<span class="invoice-utility">${this._escape(utilityType)}</span>` : "";
+    const displayName = this._providerDisplayName(location, provider);
     return `
       <article class="invoice-row ${status} ${warning ? "warning" : ""} ${expanded ? "expanded" : ""}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
-        <div class="invoice-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._providerInvoice(provider))}</span>${utilityLine}</div>
+        <div class="invoice-main"><strong>${this._escape(displayName)}</strong><span>${this._escape(this._providerInvoice(provider))}</span>${utilityLine}</div>
         <div class="invoice-quick"><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span></div>
         <button class="invoice-toggle" data-toggle-invoice="${this._escape(key)}" title="Detalii factură" aria-label="Detalii factură"><ha-icon icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
         <div class="invoice-details">
@@ -887,7 +934,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea"].includes(providerKey)) return null;
+    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati"].includes(providerKey)) return null;
 
     const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
       if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
@@ -975,7 +1022,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
         const entityId = String(stateObj?.entity_id || "").toLowerCase();
-        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("ebloc");
+        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("ebloc");
       };
       const scoreEonEntity = (stateObj, kind) => {
         if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
@@ -1041,7 +1088,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       return controls;
     }
 
-    if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea") {
+    if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati") {
       const base = sensorObject.replace(/_citire_index_permisa$/, "").replace(/_citire_permisa$/, "");
       const attrs = readingSensor.attributes || {};
       const sensorIdCont = String(attrs.id_cont ?? provider?.id_cont ?? "").trim();
@@ -1526,13 +1573,17 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       })
       .map(([entityId, state]) => {
         const friendly = String(state?.attributes?.friendly_name || state?.attributes?.name || entityId);
+        const explicitLabel = cleanDisplay(state?.attributes?.grupare_facturi_label || "");
+        const explicitLocationName = cleanDisplay(state?.attributes?.nume_loc_consum || "");
+        const explicitProvider = cleanDisplay(state?.attributes?.furnizor || "");
         const matched = bestProviderEntry(entityId, friendly);
         const friendlyLabel = fallbackLabel(entityId, friendly);
-        // Pentru rândurile de configurare este mai sigur să afișăm denumirea
-        // entității text, deoarece aceasta este construită din device/cont.
-        // Datele agregate din facturi pot conține aceeași adresă pentru două
-        // locații diferite și fac lista de setări ambiguă.
-        const label = friendlyLabel || matched?.label || fallbackLabel(entityId, friendly);
+        // Preferăm atributele expuse explicit de entitatea text. Friendly name-ul
+        // poate rămâne cel vechi în entity registry după update, iar datele
+        // agregate din facturi pot conține aceeași adresă pentru două locații
+        // diferite. Atributele se actualizează odată cu entitatea și nu schimbă
+        // entity_id / unique_id.
+        const label = explicitLabel || (explicitProvider && explicitLocationName ? `${explicitProvider} - ${explicitLocationName}` : "") || friendlyLabel || matched?.label || fallbackLabel(entityId, friendly);
         const savedValue = state?.state && !["unknown", "unavailable"].includes(state.state) ? state.state : "";
         return {
           entityId,
@@ -1981,7 +2032,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._render();
 
     try {
-      if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea") {
+      if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati") {
         await this._hass.callService("utilitati_romania", "submit_reading", {
           provider: providerKey,
           entry_id: String(wrapper?.getAttribute("data-entry-id") || ""),
@@ -1992,7 +2043,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       } else {
         if (!numberEntityId || !buttonEntityId) throw new Error("Entitățile pentru transmiterea indexului nu sunt disponibile.");
         if (providerKey === "eon") {
-          const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|apacanal|ebloc)/i;
+          const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|apa_galati|apacanal|ebloc)/i;
           if (wrongProviderPattern.test(numberEntityId) || wrongProviderPattern.test(buttonEntityId)) throw new Error("Panoul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina și verifică entitățile.");
         }
         await this._hass.callService("number", "set_value", { entity_id: numberEntityId, value: numericValue });
