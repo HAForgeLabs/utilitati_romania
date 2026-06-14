@@ -1,3 +1,5 @@
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b2";
+
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
     const rawConfig = config || {};
@@ -2181,7 +2183,7 @@ _buildProviderRefreshButton(provider) {
           }
         </div>
 
-        <div class="footer">Sursă date: ${this._escapeHtml(entity.entity_id)}</div>
+        <div class="footer">Card v${UTILITATI_ROMANIA_FRONTEND_VERSION} • Sursă date: ${this._escapeHtml(entity.entity_id)}</div>
       </div>
     `;
 

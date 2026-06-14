@@ -48,8 +48,11 @@ from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licent
 
 _LOGGER = logging.getLogger(__name__)
 
-_LOVELACE_RESOURCE_URL = "/utilitati_romania/utilitati_romania-card.js"
-_PANEL_RESOURCE_URL = "/utilitati_romania/utilitati-romania-panel.js"
+_FRONTEND_VERSION = "1.9.2b2"
+_LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
+_PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
+_LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
+_PANEL_RESOURCE_URL = f"{_PANEL_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
 _LOVELACE_NOTIFICATION_ID = "utilitati_romania_card_resource"
 _ADMIN_PLATFORME = [Platform.SENSOR, Platform.BUTTON, Platform.TEXT, Platform.SELECT]
 
@@ -185,6 +188,11 @@ async def _extract_lovelace_resource_urls_from_storage(hass: HomeAssistant) -> s
     return urls
 
 
+def _frontend_resource_matches(url: str, base_url: str) -> bool:
+    clean_url = (url or "").strip()
+    return clean_url == base_url or clean_url.startswith(f"{base_url}?")
+
+
 def _storage_lovelace_mode_likely(hass: HomeAssistant) -> bool:
     return (
         Path(hass.config.path(".storage", "lovelace_resources")).exists()
@@ -225,12 +233,12 @@ async def _async_notify_missing_lovelace_resource(hass: HomeAssistant) -> None:
 
     hass.data[DOMENIU]["_resource_notification_checked"] = True
 
-    if _resource_registered_in_memory(hass, _LOVELACE_RESOURCE_URL):
+    if _resource_registered_in_memory(hass, _LOVELACE_RESOURCE_URL) or _resource_registered_in_memory(hass, _LOVELACE_RESOURCE_BASE_URL):
         persistent_notification.async_dismiss(hass, _LOVELACE_NOTIFICATION_ID)
         return
 
     stored_urls = await _extract_lovelace_resource_urls_from_storage(hass)
-    if _LOVELACE_RESOURCE_URL in stored_urls:
+    if any(_frontend_resource_matches(url, _LOVELACE_RESOURCE_BASE_URL) for url in stored_urls):
         persistent_notification.async_dismiss(hass, _LOVELACE_NOTIFICATION_ID)
         return
 

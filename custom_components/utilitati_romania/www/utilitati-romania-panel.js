@@ -1,3 +1,5 @@
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b2";
+
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
     super();
@@ -478,7 +480,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <section class="hero">
         <div class="hero-content">
-          <a class="forge-lockup" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="Deschide site-ul HAForge Labs"><img class="forge-logo" src="/utilitati_romania/haforge-logo.png" alt="HAForge Labs"><span>HAForge Labs</span></a>
+          <a class="forge-lockup" href="https://haforgelabs.ro" target="_blank" rel="noopener noreferrer" title="Deschide site-ul HAForge Labs"><img class="forge-logo" src="/utilitati_romania/haforge-logo.png" alt="HAForge Labs"><span>HAForge Labs</span><small class="forge-version">Card v${UTILITATI_ROMANIA_FRONTEND_VERSION}</small></a>
           <div class="brand-row">
             <img class="utility-logo" src="/utilitati_romania/logo.png" alt="Utilități România">
             <div class="brand-meta">
@@ -1727,8 +1729,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .brand-row { position:relative; z-index:1; display:flex; align-items:center; gap:18px; padding-right:190px; min-height:96px; }
       .utility-logo { width:86px; height:86px; object-fit:contain; border-radius:24px; background:rgba(255,255,255,.12); padding:10px; border:1px solid rgba(255,255,255,.16); flex:0 0 auto; }
       .brand-meta { display:flex; align-items:center; min-width:0; }
-      .forge-lockup { position:absolute; top:30px; right:34px; z-index:2; display:inline-flex; align-items:center; gap:8px; color:#8cc4ff; font-size:11px; text-transform:uppercase; letter-spacing:.13em; font-weight:900; white-space:nowrap; text-decoration:none; }
-      .forge-logo { width:34px; height:34px; border-radius:11px; object-fit:cover; box-shadow:0 0 24px rgba(0,210,255,.4); }
+      .forge-lockup { position:absolute; top:30px; right:34px; z-index:2; display:grid; grid-template-columns:34px auto; grid-template-rows:auto auto; column-gap:8px; row-gap:2px; align-items:center; color:#8cc4ff; font-size:11px; text-transform:uppercase; letter-spacing:.13em; font-weight:900; white-space:nowrap; text-decoration:none; }
+      .forge-logo { grid-row:1 / span 2; width:34px; height:34px; border-radius:11px; object-fit:cover; box-shadow:0 0 24px rgba(0,210,255,.4); }
+      .forge-version { grid-column:2; color:rgba(226,242,255,.72); font-size:9px; line-height:1; letter-spacing:.04em; text-transform:none; font-weight:800; }
       .eyebrow { display:block; text-transform:uppercase; letter-spacing:.13em; font-size:11px; font-weight:800; color:#5fa8ff; margin-bottom:6px; }
       .hero-content .eyebrow { color:#8cc4ff; }
       h1 { font-size:clamp(36px,5.2vw,60px); line-height:.95; margin:0; letter-spacing:-.055em; color:#fff; text-shadow:0 2px 18px rgba(0,0,0,.28); }
