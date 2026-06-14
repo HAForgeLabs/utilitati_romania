@@ -33,7 +33,7 @@ from .deer_device import alias_loc_deer, info_device_deer, slug_loc_deer
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
 from .orange_device import alias_loc_orange, info_device_orange, slug_loc_orange
 from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
-from .naming import build_provider_slug, extract_street_slug
+from .naming import build_provider_slug, extract_street_slug, normalize_text
 from .furnizori.apa_brasov import nume_scurt_locatie_apa_brasov
 from .licentiere import async_obtine_licenta_globala, mascheaza_cheia_licenta
 from .facturi_agregate import colecteaza_facturi_agregate, sumar_facturi
