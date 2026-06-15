@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b2";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b3";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -56,15 +56,54 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
   _summaryEntityId() {
+    const states = this._hass?.states || {};
     const configured = this._panel?.config?.summary_entity;
-    if (configured && this._hass?.states?.[configured]) return configured;
-    if (this._hass?.states?.["sensor.administrare_integrare_facturi_utilitati"]) {
-      return "sensor.administrare_integrare_facturi_utilitati";
+    const preferred = "sensor.administrare_integrare_facturi_utilitati";
+
+    const isSummaryCandidate = (entityId) => {
+      const attrs = states[entityId]?.attributes || {};
+      return entityId.startsWith("sensor.")
+        && Array.isArray(attrs.locatii)
+        && Object.prototype.hasOwnProperty.call(attrs, "numar_facturi")
+        && Object.prototype.hasOwnProperty.call(attrs, "total_neplatit");
+    };
+
+    const candidates = Object.keys(states).filter(isSummaryCandidate);
+    if (!candidates.length) {
+      if (configured && states[configured]) return configured;
+      if (states[preferred]) return preferred;
+      return null;
     }
-    return Object.keys(this._hass?.states || {}).find((entityId) => {
-      const attrs = this._hass.states[entityId]?.attributes || {};
-      return entityId.startsWith("sensor.") && Array.isArray(attrs.locatii);
-    }) || null;
+
+    const scoreCandidate = (entityId) => {
+      const state = states[entityId] || {};
+      const attrs = state.attributes || {};
+      const locations = Array.isArray(attrs.locatii) ? attrs.locatii : [];
+      const providers = locations.reduce((sum, location) => {
+        const list = Array.isArray(location?.furnizori) ? location.furnizori : [];
+        return sum + list.length;
+      }, 0);
+      const invoices = Number(attrs.numar_facturi ?? providers ?? 0) || 0;
+      const updated = Date.parse(state.last_updated || state.last_changed || "") || 0;
+
+      // În unele instalări Home Assistant poate păstra un entity_id vechi/restored
+      // pentru senzorul agregat, iar senzorul activ primește sufix (_2, _3 etc.).
+      // Alegem senzorul cu cele mai multe facturi/furnizori și apoi cel mai recent,
+      // nu entity_id-ul hardcodat, ca să evităm afișarea datelor vechi în dashboard.
+      return invoices * 1000000 + providers * 10000 + Math.floor(updated / 1000);
+    };
+
+    candidates.sort((a, b) => {
+      const diff = scoreCandidate(b) - scoreCandidate(a);
+      if (diff !== 0) return diff;
+      if (a === configured) return -1;
+      if (b === configured) return 1;
+      if (a === preferred) return -1;
+      if (b === preferred) return 1;
+      return a.localeCompare(b);
+    });
+
+    return candidates[0] || null;
   }
 
   _summary() {
