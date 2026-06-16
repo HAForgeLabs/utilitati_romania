@@ -52,6 +52,23 @@ class DateSesiuneOrange:
     expira_la: int
 
 
+
+def _mascheaza_msisdn(valoare: Any) -> str:
+    text = _text(valoare)
+    if not text:
+        return ""
+    if len(text) <= 4:
+        return "***"
+    return f"***{text[-4:]}"
+
+
+def _orange_diag(etapa: str, date: dict[str, Any]) -> None:
+    try:
+        _LOGGER.warning("[ORANGE DIAG] %s: %s", etapa, date)
+    except Exception:  # pragma: no cover - diagnostic defensiv
+        _LOGGER.warning("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
+
+
 class ClientApiOrange:
     def __init__(self, sesiune: aiohttp.ClientSession, utilizator: str, parola: str) -> None:
         self._sesiune = sesiune
@@ -253,17 +270,70 @@ class ClientApiOrange:
         invoice_infos: dict[str, dict[str, Any]] = {}
         history_by_customer: dict[str, dict[str, Any]] = {}
 
+        _orange_diag(
+            "subscribers",
+            {
+                "count": len(subscribers),
+                "items": [
+                    {
+                        "msisdn": _mascheaza_msisdn(item.get("msisdn")),
+                        "status": _text(item.get("status")),
+                        "subscriberType": _text(item.get("subscriberType")),
+                        "subscriberTypeDisplayName": _text(item.get("subscriberTypeDisplayName")),
+                        "subscriptionName": _text(item.get("subscriptionName")),
+                        "profileId_present": bool(_text(item.get("profileId"))),
+                        "subscriberId_present": bool(_text(item.get("subscriberId"))),
+                        "facturabil": _subscriber_facturabil(item),
+                    }
+                    for item in subscribers
+                    if isinstance(item, dict)
+                ],
+            },
+        )
+
         for subscriber in subscribers:
             if not _subscriber_facturabil(subscriber):
+                _orange_diag(
+                    "subscriber_sarit",
+                    {
+                        "msisdn": _mascheaza_msisdn(subscriber.get("msisdn")),
+                        "motiv": "nefacturabil_dupa_filtru",
+                        "status": _text(subscriber.get("status")),
+                        "subscriberType": _text(subscriber.get("subscriberType")),
+                        "subscriberTypeDisplayName": _text(subscriber.get("subscriberTypeDisplayName")),
+                        "subscriptionName": _text(subscriber.get("subscriptionName")),
+                    },
+                )
                 continue
             msisdn = _text(subscriber.get("msisdn"))
             profile_id = _text(subscriber.get("profileId"))
             if not msisdn or not profile_id:
+                _orange_diag(
+                    "subscriber_sarit",
+                    {
+                        "msisdn": _mascheaza_msisdn(msisdn),
+                        "motiv": "lipsa_msisdn_sau_profile_id",
+                        "are_msisdn": bool(msisdn),
+                        "are_profile_id": bool(profile_id),
+                    },
+                )
                 continue
             try:
-                invoice_infos[msisdn] = await self.async_invoice_info(profile_id, msisdn)
+                raspuns = await self.async_invoice_info(profile_id, msisdn)
+                invoice_infos[msisdn] = raspuns
+                data = raspuns.get("data") if isinstance(raspuns, dict) else None
+                _orange_diag(
+                    "invoice_info",
+                    {
+                        "msisdn": _mascheaza_msisdn(msisdn),
+                        "are_data": isinstance(data, dict),
+                        "keys": sorted(list(data.keys()))[:20] if isinstance(data, dict) else [],
+                        "customerNumber_present": bool(_extrage_customer_number(raspuns)),
+                    },
+                )
             except EroareApiOrange as err:
-                _LOGGER.warning("Nu am putut citi factura Orange pentru %s: %s", msisdn, err)
+                _orange_diag("invoice_info_eroare", {"msisdn": _mascheaza_msisdn(msisdn), "eroare": str(err)[:300]})
+                _LOGGER.warning("Nu am putut citi factura Orange pentru %s: %s", _mascheaza_msisdn(msisdn), err)
 
         for subscriber in subscribers:
             if not _subscriber_facturabil(subscriber):
@@ -272,13 +342,42 @@ class ClientApiOrange:
             msisdn = _text(subscriber.get("msisdn"))
             customer_number = _extrage_customer_number(invoice_infos.get(msisdn))
             if not customer_number or not subscriber_id:
+                _orange_diag(
+                    "istoric_sarit",
+                    {
+                        "msisdn": _mascheaza_msisdn(msisdn),
+                        "motiv": "lipsa_customer_number_sau_subscriber_id",
+                        "are_customer_number": bool(customer_number),
+                        "are_subscriber_id": bool(subscriber_id),
+                    },
+                )
                 continue
             if customer_number in history_by_customer:
                 continue
             try:
-                history_by_customer[customer_number] = await self.async_invoice_history(customer_number, subscriber_id)
+                raspuns_istoric = await self.async_invoice_history(customer_number, subscriber_id)
+                history_by_customer[customer_number] = raspuns_istoric
+                items = raspuns_istoric.get("data") if isinstance(raspuns_istoric, dict) else None
+                _orange_diag(
+                    "invoice_history",
+                    {
+                        "customerNumber_present": bool(customer_number),
+                        "items": len(items) if isinstance(items, list) else 0,
+                        "keys": sorted(list(raspuns_istoric.keys()))[:20] if isinstance(raspuns_istoric, dict) else [],
+                    },
+                )
             except EroareApiOrange as err:
+                _orange_diag("invoice_history_eroare", {"customerNumber_present": bool(customer_number), "eroare": str(err)[:300]})
                 _LOGGER.debug("Nu am putut citi istoricul facturilor Orange pentru %s: %s", customer_number, err)
+
+        _orange_diag(
+            "rezultat",
+            {
+                "subscribers_count": len(subscribers),
+                "invoice_infos_count": len(invoice_infos),
+                "invoice_history_customers": len(history_by_customer),
+            },
+        )
 
         return {
             "user_info": user_info,

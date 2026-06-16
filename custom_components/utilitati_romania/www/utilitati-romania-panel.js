@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b8";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b9";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -1628,7 +1628,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         // agregate din facturi pot conține aceeași adresă pentru două locații
         // diferite. Atributele se actualizează odată cu entitatea și nu schimbă
         // entity_id / unique_id.
-        const label = explicitLabel || (explicitProvider && explicitLocationName ? `${explicitProvider} - ${explicitLocationName}` : "") || friendlyLabel || matched?.label || fallbackLabel(entityId, friendly);
+        const label = explicitLabel || (explicitProvider && explicitLocationName ? `${explicitProvider} - ${explicitLocationName}` : "") || matched?.label || friendlyLabel || fallbackLabel(entityId, friendly);
         const savedValue = state?.state && !["unknown", "unavailable"].includes(state.state) ? state.state : "";
         return {
           entityId,
@@ -1636,11 +1636,31 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           friendly,
           provider: label,
           label,
+          matchKey: matched ? this._normalizeText(matched.label || label) : this._normalizeText(label),
           context: `Grupare salvată: ${savedValue || "necompletată"}`,
           savedValue,
         };
       })
       .filter((item) => !isGenericEblocGroup(item))
+      .reduce((items, item) => {
+        // După ștergeri/readăugări, Home Assistant poate păstra mai multe
+        // entități text de grupare pentru aceeași locație. În setările
+        // dashboardului afișăm o singură intrare per etichetă activă și
+        // păstrăm varianta care are grupare salvată sau entity_id-ul cel mai vechi.
+        const key = item.matchKey || this._normalizeText(item.label);
+        const existingIndex = items.findIndex((candidate) => (candidate.matchKey || this._normalizeText(candidate.label)) === key);
+        if (existingIndex === -1) {
+          items.push(item);
+          return items;
+        }
+        const existing = items[existingIndex];
+        const itemHasValue = Boolean(item.savedValue);
+        const existingHasValue = Boolean(existing.savedValue);
+        const itemScore = (itemHasValue ? 100 : 0) - (Number((item.entityId.match(/_(\d+)$/) || [0, 0])[1]) || 0);
+        const existingScore = (existingHasValue ? 100 : 0) - (Number((existing.entityId.match(/_(\d+)$/) || [0, 0])[1]) || 0);
+        if (itemScore > existingScore) items[existingIndex] = item;
+        return items;
+      }, [])
       .sort((a, b) => `${a.label} ${a.savedValue}`.localeCompare(`${b.label} ${b.savedValue}`, "ro"));
   }
 
