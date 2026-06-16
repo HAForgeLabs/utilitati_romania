@@ -242,8 +242,13 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                     else:
                         await self.async_set_unique_id(f"{self._furnizor}::{unic}")
                         self._abort_if_unique_id_configured()
+                        titlu_intrare = clasa_furnizor.nume_prietenos
+                        if self._furnizor == "apa_galati":
+                            cod_client = str(user_input.get(CONF_UTILIZATOR) or unic or "").strip()
+                            if cod_client:
+                                titlu_intrare = f"Apă Canal Galați - {cod_client}"
                         return self.async_create_entry(
-                            title=clasa_furnizor.nume_prietenos,
+                            title=titlu_intrare,
                             data={
                                 CONF_FURNIZOR: self._furnizor,
                                 CONF_CHEIE_LICENTA: self._cheie_licenta,

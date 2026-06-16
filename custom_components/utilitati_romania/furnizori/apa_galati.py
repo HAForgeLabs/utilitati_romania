@@ -64,8 +64,11 @@ URL_FORM_LOGIN_SCRIPTCASE = (
 
 
 def _debug_login(etapa: str, **date: Any) -> None:
-    """Diagnostic dezactivat implicit pentru Apă Canal Galați."""
-    return
+    """Diagnostic temporar pentru fluxul Apă Canal Galați."""
+    try:
+        _LOGGER.warning("[APA GALATI DIAG LOGIN] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
+    except Exception:
+        _LOGGER.warning("[APA GALATI DIAG LOGIN] %s: %s", etapa, date)
 
 
 
@@ -127,8 +130,11 @@ async def _citeste_text_raspuns(raspuns: aiohttp.ClientResponse) -> str:
 
 
 def _debug_date(etapa: str, **date: Any) -> None:
-    """Diagnostic dezactivat implicit pentru extragerea datelor Apă Canal Galați."""
-    return
+    """Diagnostic temporar pentru datele Apă Canal Galați."""
+    try:
+        _LOGGER.warning("[APA GALATI DIAG DATA] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
+    except Exception:
+        _LOGGER.warning("[APA GALATI DIAG DATA] %s: %s", etapa, date)
 
 
 
@@ -448,10 +454,11 @@ class ClientApiApaGalati:
                 raise EroareAutentificareApaGalati("Credentialele Apa Canal Galați nu au fost acceptate")
             if not meniu_real:
                 _debug_login(
-                    "meniu shell acceptat temporar",
-                    motiv="Scriptcase poate intoarce initial doar containerul; modulele reale sunt incarcate prin fluxul spc",
+                    "meniu shell respins",
+                    motiv="Autentificarea nu a produs meniul real; modulele ar intoarce doar shell-uri goale",
                     lungime=len(pagina_meniu or ""),
                 )
+                raise EroareAutentificareApaGalati("Apa Canal Galați nu a returnat meniul real după autentificare")
             self._autentificat = True
         except EroareApiApaGalati:
             raise
@@ -736,6 +743,41 @@ class ClientFurnizorApaGalati(ClientFurnizor):
         conturi = self._mapeaza_conturi(date_brute)
         facturi = self._mapeaza_facturi(date_brute, conturi)
         consumuri = self._mapeaza_consumuri(date_brute, conturi, facturi)
+        try:
+            _LOGGER.warning(
+                "[APA GALATI DIAG MAP] rezultat: %s",
+                json.dumps(
+                    {
+                        "conturi": len(conturi),
+                        "facturi": len(facturi),
+                        "consumuri": len(consumuri),
+                        "conturi_preview": [
+                            {
+                                "id_cont": getattr(cont, "id_cont", None),
+                                "nume": getattr(cont, "nume", None),
+                                "adresa": getattr(cont, "adresa", None),
+                                "id_contract": getattr(cont, "id_contract", None),
+                            }
+                            for cont in conturi[:5]
+                        ],
+                        "facturi_preview": [
+                            {
+                                "id_factura": getattr(factura, "id_factura", None),
+                                "id_cont": getattr(factura, "id_cont", None),
+                                "valoare": getattr(factura, "valoare", None),
+                                "emitere": getattr(factura, "data_emitere", None),
+                                "scadenta": getattr(factura, "data_scadenta", None),
+                                "stare": getattr(factura, "stare", None),
+                            }
+                            for factura in facturi[:5]
+                        ],
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            )
+        except Exception:
+            pass
         return InstantaneuFurnizor(
             furnizor=self.cheie_furnizor,
             titlu=self.nume_prietenos,
