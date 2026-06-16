@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
 
@@ -895,14 +896,63 @@ def _money_to_lei(value: Any) -> float | None:
 
 
 
-def _hidroelectrica_are_rest_de_plata(factura: FacturaUtilitate) -> bool:
-    """Verifică explicit dacă o factură Hidroelectrica din istoric are rest de plată."""
+def _hidroelectrica_rest_de_plata(factura: FacturaUtilitate) -> float | None:
+    """Returnează restul de plată declarat explicit de Hidroelectrica pentru factură."""
     raw = _raw_dict(factura)
     for key in _UNPAID_RAW_KEYS:
         value = _to_float(raw.get(key))
-        if value is not None and value > 0:
-            return True
-    return False
+        if value is not None:
+            return value
+    return None
+
+
+def _hidroelectrica_are_rest_de_plata(factura: FacturaUtilitate) -> bool:
+    """Verifică dacă o factură Hidroelectrica este declarată explicit ca neachitată."""
+    rest = _hidroelectrica_rest_de_plata(factura)
+    if rest is not None and rest > 0:
+        return True
+
+    status_text = normalize_text(getattr(factura, "stare", None)).lower()
+    return _status_in(status_text, _NORMALIZED_STATUS_UNPAID_TOKENS)
+
+
+def _hidroelectrica_este_factura_curenta_sintetica(factura: FacturaUtilitate) -> bool:
+    """Identifică factura curentă construită din sumarul Hidroelectrica."""
+    raw = _raw_dict(factura)
+    return bool(raw.get("_synthetic_current_bill"))
+
+
+def _ajusteaza_facturi_hidroelectrica(facturi: list[FacturaUtilitate]) -> list[FacturaUtilitate]:
+    """Elimină factura sintetică Hidroelectrica când există restanțe reale.
+
+    `GetBill.rembalance` poate reprezenta soldul total al contului. Lista de
+    facturi din dashboard trebuie să provină din facturile individuale din
+    istoricul de facturare. De aceea, dacă pentru același cont există deja
+    cel puțin o factură reală neachitată, rândul sintetic construit din soldul
+    total nu mai este afișat ca factură separată.
+    """
+    rezultat: list[FacturaUtilitate] = []
+    facturi_pe_cont: dict[tuple[str, str], list[FacturaUtilitate]] = {}
+
+    for factura in facturi or []:
+        facturi_pe_cont.setdefault(_factura_latest_key(factura), []).append(factura)
+
+    for grup in facturi_pe_cont.values():
+        exista_factura_reala_neachitata = any(
+            not _hidroelectrica_este_factura_curenta_sintetica(factura)
+            and _hidroelectrica_are_rest_de_plata(factura)
+            for factura in grup
+        )
+
+        for factura in grup:
+            if (
+                exista_factura_reala_neachitata
+                and _hidroelectrica_este_factura_curenta_sintetica(factura)
+            ):
+                continue
+            rezultat.append(factura)
+
+    return rezultat
 
 
 def _exista_restanta_hidroelectrica_pentru_cont(grouped: dict[tuple[str, ...], dict[str, Any]], item: dict[str, Any]) -> bool:
@@ -1147,6 +1197,9 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             continue
 
         facturi_de_afisat = list(instantaneu.facturi or [])
+        if instantaneu.furnizor == "hidroelectrica":
+            facturi_de_afisat = _ajusteaza_facturi_hidroelectrica(facturi_de_afisat)
+
         if instantaneu.furnizor in {"engie", "apa_brasov", "hidroelectrica"}:
             # Pentru MyENGIE, Apă Brașov și Hidroelectrica păstrăm în card doar ultima factură
             # pe fiecare loc de consum. La Hidroelectrica păstrăm însă și facturile vechi
@@ -1262,6 +1315,71 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     )
     return items
 
+
+
+def _este_estimare_hidroelectrica_item(item: dict[str, Any]) -> bool:
+    """Detectează rândurile de estimare Hidroelectrica afișate separat de factură."""
+    text = normalize_text(
+        " ".join(
+            str(item.get(key) or "")
+            for key in ("invoice_title", "invoice_id", "status_raw", "tip_serviciu", "tip_utilitate")
+        )
+    ).lower()
+    return "estimare" in text
+
+
+def _cheie_restanta_hidroelectrica_item(item: dict[str, Any]) -> tuple[str, str, str]:
+    """Grupează rândurile Hidroelectrica care aparțin aceluiași loc de consum."""
+    locatie = normalize_text(item.get("locatie_cheie") or item.get("eticheta_locatie") or "").lower()
+    contract = normalize_text(item.get("id_contract") or "").lower()
+    cont = normalize_text(item.get("id_cont") or "").lower()
+    nume = normalize_text(item.get("nume_cont") or item.get("adresa_originala") or "").lower()
+    return (locatie, contract, cont or nume)
+
+
+def _ajusteaza_itemuri_hidroelectrica_sold_cumulat(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Corectează rândurile Hidroelectrica în care soldul total dublează o estimare.
+
+    Portalul Hidroelectrica poate expune simultan o estimare individuală și un rând
+    de tip factură/sold curent care conține totalul tuturor restanțelor. În dashboard
+    acestea trebuie afișate ca două rânduri distincte reale: estimarea rămâne cu
+    valoarea ei, iar rândul de sold total este redus la diferența neacoperită.
+    """
+    grupuri: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+
+    for item in items:
+        if normalize_text(item.get("furnizor")).lower() != "hidroelectrica":
+            continue
+        if item.get("status") != "unpaid":
+            continue
+        grupuri.setdefault(_cheie_restanta_hidroelectrica_item(item), []).append(item)
+
+    for grup in grupuri.values():
+        if len(grup) < 2 or not any(_este_estimare_hidroelectrica_item(item) for item in grup):
+            continue
+
+        valori = [(item, _valoare_neplatita_item(item)) for item in grup]
+        valori = [(item, valoare) for item, valoare in valori if valoare > 0]
+        if len(valori) < 2:
+            continue
+
+        candidat, valoare_candidat = max(valori, key=lambda pair: pair[1])
+        total_alte_randuri = round(sum(valoare for item, valoare in valori if item is not candidat), 2)
+        diferenta = round(valoare_candidat - total_alte_randuri, 2)
+
+        if total_alte_randuri <= 0 or diferenta <= 0.01 or diferenta >= valoare_candidat:
+            continue
+
+        candidat["amount_original"] = candidat.get("amount")
+        candidat["unpaid_amount_original"] = candidat.get("unpaid_amount")
+        candidat["unpaid_total_original"] = candidat.get("unpaid_total")
+        candidat["amount"] = diferenta
+        candidat["unpaid_amount"] = diferenta
+        candidat["unpaid_total"] = diferenta
+        candidat["hidroelectrica_sold_cumulat_ajustat"] = True
+        candidat["hidroelectrica_sold_cumulat_acoperit"] = total_alte_randuri
+
+    return items
 
 def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
     total_unpaid = 0.0
