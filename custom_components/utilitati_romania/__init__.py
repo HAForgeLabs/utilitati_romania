@@ -48,7 +48,7 @@ from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licent
 
 _LOGGER = logging.getLogger(__name__)
 
-_FRONTEND_VERSION = "1.9.2b9"
+_FRONTEND_VERSION = "1.9.2b20"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -395,6 +395,12 @@ def _provider_open_target(provider: str | None) -> dict[str, str] | None:
         return {
             "mode": "url",
             "fallback": "https://plataonline.apaoradea.ro/",
+        }
+
+    if key == "hidro_prahova":
+        return {
+            "mode": "url",
+            "fallback": "https://www.client-hph.ro/index.php?action=login",
         }
 
     return None

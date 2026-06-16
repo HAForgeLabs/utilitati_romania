@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b9";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b20";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -888,6 +888,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       comprest: "Portal Comprest",
       apa_oradea: "Portal Apă Oradea",
       apa_galati: "Portal Apă Canal Galați",
+      hidro_prahova: "Portal Hidro Prahova",
     };
     return labels[key] || "";
   }
@@ -979,7 +980,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati"].includes(providerKey)) return null;
+    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "hidro_prahova"].includes(providerKey)) return null;
 
     const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
       if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
@@ -1067,7 +1068,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
         const entityId = String(stateObj?.entity_id || "").toLowerCase();
-        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("ebloc");
+        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("hidro prahova") || text.includes("ebloc");
       };
       const scoreEonEntity = (stateObj, kind) => {
         if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
@@ -1133,7 +1134,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       return controls;
     }
 
-    if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati") {
+    if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati" || providerKey === "hidro_prahova") {
       const base = sensorObject.replace(/_citire_index_permisa$/, "").replace(/_citire_permisa$/, "");
       const attrs = readingSensor.attributes || {};
       const sensorIdCont = String(attrs.id_cont ?? provider?.id_cont ?? "").trim();
@@ -2098,7 +2099,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._render();
 
     try {
-      if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati") {
+      if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati" || providerKey === "hidro_prahova") {
         await this._hass.callService("utilitati_romania", "submit_reading", {
           provider: providerKey,
           entry_id: String(wrapper?.getAttribute("data-entry-id") || ""),
@@ -2109,7 +2110,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       } else {
         if (!numberEntityId || !buttonEntityId) throw new Error("Entitățile pentru transmiterea indexului nu sunt disponibile.");
         if (providerKey === "eon") {
-          const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|apa_galati|apacanal|ebloc)/i;
+          const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|apa_galati|hidro_prahova|apacanal|ebloc)/i;
           if (wrongProviderPattern.test(numberEntityId) || wrongProviderPattern.test(buttonEntityId)) throw new Error("Panoul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina și verifică entitățile.");
         }
         await this._hass.callService("number", "set_value", { entity_id: numberEntityId, value: numericValue });

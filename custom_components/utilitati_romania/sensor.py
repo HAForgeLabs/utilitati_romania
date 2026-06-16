@@ -1124,6 +1124,12 @@ SENZORI_CONT_APA_ORADEA: tuple[DescriereSenzorCont, ...] = (
 
 
 SENZORI_CONT_APA_GALATI: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA
+SENZORI_CONT_HIDRO_PRAHOVA: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA + (
+    DescriereSenzorCont(key="citire_index_permisa", name="Citire index permisă", icon="mdi:clock-check-outline", functie_valoare=lambda i, c: _valoare_consum(i, "citire_index_permisa", c.id_cont)),
+    DescriereSenzorCont(key="perioada_citire", name="Perioadă citire index", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "perioada_citire", c.id_cont)),
+    DescriereSenzorCont(key="zile_pana_citire_index", name="Zile până la citire index", icon="mdi:calendar-arrow-right", native_unit_of_measurement="zile", functie_valoare=lambda i, c: _valoare_consum(i, "zile_pana_citire_index", c.id_cont)),
+    DescriereSenzorCont(key="data_urmatoare_citire_index", name="Data următoarei citiri index", icon="mdi:calendar-arrow-right", functie_valoare=lambda i, c: _valoare_consum(i, "data_urmatoare_citire_index", c.id_cont)),
+)
 
 
 SENZORI_CONT_COMPREST: tuple[DescriereSenzorCont, ...] = (
@@ -1350,6 +1356,12 @@ async def async_setup_entry(
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_APA_GALATI:
                 entitati.append(SenzorContApaGalati(coordonator, cont, descriere))
+
+    elif instantaneu and instantaneu.furnizor == "hidro_prahova":
+        entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
+        for cont in instantaneu.conturi:
+            for descriere in SENZORI_CONT_HIDRO_PRAHOVA:
+                entitati.append(SenzorContHidroPrahova(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "comprest":
         entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
@@ -2340,6 +2352,44 @@ class SenzorContApaGalati(SenzorContApaOradea):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_apa_galati(coordonator.intrare.entry_id, cont)
+
+
+def _nume_loc_hidro_prahova(cont) -> str:
+    raw = getattr(cont, "date_brute", None) or {}
+    cod_client = _raw_get_suffix(raw, "id_client", "cod_client", "client")
+    baza = getattr(cont, "adresa", None) or getattr(cont, "nume", None) or "Loc consum"
+    detalii = cod_client or getattr(cont, "id_cont", None)
+    text = f"{baza} ({detalii})" if detalii and str(detalii) not in str(baza) else str(baza)
+    return re.sub(r"\s+", " ", text).strip() or str(detalii or "loc_consum")
+
+
+def _slug_loc_hidro_prahova(cont) -> str:
+    baza = getattr(cont, "adresa", None) or getattr(cont, "nume", None)
+    return build_provider_slug("hidro_prahova", baza, getattr(cont, "id_cont", None))
+
+
+def info_device_hidro_prahova(entry_id: str, cont) -> DeviceInfo:
+    ident = getattr(cont, "id_cont", "hidro_prahova")
+    nume = _nume_loc_hidro_prahova(cont)
+    return DeviceInfo(
+        identifiers={(DOMENIU, f"{entry_id}_hidro_prahova_{ident}")},
+        name=f"Hidro Prahova - {nume}",
+        manufacturer="Hidro Prahova S.A.",
+        model="Apă / canal",
+    )
+
+
+class SenzorContHidroPrahova(SenzorContApaOradea):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: DescriereSenzorCont) -> None:
+        EntitateUtilitatiRomania.__init__(self, coordonator)
+        self.cont = cont
+        self.entity_description = descriere
+        slug = _slug_loc_hidro_prahova(cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_hidro_prahova_{cont.id_cont}_{descriere.key}"
+        self._attr_name = descriere.name
+        self._attr_suggested_object_id = f"{slug}_{descriere.key}"
+        self.entity_id = f"sensor.{slug}_{descriere.key}"
+        self._attr_device_info = info_device_hidro_prahova(coordonator.intrare.entry_id, cont)
 
 
 def _nume_loc_comprest(cont) -> str:

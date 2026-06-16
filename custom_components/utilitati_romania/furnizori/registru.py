@@ -11,6 +11,7 @@ from .eon import ClientFurnizorEon
 from .ebloc import ClientFurnizorEbloc
 from .engie import ClientFurnizorEngie
 from .hidroelectrica import ClientFurnizorHidroelectrica
+from .hidro_prahova import ClientFurnizorHidroPrahova
 from .myelectrica import ClientFurnizorMyElectrica
 from .deer import ClientFurnizorDeer
 from .nova import ClientFurnizorNova
@@ -27,6 +28,7 @@ FURNIZORI: dict[str, type[ClientFurnizor]] = {
     ClientFurnizorApaOradea.cheie_furnizor: ClientFurnizorApaOradea,
     ClientFurnizorApaGalati.cheie_furnizor: ClientFurnizorApaGalati,
     ClientFurnizorHidroelectrica.cheie_furnizor: ClientFurnizorHidroelectrica,
+    ClientFurnizorHidroPrahova.cheie_furnizor: ClientFurnizorHidroPrahova,
     ClientFurnizorMyElectrica.cheie_furnizor: ClientFurnizorMyElectrica,
     ClientFurnizorDeer.cheie_furnizor: ClientFurnizorDeer,
     ClientFurnizorEbloc.cheie_furnizor: ClientFurnizorEbloc,

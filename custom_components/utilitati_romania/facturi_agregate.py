@@ -22,6 +22,7 @@ _PROVIDER_LABELS = {
     "apa_brasov": "Apă Brașov",
     "apa_oradea": "Apă Oradea",
     "apa_galati": "Apă Canal Galați",
+    "hidro_prahova": "Hidro Prahova",
     "comprest": "Comprest",
     "deer": "DEER",
     "digi": "Digi",
@@ -66,6 +67,26 @@ _STATUS_UNPAID_TOKENS = {
     "1",
 }
 
+
+
+
+def _pare_identificator_tehnic_factura(value: Any) -> bool:
+    """Detectează tokenuri interne care nu trebuie afișate drept număr de factură."""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.endswith("==") or (len(text) >= 20 and any(ch in text for ch in "+/=")):
+        return True
+    if len(text) >= 32 and all(ch.isalnum() for ch in text):
+        return any(ch.islower() for ch in text) and any(ch.isupper() for ch in text) and any(ch.isdigit() for ch in text)
+    return False
+
+
+def _curata_identificator_factura(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or _pare_identificator_tehnic_factura(text):
+        return ""
+    return text
 
 def _normalize_status_token(value: Any) -> str:
     return normalize_text(str(value or "")).strip().lower().replace("_", " ")
@@ -562,8 +583,8 @@ def _build_invoice_item(
         "nume_cont": getattr(cont, "nume", None) if cont else None,
         "tip_utilitate": getattr(factura, "tip_utilitate", None) or (getattr(cont, "tip_utilitate", None) if cont else None),
         "tip_serviciu": getattr(factura, "tip_serviciu", None) or (getattr(cont, "tip_serviciu", None) if cont else None),
-        "invoice_id": getattr(factura, "id_factura", None),
-        "invoice_title": invoice_title,
+        "invoice_id": _curata_identificator_factura(getattr(factura, "id_factura", None)) if instantaneu.furnizor == "hidroelectrica" else getattr(factura, "id_factura", None),
+        "invoice_title": (_curata_identificator_factura(invoice_title) or "Ultima factură") if instantaneu.furnizor == "hidroelectrica" else invoice_title,
         "issue_date": _format_date(getattr(factura, "data_emitere", None)),
         "due_date": _format_date(getattr(factura, "data_scadenta", None)),
         "amount": getattr(factura, "valoare", None),
@@ -581,7 +602,7 @@ def _build_invoice_item(
     _asigura_cheie_locatie_nova(item, factura, cont)
     _asigura_cheie_locatie_hidroelectrica(item)
 
-    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati"}:
+    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "hidro_prahova"}:
         id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
 
         citire_permisa = _consum_value(instantaneu, "citire_index_permisa", id_cont)
@@ -816,7 +837,7 @@ def _build_hidroelectrica_fallback_item(
         is_paid = None
         unpaid_amount = None
 
-    factura_id_text = str(factura_id or "").strip()
+    factura_id_text = _curata_identificator_factura(factura_id)
     location_key, location_label, manual_group_label = _location_fields(
         coordonator,
         instantaneu,
@@ -872,6 +893,34 @@ def _money_to_lei(value: Any) -> float | None:
     return round(parsed, 2)
 
 
+
+
+def _hidroelectrica_are_rest_de_plata(factura: FacturaUtilitate) -> bool:
+    """Verifică explicit dacă o factură Hidroelectrica din istoric are rest de plată."""
+    raw = _raw_dict(factura)
+    for key in _UNPAID_RAW_KEYS:
+        value = _to_float(raw.get(key))
+        if value is not None and value > 0:
+            return True
+    return False
+
+
+def _exista_restanta_hidroelectrica_pentru_cont(grouped: dict[tuple[str, ...], dict[str, Any]], item: dict[str, Any]) -> bool:
+    id_cont = str(item.get("id_cont") or "").strip()
+    id_contract = str(item.get("id_contract") or "").strip()
+    if not id_cont and not id_contract:
+        return False
+    for existent in grouped.values():
+        if normalize_text(existent.get("furnizor")).lower() != "hidroelectrica":
+            continue
+        if existent.get("status") != "unpaid":
+            continue
+        if id_cont and str(existent.get("id_cont") or "").strip() == id_cont:
+            return True
+        if id_contract and str(existent.get("id_contract") or "").strip() == id_contract:
+            return True
+    return False
+
 def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
     """Construiește cheia stabilă folosită pentru agregarea facturilor în dashboard."""
     locatie = item["locatie_cheie"]
@@ -913,7 +962,19 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
         )
         return (locatie, furnizor, normalize_text(identificator_punct).lower())
 
-    if furnizor in {"apa_brasov", "apa_oradea", "apa_galati"}:
+    if furnizor == "hidroelectrica":
+        identificator_cont = (
+            item.get("id_cont")
+            or item.get("id_contract")
+            or item.get("nume_cont")
+            or ""
+        )
+        factura_id = _curata_identificator_factura(item.get("invoice_id"))
+        if item.get("status") == "unpaid" and factura_id:
+            return (locatie, furnizor, normalize_text(identificator_cont).lower(), normalize_text(factura_id).lower())
+        return (locatie, furnizor, normalize_text(identificator_cont).lower())
+
+    if furnizor in {"apa_brasov", "apa_oradea", "apa_galati", "hidro_prahova"}:
         # Apă Brașov are câte o factură curentă pentru fiecare loc de consum.
         # Dacă grupăm doar după titlul generic al facturii („Factură apă/canal”),
         # factura plătită de pe o locație poate fi combinată cu factura restantă
@@ -1088,12 +1149,14 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
         facturi_de_afisat = list(instantaneu.facturi or [])
         if instantaneu.furnizor in {"engie", "apa_brasov", "hidroelectrica"}:
             # Pentru MyENGIE, Apă Brașov și Hidroelectrica păstrăm în card doar ultima factură
-            # pe fiecare loc de consum. Istoricul vechi poate veni fără indicator explicit de
-            # plată și ar fi marcat greșit ca restant de logica generică a dashboardului.
+            # pe fiecare loc de consum. La Hidroelectrica păstrăm însă și facturile vechi
+            # care au rest de plată explicit, deoarece pot exista mai multe facturi neachitate
+            # pe același contract, cu scadențe diferite.
             latest_ids = _latest_invoice_ids_by_group(facturi_de_afisat)
             facturi_de_afisat = [
                 factura for factura in facturi_de_afisat
                 if str(getattr(factura, "id_factura", "") or "") in latest_ids
+                or (instantaneu.furnizor == "hidroelectrica" and _hidroelectrica_are_rest_de_plata(factura))
             ]
 
         # 1. Facturi reale, dacă există
@@ -1162,6 +1225,9 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                     _build_hidroelectrica_fallback_item(maybe_coord, instantaneu, cont),
                 )
                 if fallback_item is None:
+                    continue
+
+                if fallback_item.get("status") == "unpaid" and _exista_restanta_hidroelectrica_pentru_cont(grouped, fallback_item):
                     continue
 
                 group_key = _cheie_grupare_factura(fallback_item)
