@@ -14,6 +14,11 @@ from .helpers_facturi_locatie import (
     build_facturi_location_label,
     normalize_facturi_location_key,
 )
+from .locuri_ignorate import (
+    construieste_cheie_loc_consum,
+    este_loc_consum_ignorat,
+    obtine_locuri_ignorate,
+)
 from .modele import ContUtilitate, FacturaUtilitate, InstantaneuFurnizor
 from .naming import normalize_text
 
@@ -1181,6 +1186,122 @@ def _latest_invoice_ids_by_group(facturi: list[FacturaUtilitate]) -> set[str]:
     return {str(getattr(factura, "id_factura", "") or "") for factura in latest.values()}
 
 
+
+def _loc_consum_key_for_item(item: dict[str, Any]) -> str | None:
+    return construieste_cheie_loc_consum(
+        item.get("entry_id"),
+        item.get("furnizor"),
+        id_cont=item.get("id_cont"),
+        id_contract=item.get("id_contract"),
+        locatie_cheie=item.get("locatie_cheie"),
+        eticheta=item.get("eticheta_locatie"),
+    )
+
+
+def _aplica_metadate_loc_consum(hass, item: dict[str, Any] | None) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    cheie = _loc_consum_key_for_item(item)
+    item["loc_consum_key"] = cheie
+    item["loc_consum_ignorat"] = este_loc_consum_ignorat(hass, cheie)
+    return item
+
+
+def _item_este_ignorat(hass, item: dict[str, Any] | None) -> bool:
+    if item is None:
+        return False
+    cheie = item.get("loc_consum_key") or _loc_consum_key_for_item(item)
+    return este_loc_consum_ignorat(hass, cheie)
+
+
+def _loc_consum_din_cont(coordonator: CoordonatorUtilitatiRomania, instantaneu: InstantaneuFurnizor, cont: ContUtilitate) -> dict[str, Any] | None:
+    location_key, location_label, manual_group_label = _location_fields(
+        coordonator,
+        instantaneu,
+        cont,
+        cont,
+    )
+    entry_id = getattr(coordonator.intrare, "entry_id", None)
+    furnizor = getattr(instantaneu, "furnizor", None)
+    id_cont = getattr(cont, "id_cont", None)
+    id_contract = getattr(cont, "id_contract", None)
+    cheie = construieste_cheie_loc_consum(
+        entry_id,
+        furnizor,
+        id_cont=id_cont,
+        id_contract=id_contract,
+        locatie_cheie=location_key,
+        eticheta=location_label,
+    )
+    if not cheie:
+        return None
+    ignored = este_loc_consum_ignorat(coordonator.hass, cheie)
+    return {
+        "cheie": cheie,
+        "ignored": ignored,
+        "entry_id": entry_id,
+        "entry_title": getattr(coordonator.intrare, "title", None),
+        "furnizor": furnizor,
+        "furnizor_label": _provider_label(furnizor),
+        "locatie_cheie": location_key,
+        "eticheta_locatie": location_label,
+        "eticheta_grupare_manuala": manual_group_label,
+        "id_cont": id_cont,
+        "id_contract": id_contract,
+        "nume_cont": getattr(cont, "nume", None),
+        "adresa_originala": getattr(cont, "adresa", None),
+        "tip_utilitate": getattr(cont, "tip_utilitate", None),
+        "tip_serviciu": getattr(cont, "tip_serviciu", None),
+    }
+
+
+def colecteaza_locuri_consum(hass) -> list[dict[str, Any]]:
+    locuri: dict[str, dict[str, Any]] = {}
+    domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
+
+    for maybe_coord in domain_data.values():
+        if not isinstance(maybe_coord, CoordonatorUtilitatiRomania):
+            continue
+        if maybe_coord.intrare.data.get("furnizor") == FURNIZOR_ADMIN_GLOBAL:
+            continue
+        instantaneu = maybe_coord.data
+        if not isinstance(instantaneu, InstantaneuFurnizor):
+            continue
+        for cont in instantaneu.conturi or []:
+            item = _loc_consum_din_cont(maybe_coord, instantaneu, cont)
+            if item is not None:
+                locuri[item["cheie"]] = item
+
+    # Păstrăm și locurile ignorate care nu mai sunt returnate temporar de furnizor,
+    # ca utilizatorul să le poată reactiva fără să editeze manual storage-ul.
+    for cheie, value in obtine_locuri_ignorate(hass).items():
+        if cheie in locuri:
+            continue
+        if not isinstance(value, dict):
+            continue
+        locuri[cheie] = {
+            "cheie": cheie,
+            "ignored": True,
+            "entry_id": value.get("entry_id"),
+            "entry_title": None,
+            "furnizor": value.get("furnizor"),
+            "furnizor_label": _provider_label(value.get("furnizor")),
+            "locatie_cheie": value.get("locatie_cheie"),
+            "eticheta_locatie": value.get("eticheta") or value.get("locatie_cheie") or cheie,
+            "id_cont": value.get("id_cont"),
+            "id_contract": value.get("id_contract"),
+            "nume_cont": None,
+            "adresa_originala": None,
+        }
+
+    rezultat = list(locuri.values())
+    rezultat.sort(key=lambda item: (
+        1 if item.get("ignored") else 0,
+        normalize_text(item.get("furnizor_label")).lower(),
+        normalize_text(item.get("eticheta_locatie")).lower(),
+    ))
+    return rezultat
+
 def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
@@ -1215,6 +1336,9 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
         # 1. Facturi reale, dacă există
         for factura in facturi_de_afisat:
             item = _apply_manual_invoice_status(hass, _build_invoice_item(maybe_coord, instantaneu, factura))
+            item = _aplica_metadate_loc_consum(hass, item)
+            if _item_este_ignorat(hass, item):
+                continue
 
             # Pentru cardul de "ultima factură" ignorăm documentele de tip credit/storno.
             # Altfel, la unii furnizori (ex. myElectrica) putem afișa greșit un credit
@@ -1234,6 +1358,9 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
         if instantaneu.furnizor == "eon":
             for cont in instantaneu.conturi or []:
                 fallback_item = _apply_manual_invoice_status(hass, _build_eon_fallback_item(maybe_coord, instantaneu, cont))
+                fallback_item = _aplica_metadate_loc_consum(hass, fallback_item)
+                if _item_este_ignorat(hass, fallback_item):
+                    continue
                 if fallback_item is None:
                     continue
 
@@ -1277,6 +1404,9 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                     hass,
                     _build_hidroelectrica_fallback_item(maybe_coord, instantaneu, cont),
                 )
+                fallback_item = _aplica_metadate_loc_consum(hass, fallback_item)
+                if _item_este_ignorat(hass, fallback_item):
+                    continue
                 if fallback_item is None:
                     continue
 

@@ -36,7 +36,7 @@ from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .naming import build_provider_slug, extract_street_slug, normalize_text
 from .furnizori.apa_brasov import nume_scurt_locatie_apa_brasov
 from .licentiere import async_obtine_licenta_globala, mascheaza_cheia_licenta
-from .facturi_agregate import colecteaza_facturi_agregate, sumar_facturi
+from .facturi_agregate import colecteaza_facturi_agregate, colecteaza_locuri_consum, sumar_facturi
 from .storage_citiri import async_incarca_cache_citiri, obtine_citire_cache
 
 def _cont_curent_dupa_id(coordonator: CoordonatorUtilitatiRomania, id_cont: str | None):
@@ -165,6 +165,7 @@ class SenzorAdminFacturiAgregate(SenzorAdminBaza):
         try:
             facturi = colecteaza_facturi_agregate(self.hass)
             self._sumar = sumar_facturi(facturi)
+            self._sumar["locuri_consum"] = colecteaza_locuri_consum(self.hass)
             self._attr_native_value = self._sumar.get("numar_facturi", 0)
             self._ultima_eroare = None
             self._attr_available = True
@@ -191,6 +192,8 @@ class SenzorAdminFacturiAgregate(SenzorAdminBaza):
             "total_neplatit_formatat": self._sumar.get("total_neplatit_formatat", "0.00 RON"),
             "moneda": self._sumar.get("moneda", "RON"),
             "locatii": self._sumar.get("locatii", []),
+            "locuri_consum": self._sumar.get("locuri_consum", []),
+            "locuri_consum_ignorate": [item for item in self._sumar.get("locuri_consum", []) if item.get("ignored")],
             "ultima_eroare": getattr(self, "_ultima_eroare", None),
         }
 
@@ -350,6 +353,357 @@ def _valoare_ultima_factura_rezumat(instantaneu: InstantaneuFurnizor):
         return _valoare_consum_global(instantaneu, "valoare_ultima_factura")
     return _valoare_ultima_factura(instantaneu)
 
+
+
+
+
+def _to_float_safe(valoare: Any) -> float | None:
+    """Convertește o valoare numerică primită de la furnizori în float."""
+    if valoare in (None, "", "unknown", "Unknown", "Necunoscut"):
+        return None
+    if isinstance(valoare, (int, float)):
+        return float(valoare)
+    text = str(valoare).strip()
+    if not text:
+        return None
+    text = text.replace("RON", "").replace("lei", "").replace("Lei", "").strip()
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        return float(text.replace(".", "").replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _factura_ultima_consum_model(
+    instantaneu: InstantaneuFurnizor,
+    id_cont: str | None = None,
+) -> FacturaUtilitate | None:
+    """Alege ultima factură reală de consum pentru un loc de consum.
+
+    Pentru costuri nu folosim soldul total sau restul cumulat, ci factura
+    individuală din istoricul furnizorului. Acest lucru este important mai ales
+    la furnizori precum Hidroelectrica, unde soldul de plată poate include mai
+    multe facturi neachitate.
+    """
+    facturi = list(instantaneu.facturi or [])
+    if id_cont is not None:
+        facturi = [f for f in facturi if getattr(f, "id_cont", None) == id_cont]
+
+    candidate: list[FacturaUtilitate] = []
+    for factura in facturi:
+        categorie = str(getattr(factura, "categorie", None) or "").strip().lower()
+        if categorie and categorie not in {"consum", "energie", "gaz", "curent", "apa_canal", "telecomunicatii"}:
+            continue
+        valoare = _to_float_safe(getattr(factura, "valoare", None))
+        if valoare is None or valoare <= 0:
+            continue
+        candidate.append(factura)
+
+    if not candidate:
+        return None
+
+    return sorted(
+        candidate,
+        key=lambda f: (getattr(f, "data_emitere", None) or date.min, getattr(f, "data_scadenta", None) or date.min),
+        reverse=True,
+    )[0]
+
+
+def _unitate_cost_pentru_cont(cont=None) -> str | None:
+    """Determină unitatea de consum pentru calculul costului mediu facturat."""
+    if cont is None:
+        return None
+    text = " ".join(
+        str(valoare or "").lower()
+        for valoare in (
+            getattr(cont, "tip_serviciu", None),
+            getattr(cont, "tip_utilitate", None),
+            getattr(cont, "tip_cont", None),
+            getattr(cont, "nume", None),
+        )
+    )
+    if any(marker in text for marker in ("curent", "electric", "energie")):
+        return "kWh"
+    if "gaz" in text:
+        return "kWh"
+    if any(marker in text for marker in ("apa", "apă", "canal")):
+        return "m³"
+    return None
+
+
+def _unitate_cost_din_date_brute(node: Any) -> str | None:
+    """Caută o unitate explicită în structurile brute ale furnizorului."""
+    if isinstance(node, dict):
+        for cheie in ("unit", "Unit", "unitOfMeasure", "measureUnit", "uom", "UOM", "unitate"):
+            unitate = str(node.get(cheie) or "").strip()
+            if not unitate:
+                continue
+            unitate_norm = unitate.lower().replace("mc", "m³").replace("m3", "m³")
+            if "kwh" in unitate_norm:
+                return "kWh"
+            if "m³" in unitate_norm or "metru" in unitate_norm:
+                return "m³"
+        for valoare in node.values():
+            gasit = _unitate_cost_din_date_brute(valoare)
+            if gasit:
+                return gasit
+    elif isinstance(node, list):
+        for item in node:
+            gasit = _unitate_cost_din_date_brute(item)
+            if gasit:
+                return gasit
+    return None
+
+
+def _unitate_cost_ultima_factura(instantaneu: InstantaneuFurnizor, cont=None) -> str | None:
+    id_cont = getattr(cont, "id_cont", None) if cont is not None else None
+    factura = _factura_ultima_consum_model(instantaneu, id_cont)
+    unitate = _unitate_cost_din_date_brute(getattr(factura, "date_brute", None) if factura is not None else None)
+    return unitate or _unitate_cost_pentru_cont(cont)
+
+
+def _aplica_unitate_cost_mediu(entity: SensorEntity, cont=None) -> None:
+    """Setează unitatea nativă pentru senzorul de cost mediu pe unitate."""
+    descriere = getattr(entity, "entity_description", None)
+    if getattr(descriere, "key", None) != "cost_mediu_unitate_ultima_factura":
+        return
+    unitate = _unitate_cost_pentru_cont(cont) or "unitate"
+    entity._attr_native_unit_of_measurement = f"RON/{unitate}"
+
+
+def _extrage_consum_unitate_din_date_brute(node: Any, unitate_asteptata: str | None = None) -> float | None:
+    """Extrage prudent consumul facturat, fără să fie limitat doar la kWh.
+
+    Acceptăm câmpuri explicite de consum și câmpuri generice doar când obiectul
+    conține o unitate clară. Nu folosim valori financiare sau solduri.
+    """
+    if node in (None, ""):
+        return None
+
+    unitate_norm = (unitate_asteptata or "").lower().replace("mc", "m³").replace("m3", "m³")
+
+    if isinstance(node, dict):
+        rezultate: list[float] = []
+        unitate_obiect = _unitate_cost_din_date_brute(node)
+        unitate_obiect_norm = (unitate_obiect or "").lower()
+        unitate_potrivita = not unitate_norm or not unitate_obiect_norm or unitate_obiect_norm == unitate_norm
+
+        chei_consum = {
+            "consum", "consumption", "consumfacturat", "billedconsumption",
+            "consumptionbilled", "invoiceconsumption", "energyconsumption",
+            "activeenergy", "quantity", "qty", "billedquantity", "volum",
+            "volume", "waterconsumption", "gasconsumption", "usage", "usagevalue",
+        }
+        chei_interzise = (
+            "amount", "valueamount", "invoiceamount", "billamount", "balance",
+            "sold", "rest", "remaining", "payment", "price", "tariff", "tva",
+            "vat", "total", "valoare", "suma",
+        )
+
+        for cheie, valoare in node.items():
+            cheie_norm = str(cheie).lower().replace("_", "").replace("-", "")
+            if any(blocat in cheie_norm for blocat in chei_interzise):
+                continue
+            if (
+                cheie_norm in chei_consum
+                or "kwh" in cheie_norm
+                or "consum" in cheie_norm
+                or "consumption" in cheie_norm
+            ) and unitate_potrivita:
+                numeric = _to_float_safe(valoare)
+                if numeric is not None and numeric > 0:
+                    rezultate.append(numeric)
+
+        for valoare in node.values():
+            nested = _extrage_consum_unitate_din_date_brute(valoare, unitate_asteptata)
+            if nested is not None and nested > 0:
+                rezultate.append(nested)
+
+        if not rezultate:
+            return None
+
+        unice: list[float] = []
+        for valoare in rezultate:
+            if not any(abs(valoare - existenta) < 0.001 for existenta in unice):
+                unice.append(valoare)
+        return round(sum(unice), 3)
+
+    if isinstance(node, list):
+        total = 0.0
+        gasit = False
+        for item in node:
+            valoare = _extrage_consum_unitate_din_date_brute(item, unitate_asteptata)
+            if valoare is not None and valoare > 0:
+                total += valoare
+                gasit = True
+        return round(total, 3) if gasit else None
+
+    return None
+
+
+def _parseaza_data_generica(valoare: Any) -> date | None:
+    if valoare in (None, ""):
+        return None
+    if isinstance(valoare, date):
+        return valoare
+    text = str(valoare).strip()
+    for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            return datetime.strptime(text[:len(fmt.replace('%f','000000'))] if '%f' not in fmt else text[:26], fmt).date()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def _consum_din_diferenta_indici(cont=None, unitate: str | None = None) -> float | None:
+    """Fallback pentru furnizori care expun istoricul de index, nu consumul facturat."""
+    raw = getattr(cont, "date_brute", None) or {}
+    payloaduri = [
+        raw.get("meter_read_history"),
+        raw.get("history_payload"),
+        raw.get("istoric_index"),
+        raw.get("readings"),
+        raw.get("citiri"),
+    ]
+
+    index_keys = (
+        "MRResult", "mrResult", "prevMRResult", "Index", "index", "meterRead",
+        "meterread", "readValue", "ReadValue", "newmeterread", "NewMeterRead",
+        "CurrentRead", "currentRead", "readingValue", "ReadingValue", "index_nou",
+    )
+    date_keys = (
+        "MRDate", "mrDate", "Date", "date", "readDate", "ReadDate",
+        "meterReadDate", "MeterReadDate", "prevMRDate", "createdOn", "CreatedOn", "data",
+    )
+    register_keys = ("register", "Register", "registerCode", "RegisterCode", "obis", "OBIS", "Tip registru", "tip_registru")
+
+    randuri: list[tuple[date, float, str]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            valoare_index = None
+            for cheie in index_keys:
+                if cheie in node:
+                    valoare_index = _to_float_safe(node.get(cheie))
+                    if valoare_index is not None:
+                        break
+            data_index = None
+            for cheie in date_keys:
+                if cheie in node:
+                    data_index = _parseaza_data_generica(node.get(cheie))
+                    if data_index is not None:
+                        break
+            registru = ""
+            for cheie in register_keys:
+                if cheie in node and node.get(cheie) not in (None, ""):
+                    registru = str(node.get(cheie)).strip()
+                    break
+            if valoare_index is not None and data_index is not None:
+                randuri.append((data_index, valoare_index, registru))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    for payload in payloaduri:
+        walk(payload)
+
+    if not randuri:
+        return None
+
+    if unitate == "kWh":
+        filtrate = [r for r in randuri if not r[2] or str(r[2]).strip() in {"1.8.0", "1.8.0_P"} or "1.8.0" in str(r[2])]
+        if filtrate:
+            randuri = filtrate
+
+    randuri.sort(key=lambda item: (item[0], item[1]))
+    unice: list[tuple[date, float, str]] = []
+    for rand in randuri:
+        if not any(rand[0] == exist[0] and abs(rand[1] - exist[1]) < 0.001 for exist in unice):
+            unice.append(rand)
+
+    if len(unice) < 2:
+        return None
+
+    consum = unice[-1][1] - unice[-2][1]
+    return round(consum, 3) if consum > 0 else None
+
+
+def _consum_unitate_ultima_factura(
+    instantaneu: InstantaneuFurnizor,
+    cont=None,
+) -> float | None:
+    """Returnează consumul ultimei facturi, în unitatea contului: kWh sau m³."""
+    id_cont = getattr(cont, "id_cont", None) if cont is not None else None
+    unitate = _unitate_cost_ultima_factura(instantaneu, cont)
+
+    for cheie in (
+        "consum_unitate_ultima_factura",
+        "consum_ultima_factura",
+        "consum_kwh_ultima_factura",
+        "ultim_consum",
+    ):
+        val_explicit = _to_float_safe(_valoare_consum(instantaneu, cheie, id_cont))
+        if val_explicit is not None and val_explicit > 0:
+            return round(val_explicit, 3)
+
+    factura = _factura_ultima_consum_model(instantaneu, id_cont)
+    if factura is not None:
+        consum = _extrage_consum_unitate_din_date_brute(getattr(factura, "date_brute", None), unitate)
+        if consum is not None and consum > 0:
+            return round(consum, 3)
+
+    consum_din_index = _consum_din_diferenta_indici(cont, unitate)
+    if consum_din_index is not None and consum_din_index > 0:
+        return round(consum_din_index, 3)
+
+    # Fallback pentru furnizorii care expun deja consumul lunar curent ca valoare
+    # de consum în aceeași unitate a serviciului. Nu folosim indexul curent.
+    for cheie in ("consum_lunar_curent", "consum_lunar"):
+        consum_lunar = _to_float_safe(_valoare_consum(instantaneu, cheie, id_cont))
+        if consum_lunar is not None and consum_lunar > 0:
+            return round(consum_lunar, 3)
+
+    return None
+
+
+def _cost_mediu_unitate_ultima_factura(
+    instantaneu: InstantaneuFurnizor,
+    cont=None,
+) -> float | None:
+    """Calculează costul mediu facturat per unitate consumată.
+
+    Pentru energie electrică rezultatul este RON/kWh, iar pentru gaz/apă este
+    RON/m³. Nu folosim sold total, restanțe cumulate sau total neachitat.
+    """
+    id_cont = getattr(cont, "id_cont", None) if cont is not None else None
+    unitate = _unitate_cost_ultima_factura(instantaneu, cont)
+    if not unitate:
+        return None
+
+    explicit = _valoare_consum(instantaneu, "cost_mediu_unitate_ultima_factura", id_cont)
+    val_explicit = _to_float_safe(explicit)
+    if val_explicit is not None and val_explicit > 0:
+        return round(val_explicit, 4)
+
+    factura = _factura_ultima_consum_model(instantaneu, id_cont)
+    if factura is None:
+        return None
+
+    valoare = _to_float_safe(getattr(factura, "valoare", None))
+    consum_unitate = _consum_unitate_ultima_factura(instantaneu, cont)
+
+    if valoare is None or valoare <= 0 or consum_unitate is None or consum_unitate <= 0:
+        return None
+
+    return round(valoare / consum_unitate, 4)
 
 
 def _rest_factura_model(factura: FacturaUtilitate | None) -> float | None:
@@ -888,6 +1242,7 @@ SENZORI_CONT_HIDRO: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "sold_curent", c.id_cont)),
     DescriereSenzorCont(key="id_ultima_factura", name="ID ultima factură", icon="mdi:receipt-text", functie_valoare=lambda i, c: _id_ultima_factura(i, c.id_cont)),
     DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_ultima_factura(i, c.id_cont)),
+    DescriereSenzorCont(key="cost_mediu_unitate_ultima_factura", name="Cost mediu unitate ultima factură", icon="mdi:cash-check", native_unit_of_measurement="RON/unitate", functie_valoare=lambda i, c: _cost_mediu_unitate_ultima_factura(i, c)),
     DescriereSenzorCont(key="citire_permisa", name="Citire permisă", icon="mdi:counter", functie_valoare=lambda i, c: _valoare_consum(i, "citire_permisa", c.id_cont)),
     DescriereSenzorCont(key="index_energie_electrica", name="Index energie electrică", icon="mdi:meter-electric", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_energie_electrica", c.id_cont)),
     DescriereSenzorCont(key="index_energie_produsa", name="Index energie produsă", icon="mdi:transmission-tower-export", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_energie_produsa", c.id_cont)),
@@ -903,6 +1258,7 @@ SENZORI_CONT_EON: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum_eon(i, "sold_curent", c)),
     DescriereSenzorCont(key="sold_factura", name="Sold factură", icon="mdi:cash-refund", functie_valoare=lambda i, c: "da" if float(_valoare_consum_eon(i, "sold_factura", c) or 0) > 0 else "nu"),
     DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _eon_valoare_ultima_factura(c)),
+    DescriereSenzorCont(key="cost_mediu_unitate_ultima_factura", name="Cost mediu unitate ultima factură", icon="mdi:cash-check", native_unit_of_measurement="RON/unitate", functie_valoare=lambda i, c: _cost_mediu_unitate_ultima_factura(i, c)),
     DescriereSenzorCont(key="index_contor", name="Index contor", icon="mdi:meter-gas", functie_valoare=lambda i, c: _valoare_consum_eon(i, "index_gaz", c) if _tip_eon(c) == "gaz" else _valoare_consum_eon(i, "index_energie_electrica", c)),
 )
 
@@ -1079,6 +1435,8 @@ SENZORI_CONT_NOVA: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="sold_prosumator", name="Sold prosumator", icon="mdi:solar-power-variant", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "sold_prosumator", c.id_cont)),
     DescriereSenzorCont(key="este_prosumator", name="Este prosumator", icon="mdi:transmission-tower-export", functie_valoare=lambda i, c: _valoare_consum(i, "este_prosumator", c.id_cont)),
     DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:receipt-text-check", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_ultima_factura(i, c.id_cont)),
+    DescriereSenzorCont(key="cost_mediu_unitate_ultima_factura", name="Cost mediu unitate ultima factură", icon="mdi:cash-check", native_unit_of_measurement="RON/unitate", functie_valoare=lambda i, c: _cost_mediu_unitate_ultima_factura(i, c)),
+    DescriereSenzorCont(key="pret_mediu_energie_prosumator_ultima_factura", name="Preț mediu energie prosumator ultima factură", icon="mdi:transmission-tower-export", native_unit_of_measurement="RON/kWh", functie_valoare=lambda i, c: _valoare_consum(i, "pret_mediu_energie_prosumator_ultima_factura", c.id_cont)),
     DescriereSenzorCont(key="id_ultima_factura", name="ID ultima factură", icon="mdi:file-document-outline", functie_valoare=lambda i, c: _id_ultima_factura(i, c.id_cont)),
     DescriereSenzorCont(key="urmatoarea_scadenta", name="Următoarea scadență", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "urmatoarea_scadenta", c.id_cont)),
     DescriereSenzorCont(key="factura_restanta", name="Factură restantă", icon="mdi:alert-circle", functie_valoare=lambda i, c: _valoare_consum(i, "factura_restanta", c.id_cont)),
@@ -1311,7 +1669,9 @@ async def async_setup_entry(
         entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_ENGIE:
-                if descriere.key == "revizie_tehnica" and str(getattr(cont, "tip_serviciu", "") or "").lower() != "gaz":
+                tip_serviciu = str(getattr(cont, "tip_serviciu", "") or "").lower()
+                tip_utilitate = str(getattr(cont, "tip_utilitate", "") or "").lower()
+                if descriere.key == "revizie_tehnica" and tip_serviciu != "gaz":
                     continue
                 entitati.append(SenzorContEngie(coordonator, cont, descriere))
 
@@ -1319,7 +1679,7 @@ async def async_setup_entry(
         entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_NOVA:
-                if descriere.key == "sold_prosumator" and not _cont_este_prosumator(cont):
+                if descriere.key in {"sold_prosumator", "pret_mediu_energie_prosumator_ultima_factura"} and not _cont_este_prosumator(cont):
                     continue
                 entitati.append(SenzorContNova(coordonator, cont, descriere))
 
@@ -1416,6 +1776,7 @@ class SenzorContHidroelectrica(EntitateUtilitatiRomania, SensorEntity):
         self._attr_suggested_object_id = f"hidro_{cont.id_cont}_{slug}_{descriere.key}"
         self.entity_id = f"sensor.hidro_{cont.id_cont}_{slug}_{descriere.key}"
         self._attr_device_info = info_device_hidro(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
     @property
     def _cont_actual(self):
@@ -1470,6 +1831,7 @@ class SenzorContEon(EntitateUtilitatiRomania, SensorEntity):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
     @property
     def available(self):
@@ -1529,6 +1891,7 @@ class SenzorContEonExtins(EntitateUtilitatiRomania, SensorEntity):
         self.entity_id = f"sensor.{self._attr_suggested_object_id}"
         self._attr_icon = descriere.icon
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
     @property
     def native_value(self):
@@ -1599,6 +1962,7 @@ class SenzorContMyElectrica(EntitateUtilitatiRomania, SensorEntity):
         self._attr_suggested_object_id = f"hidro_{cont.id_cont}_{slug}_{descriere.key}"
         self.entity_id = f"sensor.hidro_{cont.id_cont}_{slug}_{descriere.key}"
         self._attr_device_info = info_device_myelectrica(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
         if descriere.key == 'index_contor':
             tip = str(cont.tip_serviciu or cont.tip_utilitate or '').lower()
             self._attr_native_unit_of_measurement = 'm³' if tip == 'gaz' else 'kWh'
@@ -1708,6 +2072,7 @@ class SenzorContEngie(EntitateUtilitatiRomania, SensorEntity):
         self._attr_suggested_object_id = f"engie_{cont.id_cont}_{slug}_{descriere.key}"
         self.entity_id = f"sensor.engie_{cont.id_cont}_{slug}_{descriere.key}"
         self._attr_device_info = info_device_engie(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
         if descriere.key == "index_contor":
             tip = str(cont.tip_serviciu or cont.tip_utilitate or "").lower()
             self._attr_native_unit_of_measurement = "m³" if tip == "gaz" else "kWh"
@@ -1995,6 +2360,7 @@ class SenzorContNova(EntitateUtilitatiRomania, SensorEntity):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_nova(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
     @property
     def available(self):
@@ -2040,6 +2406,27 @@ class SenzorContNova(EntitateUtilitatiRomania, SensorEntity):
                 "amount": factura.valoare,
                 "remaining": factura.date_brute.get("rest_plata") if isinstance(factura.date_brute, dict) else None,
             })
+
+        if self.entity_description.key == "pret_mediu_energie_prosumator_ultima_factura" and self.coordinator.data is not None:
+            consum = _consum_dupa_cheie(
+                self.coordinator.data,
+                "pret_mediu_energie_prosumator_ultima_factura",
+                cont.id_cont,
+            )
+            detalii = getattr(consum, "date_brute", None) if consum is not None else None
+            if isinstance(detalii, dict):
+                for cheie in (
+                    "energie_livrata_prosumator_kwh",
+                    "energie_consumata_retea_kwh",
+                    "energie_compensata_prosumator_kwh",
+                    "energie_reportata_prosumator_kwh",
+                    "energie_returnata_prosumator_kwh",
+                    "valoare_energie_prosumator_ultima_factura",
+                    "cantitate_energie_prosumator_kwh",
+                    "sursa_prosumator",
+                ):
+                    if detalii.get(cheie) not in (None, ""):
+                        attrs[cheie] = detalii.get(cheie)
         return attrs
 
 
@@ -2132,6 +2519,7 @@ class SenzorContApaBrasov(EntitateUtilitatiRomania, SensorEntity):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_apa_brasov(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
     @property
     def available(self):
@@ -2248,6 +2636,7 @@ class SenzorContApaOradea(EntitateUtilitatiRomania, SensorEntity):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_apa_oradea(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
     @property
     def available(self):
@@ -2352,6 +2741,7 @@ class SenzorContApaGalati(SenzorContApaOradea):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_apa_galati(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
 
 def _nume_loc_hidro_prahova(cont) -> str:
@@ -2390,6 +2780,7 @@ class SenzorContHidroPrahova(SenzorContApaOradea):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_hidro_prahova(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
 
 def _nume_loc_comprest(cont) -> str:

@@ -64,3 +64,43 @@ set_notification_preferences:
       description: Lista zilelor înainte de scadență pentru care se generează notificări.
       required: false
       example: [5, 3, 1]
+
+
+set_consumption_point_visibility:
+  name: Setează vizibilitatea locului de consum
+  description: Ignoră sau reactivează un loc de consum în dashboard, totaluri, facturi, indexuri și notificări.
+  fields:
+    cheie:
+      name: Cheie loc consum
+      description: Cheia internă stabilă generată de integrare pentru locul de consum.
+      required: false
+    provider:
+      name: Furnizor
+      description: Cheia internă a furnizorului.
+      required: false
+      example: hidroelectrica
+    entry_id:
+      name: Intrare configurare
+      description: ID-ul intrării de configurare.
+      required: false
+    id_cont:
+      name: ID cont
+      description: Identificatorul locului de consum/contului.
+      required: false
+    id_contract:
+      name: ID contract
+      description: Identificatorul contractului, dacă există.
+      required: false
+    locatie_cheie:
+      name: Cheie locație
+      description: Cheia internă a locației din senzorul agregat.
+      required: false
+    eticheta:
+      name: Etichetă
+      description: Eticheta afișată pentru locul de consum.
+      required: false
+    ignored:
+      name: Ignorat
+      description: true pentru ignorare, false pentru reactivare.
+      required: true
+      example: true
