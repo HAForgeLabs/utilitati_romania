@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b25";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b27";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -980,7 +980,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "hidro_prahova"].includes(providerKey)) return null;
+    if (!providerKey || !["hidroelectrica", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "hidro_prahova"].includes(providerKey)) return null;
 
     const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
       if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
@@ -1056,6 +1056,31 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (providerKey === "hidroelectrica") {
       const base = sensorObject.replace(/_citire_permisa$/, "");
       controls.push({ key: `${providerKey}_${provider.id_cont || base}`, label: "Index de transmis", numberEntityId: `number.${base}_index_energie_electrica`, buttonEntityId: `button.${base}_trimite_index`, currentEntityId: `sensor.${base}_index_energie_electrica` });
+      return controls;
+    }
+
+    if (providerKey === "engie") {
+      const base = sensorObject.replace(/_citire_permisa$/, "");
+      const targetIdCont = String(provider?.id_cont ?? readingSensor.attributes?.id_cont ?? "").trim();
+      const targetIdContract = String(provider?.id_contract ?? readingSensor.attributes?.id_contract ?? "").trim();
+      let currentEntity = states[`sensor.${base}_index_contor`] || null;
+      if (!currentEntity) {
+        currentEntity = Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
+          const attrs = stateObj.attributes || {};
+          const idCont = String(attrs.id_cont ?? "").trim();
+          const idContract = String(attrs.id_contract ?? attrs.cod_contract ?? "").trim();
+          const entityId = String(stateObj.entity_id || "").toLowerCase();
+          const text = this._entityFriendlyText(stateObj);
+          const sameContext = (targetIdCont && idCont && idCont === targetIdCont) || (targetIdContract && idContract && idContract === targetIdContract);
+          const looksLikeCurrentIndex = entityId.includes("index_contor") || text.includes("index contor");
+          const belongsToEngie = entityId.includes("engie") || text.includes("engie") || entityId.includes(base);
+          return looksLikeCurrentIndex && belongsToEngie && (sameContext || this._textMatchesAny(text, terms) || entityId.includes(base));
+        });
+      }
+      if (currentEntity) {
+        controls.push({ key: `${providerKey}_${provider.id_cont || targetIdCont || base}_current`, label: "Index curent", numberEntityId: null, buttonEntityId: null, currentEntityId: currentEntity.entity_id });
+      }
       return controls;
     }
 
@@ -1153,16 +1178,20 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       };
       const numberEntity = (attrs.number_entity_id && states[attrs.number_entity_id]) || states[expectedNumberEntityId] || Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("number.") && this._entityFriendlyText(stateObj).includes("index de transmis") && matchesApaCanalContext(stateObj));
       const buttonEntity = (attrs.button_entity_id && states[attrs.button_entity_id]) || states[expectedButtonEntityId] || Object.values(states).find((stateObj) => stateObj.entity_id.startsWith("button.") && this._entityFriendlyText(stateObj).includes("trimite index") && matchesApaCanalContext(stateObj));
-      const currentEntity = states[currentEntityId] || Object.values(states).find((stateObj) => {
+      const currentEntity = states[currentEntityId] || states[`sensor.${base}_index_contor`] || Object.values(states).find((stateObj) => {
         if (!stateObj.entity_id.startsWith("sensor.")) return false;
         const text = this._entityFriendlyText(stateObj);
         const stateAttrs = stateObj.attributes || {};
         const idCont = String(stateAttrs.id_cont ?? "").trim();
         const idContract = String(stateAttrs.id_contract ?? "").trim();
         const sameContext = (sensorIdCont && idCont && idCont === sensorIdCont) || (sensorIdContract && idContract && idContract === sensorIdContract);
-        return (text.includes("ultimul index") || text.includes("index")) && (sameContext || this._textMatchesAny(text, terms) || stateObj.entity_id.includes(base));
+        return (text.includes("ultimul index") || text.includes("index contor") || stateObj.entity_id.includes("index_contor")) && (sameContext || this._textMatchesAny(text, terms) || stateObj.entity_id.includes(base));
       });
-      if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || sensorIdCont || base}`, label: "Index de transmis", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
+      if (numberEntity && buttonEntity) {
+        controls.push({ key: `${providerKey}_${provider.id_cont || sensorIdCont || base}`, label: "Index de transmis", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
+      } else if (currentEntity) {
+        controls.push({ key: `${providerKey}_${provider.id_cont || sensorIdCont || base}_current`, label: "Index curent", numberEntityId: null, buttonEntityId: null, currentEntityId: currentEntity.entity_id });
+      }
       return controls;
     }
     return [];
@@ -1240,7 +1269,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const controls = data.controls || [];
     const current = controls.map((control) => control.currentValue !== null && control.currentValue !== undefined ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}` : null).filter(Boolean).join(" / ") || "—";
     const tone = data.isOpen ? "open" : data.available ? "closed" : "missing";
-    const submitControls = data.isOpen && controls.length ? `<div class="reading-controls">${controls.map((control) => this._renderReadingControl(location, provider, control)).join("")}</div>` : "";
+    const actionControls = controls.filter((control) => control.numberEntityId && control.buttonEntityId);
+    const submitControls = data.isOpen && actionControls.length ? `<div class="reading-controls">${actionControls.map((control) => this._renderReadingControl(location, provider, control)).join("")}</div>` : "";
     return `
       <article class="reading-row ${tone}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
