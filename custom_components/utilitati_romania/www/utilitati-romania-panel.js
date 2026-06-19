@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.0";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.1b2";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -292,10 +292,82 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return location?.eticheta_locatie || location?.nume || location?.locatie_cheie || "Locație";
   }
 
+  _cleanLocationCandidate(value) {
+    const text = String(value ?? "").trim();
+    if (!text || ["-", "—", "none", "null", "undefined"].includes(text.toLowerCase())) return "";
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  _locationLabelScore(value) {
+    const text = this._cleanLocationCandidate(value);
+    if (!text) return -1;
+    const normalized = this._normalizeText(text);
+    let score = Math.min(text.length, 120) / 10;
+    if (/\d/.test(text)) score += 12;
+    if (/\b(?:nr|numar|numarul)\.?\s*[:\-]?\s*\d/i.test(text)) score += 8;
+    if (/\b(?:bl|bloc)\.?\s*[:\-]?\s*[a-z0-9]/i.test(text)) score += 4;
+    if (/\b(?:sc|scara)\.?\s*[:\-]?\s*[a-z0-9]/i.test(text)) score += 4;
+    if (/\b(?:et|etaj)\.?\s*[:\-]?\s*[a-z0-9]/i.test(text)) score += 3;
+    if (/\b(?:ap|apt|apartament)\.?\s*[:\-]?\s*[a-z0-9]/i.test(text)) score += 14;
+    if (/\b(strada|str\.?|bd\.?|bulevard|calea|aleea|sos\.?|soseaua|intrarea|drumul)\b/i.test(text)) score += 4;
+    if (/\b(?:telecomunicatii|energie electrica|gaze naturale|salubritate|ultima factura|regularizare|estimare)\b/i.test(normalized)) score -= 10;
+    if (/^\d+[a-z]?\s*,\s*[a-z]/i.test(text)) score += 8;
+    return score;
+  }
+
+  _bestLocationLabel(candidates) {
+    const seen = new Set();
+    let best = "";
+    let bestScore = -1;
+
+    for (const value of candidates || []) {
+      const cleaned = this._cleanLocationCandidate(value);
+      if (!cleaned) continue;
+      const key = this._normalizeText(cleaned);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const score = this._locationLabelScore(cleaned);
+      if (score > bestScore) {
+        best = cleaned;
+        bestScore = score;
+      }
+    }
+
+    return best;
+  }
+
+  _locationCandidates(location, provider = null) {
+    const candidates = [
+      location?.eticheta_locatie,
+      location?.locatie_label,
+      location?.nume,
+      location?.adresa_originala,
+      location?.address,
+      location?.locatie_cheie,
+    ];
+
+    const providers = provider ? [provider] : Array.isArray(location?.furnizori) ? location.furnizori : [];
+    for (const item of providers) {
+      candidates.push(
+        item?.adresa_originala,
+        item?.adresa,
+        item?.address,
+        item?.service_address,
+        item?.nume_cont,
+        item?.locatie_label,
+        item?.eticheta_locatie,
+      );
+    }
+
+    return candidates;
+  }
+
   _displayLocationName(location) {
     const key = this._locationKey(location);
     const aliases = this._locationAliases();
-    return String(aliases[key] || this._rawLocationName(location) || "Locație").trim();
+    const alias = this._cleanLocationCandidate(aliases[key]);
+    if (alias) return alias;
+    return this._bestLocationLabel(this._locationCandidates(location)) || String(this._rawLocationName(location) || "Locație").trim();
   }
 
   _mobileDeviceSelectEntity() {
@@ -351,15 +423,18 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .filter((value) => value && !["-", "—", "none", "null", "undefined"].includes(value.toLowerCase()));
 
     const parseStreetNumber = (raw) => {
-      const parts = String(raw || "").split(/[;,]+/).map((part) => part.trim()).filter(Boolean);
+      const source = String(raw || "");
+      const apartmentMatch = source.match(/\b(?:ap|apt|apartament)\.?\s*[:\-]?\s*([A-Za-z0-9\-/]+)/i);
+      const apartmentSuffix = apartmentMatch ? ` ap. ${String(apartmentMatch[1] || "").trim()}` : "";
+      const parts = source.split(/[;,]+/).map((part) => part.trim()).filter(Boolean);
       if (parts.length >= 2 && /^\d+[a-z]?$/i.test(parts[0])) {
-        return `${parts[1]} ${parts[0]}`.replace(/\s+/g, " ").trim();
+        return `${parts[1]} ${parts[0]}${apartmentSuffix}`.replace(/\s+/g, " ").trim();
       }
-      const streetMatch = String(raw || "").match(/(?:str(?:ada)?\.?\s*)?([A-ZĂÂÎȘŞȚŢa-zăâîșşțţ0-9 .'-]+?)\s*(?:nr\.?\s*)?(\d+\s*[A-Za-z]?)(?:\b|,)/i);
+      const streetMatch = source.match(/(?:str(?:ada)?\.?\s*)?([A-ZĂÂÎȘŞȚŢa-zăâîșşțţ0-9 .'-]+?)\s*(?:nr\.?\s*)?(\d+\s*[A-Za-z]?)(?:\b|,)/i);
       if (streetMatch) {
         const strada = String(streetMatch[1] || "").replace(/^(strada|str\.)\s+/i, "").trim();
         const numar = String(streetMatch[2] || "").replace(/\s+/g, "").trim();
-        if (strada && numar) return `${strada} ${numar}`.trim();
+        if (strada && numar) return `${strada} ${numar}${apartmentSuffix}`.trim();
       }
       return "";
     };
@@ -382,6 +457,22 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       if (locatie && this._normalizeText(locatie) !== this._normalizeText(base)) return `${base} - ${locatie}`;
     }
     return base;
+  }
+
+  _invoiceLocationLine(location, provider, displayName, grouping) {
+    if (grouping === "location") return "";
+
+    const locationName = this._bestLocationLabel(this._locationCandidates(location, provider)) || this._displayLocationName(location);
+    if (!locationName) return "";
+
+    const normalizedLocation = this._normalizeText(locationName);
+    const normalizedDisplay = this._normalizeText(displayName);
+    const normalizedInvoice = this._normalizeText(this._providerInvoice(provider));
+
+    if (normalizedLocation && normalizedDisplay.includes(normalizedLocation)) return "";
+    if (normalizedLocation && normalizedInvoice.includes(normalizedLocation)) return "";
+
+    return `<span class="invoice-location">${this._escape(locationName)}</span>`;
   }
 
   _providerUtilityType(provider) {
@@ -1052,7 +1143,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
             <div><span class="eyebrow">${this._escape(grouping === "location" ? "loc de consum" : "grupare")}</span><h2>${this._escape(group.title)}</h2></div>
             <div class="location-total"><strong>${this._escape(this._invoiceGroupSummary(group.entries))}</strong></div>
           </div>
-          <div class="invoice-list">${group.entries.map((entry) => this._invoiceRow(entry.location, entry.provider)).join("")}</div>
+          <div class="invoice-list">${group.entries.map((entry) => this._invoiceRow(entry.location, entry.provider, grouping)).join("")}</div>
         </section>
       `).join("") : `<section class="panel-card"><div class="empty">Nu există facturi pentru filtrul selectat.</div></section>`}
     `;
@@ -1062,7 +1153,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return this._makeKey("invoice", location?.locatie_cheie || location?.eticheta_locatie || "locatie", this._providerName(provider), this._providerInvoice(provider), this._providerDue(provider), this._providerAmount(provider));
   }
 
-  _invoiceRow(location, provider) {
+  _invoiceRow(location, provider, grouping = "location") {
     const status = this._status(provider);
     const due = this._providerDue(provider);
     const days = this._daysUntil(due);
@@ -1072,10 +1163,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const utilityType = this._providerUtilityType(provider);
     const utilityLine = utilityType ? `<span class="invoice-utility">${this._escape(utilityType)}</span>` : "";
     const displayName = this._providerDisplayName(location, provider);
+    const locationLine = this._invoiceLocationLine(location, provider, displayName, grouping);
     return `
       <article class="invoice-row ${status} ${warning ? "warning" : ""} ${expanded ? "expanded" : ""}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
-        <div class="invoice-main"><strong>${this._escape(displayName)}</strong><span>${this._escape(this._providerInvoice(provider))}</span>${utilityLine}</div>
+        <div class="invoice-main"><strong>${this._escape(displayName)}</strong>${locationLine}<span>${this._escape(this._providerInvoice(provider))}</span>${utilityLine}</div>
         <div class="invoice-quick"><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span></div>
         <button class="invoice-toggle" data-toggle-invoice="${this._escape(key)}" title="Detalii factură" aria-label="Detalii factură"><ha-icon icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon></button>
         <div class="invoice-details">
@@ -2045,6 +2137,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .due.late { border-left-color:#e5484d; }
       .due span,.location-compact span,.invoice-main span,.invoice-meta span,.reading-main span,.reading-period span,.reading-current span { display:block; color:#6b7b90; font-size:13px; margin-top:3px; }
       .invoice-main .invoice-utility { color:#4f6f94; font-size:12px; font-weight:800; letter-spacing:.02em; }
+      .invoice-main .invoice-location { color:#8aa7cf; font-size:12px; font-weight:900; letter-spacing:.02em; }
       .due-right { text-align:right; }
       .due-right small { color:#6b7b90; font-weight:800; }
       .location-compact { justify-content:space-between; }
