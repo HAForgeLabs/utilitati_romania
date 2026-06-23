@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
 
@@ -14,11 +13,6 @@ from .helpers_facturi_locatie import (
     build_facturi_location_label,
     normalize_facturi_location_key,
 )
-from .locuri_ignorate import (
-    construieste_cheie_loc_consum,
-    este_loc_consum_ignorat,
-    obtine_locuri_ignorate,
-)
 from .modele import ContUtilitate, FacturaUtilitate, InstantaneuFurnizor
 from .naming import normalize_text
 
@@ -28,7 +22,6 @@ _PROVIDER_LABELS = {
     "apa_brasov": "Apă Brașov",
     "apa_oradea": "Apă Oradea",
     "apa_galati": "Apă Canal Galați",
-    "hidro_prahova": "Hidro Prahova",
     "comprest": "Comprest",
     "deer": "DEER",
     "digi": "Digi",
@@ -73,26 +66,6 @@ _STATUS_UNPAID_TOKENS = {
     "1",
 }
 
-
-
-
-def _pare_identificator_tehnic_factura(value: Any) -> bool:
-    """Detectează tokenuri interne care nu trebuie afișate drept număr de factură."""
-    text = str(value or "").strip()
-    if not text:
-        return False
-    if text.endswith("==") or (len(text) >= 20 and any(ch in text for ch in "+/=")):
-        return True
-    if len(text) >= 32 and all(ch.isalnum() for ch in text):
-        return any(ch.islower() for ch in text) and any(ch.isupper() for ch in text) and any(ch.isdigit() for ch in text)
-    return False
-
-
-def _curata_identificator_factura(value: Any) -> str:
-    text = str(value or "").strip()
-    if not text or _pare_identificator_tehnic_factura(text):
-        return ""
-    return text
 
 def _normalize_status_token(value: Any) -> str:
     return normalize_text(str(value or "")).strip().lower().replace("_", " ")
@@ -589,8 +562,8 @@ def _build_invoice_item(
         "nume_cont": getattr(cont, "nume", None) if cont else None,
         "tip_utilitate": getattr(factura, "tip_utilitate", None) or (getattr(cont, "tip_utilitate", None) if cont else None),
         "tip_serviciu": getattr(factura, "tip_serviciu", None) or (getattr(cont, "tip_serviciu", None) if cont else None),
-        "invoice_id": _curata_identificator_factura(getattr(factura, "id_factura", None)) if instantaneu.furnizor == "hidroelectrica" else getattr(factura, "id_factura", None),
-        "invoice_title": (_curata_identificator_factura(invoice_title) or "Ultima factură") if instantaneu.furnizor == "hidroelectrica" else invoice_title,
+        "invoice_id": getattr(factura, "id_factura", None),
+        "invoice_title": invoice_title,
         "issue_date": _format_date(getattr(factura, "data_emitere", None)),
         "due_date": _format_date(getattr(factura, "data_scadenta", None)),
         "amount": getattr(factura, "valoare", None),
@@ -608,7 +581,7 @@ def _build_invoice_item(
     _asigura_cheie_locatie_nova(item, factura, cont)
     _asigura_cheie_locatie_hidroelectrica(item)
 
-    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "hidro_prahova"}:
+    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati"}:
         id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
 
         citire_permisa = _consum_value(instantaneu, "citire_index_permisa", id_cont)
@@ -843,7 +816,7 @@ def _build_hidroelectrica_fallback_item(
         is_paid = None
         unpaid_amount = None
 
-    factura_id_text = _curata_identificator_factura(factura_id)
+    factura_id_text = str(factura_id or "").strip()
     location_key, location_label, manual_group_label = _location_fields(
         coordonator,
         instantaneu,
@@ -899,83 +872,6 @@ def _money_to_lei(value: Any) -> float | None:
     return round(parsed, 2)
 
 
-
-
-def _hidroelectrica_rest_de_plata(factura: FacturaUtilitate) -> float | None:
-    """Returnează restul de plată declarat explicit de Hidroelectrica pentru factură."""
-    raw = _raw_dict(factura)
-    for key in _UNPAID_RAW_KEYS:
-        value = _to_float(raw.get(key))
-        if value is not None:
-            return value
-    return None
-
-
-def _hidroelectrica_are_rest_de_plata(factura: FacturaUtilitate) -> bool:
-    """Verifică dacă o factură Hidroelectrica este declarată explicit ca neachitată."""
-    rest = _hidroelectrica_rest_de_plata(factura)
-    if rest is not None and rest > 0:
-        return True
-
-    status_text = normalize_text(getattr(factura, "stare", None)).lower()
-    return _status_in(status_text, _NORMALIZED_STATUS_UNPAID_TOKENS)
-
-
-def _hidroelectrica_este_factura_curenta_sintetica(factura: FacturaUtilitate) -> bool:
-    """Identifică factura curentă construită din sumarul Hidroelectrica."""
-    raw = _raw_dict(factura)
-    return bool(raw.get("_synthetic_current_bill"))
-
-
-def _ajusteaza_facturi_hidroelectrica(facturi: list[FacturaUtilitate]) -> list[FacturaUtilitate]:
-    """Elimină factura sintetică Hidroelectrica când există restanțe reale.
-
-    `GetBill.rembalance` poate reprezenta soldul total al contului. Lista de
-    facturi din dashboard trebuie să provină din facturile individuale din
-    istoricul de facturare. De aceea, dacă pentru același cont există deja
-    cel puțin o factură reală neachitată, rândul sintetic construit din soldul
-    total nu mai este afișat ca factură separată.
-    """
-    rezultat: list[FacturaUtilitate] = []
-    facturi_pe_cont: dict[tuple[str, str], list[FacturaUtilitate]] = {}
-
-    for factura in facturi or []:
-        facturi_pe_cont.setdefault(_factura_latest_key(factura), []).append(factura)
-
-    for grup in facturi_pe_cont.values():
-        exista_factura_reala_neachitata = any(
-            not _hidroelectrica_este_factura_curenta_sintetica(factura)
-            and _hidroelectrica_are_rest_de_plata(factura)
-            for factura in grup
-        )
-
-        for factura in grup:
-            if (
-                exista_factura_reala_neachitata
-                and _hidroelectrica_este_factura_curenta_sintetica(factura)
-            ):
-                continue
-            rezultat.append(factura)
-
-    return rezultat
-
-
-def _exista_restanta_hidroelectrica_pentru_cont(grouped: dict[tuple[str, ...], dict[str, Any]], item: dict[str, Any]) -> bool:
-    id_cont = str(item.get("id_cont") or "").strip()
-    id_contract = str(item.get("id_contract") or "").strip()
-    if not id_cont and not id_contract:
-        return False
-    for existent in grouped.values():
-        if normalize_text(existent.get("furnizor")).lower() != "hidroelectrica":
-            continue
-        if existent.get("status") != "unpaid":
-            continue
-        if id_cont and str(existent.get("id_cont") or "").strip() == id_cont:
-            return True
-        if id_contract and str(existent.get("id_contract") or "").strip() == id_contract:
-            return True
-    return False
-
 def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
     """Construiește cheia stabilă folosită pentru agregarea facturilor în dashboard."""
     locatie = item["locatie_cheie"]
@@ -1017,19 +913,7 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
         )
         return (locatie, furnizor, normalize_text(identificator_punct).lower())
 
-    if furnizor == "hidroelectrica":
-        identificator_cont = (
-            item.get("id_cont")
-            or item.get("id_contract")
-            or item.get("nume_cont")
-            or ""
-        )
-        factura_id = _curata_identificator_factura(item.get("invoice_id"))
-        if item.get("status") == "unpaid" and factura_id:
-            return (locatie, furnizor, normalize_text(identificator_cont).lower(), normalize_text(factura_id).lower())
-        return (locatie, furnizor, normalize_text(identificator_cont).lower())
-
-    if furnizor in {"apa_brasov", "apa_oradea", "apa_galati", "hidro_prahova"}:
+    if furnizor in {"apa_brasov", "apa_oradea", "apa_galati"}:
         # Apă Brașov are câte o factură curentă pentru fiecare loc de consum.
         # Dacă grupăm doar după titlul generic al facturii („Factură apă/canal”),
         # factura plătită de pe o locație poate fi combinată cu factura restantă
@@ -1186,122 +1070,6 @@ def _latest_invoice_ids_by_group(facturi: list[FacturaUtilitate]) -> set[str]:
     return {str(getattr(factura, "id_factura", "") or "") for factura in latest.values()}
 
 
-
-def _loc_consum_key_for_item(item: dict[str, Any]) -> str | None:
-    return construieste_cheie_loc_consum(
-        item.get("entry_id"),
-        item.get("furnizor"),
-        id_cont=item.get("id_cont"),
-        id_contract=item.get("id_contract"),
-        locatie_cheie=item.get("locatie_cheie"),
-        eticheta=item.get("eticheta_locatie"),
-    )
-
-
-def _aplica_metadate_loc_consum(hass, item: dict[str, Any] | None) -> dict[str, Any] | None:
-    if item is None:
-        return None
-    cheie = _loc_consum_key_for_item(item)
-    item["loc_consum_key"] = cheie
-    item["loc_consum_ignorat"] = este_loc_consum_ignorat(hass, cheie)
-    return item
-
-
-def _item_este_ignorat(hass, item: dict[str, Any] | None) -> bool:
-    if item is None:
-        return False
-    cheie = item.get("loc_consum_key") or _loc_consum_key_for_item(item)
-    return este_loc_consum_ignorat(hass, cheie)
-
-
-def _loc_consum_din_cont(coordonator: CoordonatorUtilitatiRomania, instantaneu: InstantaneuFurnizor, cont: ContUtilitate) -> dict[str, Any] | None:
-    location_key, location_label, manual_group_label = _location_fields(
-        coordonator,
-        instantaneu,
-        cont,
-        cont,
-    )
-    entry_id = getattr(coordonator.intrare, "entry_id", None)
-    furnizor = getattr(instantaneu, "furnizor", None)
-    id_cont = getattr(cont, "id_cont", None)
-    id_contract = getattr(cont, "id_contract", None)
-    cheie = construieste_cheie_loc_consum(
-        entry_id,
-        furnizor,
-        id_cont=id_cont,
-        id_contract=id_contract,
-        locatie_cheie=location_key,
-        eticheta=location_label,
-    )
-    if not cheie:
-        return None
-    ignored = este_loc_consum_ignorat(coordonator.hass, cheie)
-    return {
-        "cheie": cheie,
-        "ignored": ignored,
-        "entry_id": entry_id,
-        "entry_title": getattr(coordonator.intrare, "title", None),
-        "furnizor": furnizor,
-        "furnizor_label": _provider_label(furnizor),
-        "locatie_cheie": location_key,
-        "eticheta_locatie": location_label,
-        "eticheta_grupare_manuala": manual_group_label,
-        "id_cont": id_cont,
-        "id_contract": id_contract,
-        "nume_cont": getattr(cont, "nume", None),
-        "adresa_originala": getattr(cont, "adresa", None),
-        "tip_utilitate": getattr(cont, "tip_utilitate", None),
-        "tip_serviciu": getattr(cont, "tip_serviciu", None),
-    }
-
-
-def colecteaza_locuri_consum(hass) -> list[dict[str, Any]]:
-    locuri: dict[str, dict[str, Any]] = {}
-    domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
-
-    for maybe_coord in domain_data.values():
-        if not isinstance(maybe_coord, CoordonatorUtilitatiRomania):
-            continue
-        if maybe_coord.intrare.data.get("furnizor") == FURNIZOR_ADMIN_GLOBAL:
-            continue
-        instantaneu = maybe_coord.data
-        if not isinstance(instantaneu, InstantaneuFurnizor):
-            continue
-        for cont in instantaneu.conturi or []:
-            item = _loc_consum_din_cont(maybe_coord, instantaneu, cont)
-            if item is not None:
-                locuri[item["cheie"]] = item
-
-    # Păstrăm și locurile ignorate care nu mai sunt returnate temporar de furnizor,
-    # ca utilizatorul să le poată reactiva fără să editeze manual storage-ul.
-    for cheie, value in obtine_locuri_ignorate(hass).items():
-        if cheie in locuri:
-            continue
-        if not isinstance(value, dict):
-            continue
-        locuri[cheie] = {
-            "cheie": cheie,
-            "ignored": True,
-            "entry_id": value.get("entry_id"),
-            "entry_title": None,
-            "furnizor": value.get("furnizor"),
-            "furnizor_label": _provider_label(value.get("furnizor")),
-            "locatie_cheie": value.get("locatie_cheie"),
-            "eticheta_locatie": value.get("eticheta") or value.get("locatie_cheie") or cheie,
-            "id_cont": value.get("id_cont"),
-            "id_contract": value.get("id_contract"),
-            "nume_cont": None,
-            "adresa_originala": None,
-        }
-
-    rezultat = list(locuri.values())
-    rezultat.sort(key=lambda item: (
-        1 if item.get("ignored") else 0,
-        normalize_text(item.get("furnizor_label")).lower(),
-        normalize_text(item.get("eticheta_locatie")).lower(),
-    ))
-    return rezultat
-
 def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
@@ -1318,27 +1086,19 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             continue
 
         facturi_de_afisat = list(instantaneu.facturi or [])
-        if instantaneu.furnizor == "hidroelectrica":
-            facturi_de_afisat = _ajusteaza_facturi_hidroelectrica(facturi_de_afisat)
-
         if instantaneu.furnizor in {"engie", "apa_brasov", "hidroelectrica"}:
             # Pentru MyENGIE, Apă Brașov și Hidroelectrica păstrăm în card doar ultima factură
-            # pe fiecare loc de consum. La Hidroelectrica păstrăm însă și facturile vechi
-            # care au rest de plată explicit, deoarece pot exista mai multe facturi neachitate
-            # pe același contract, cu scadențe diferite.
+            # pe fiecare loc de consum. Istoricul vechi poate veni fără indicator explicit de
+            # plată și ar fi marcat greșit ca restant de logica generică a dashboardului.
             latest_ids = _latest_invoice_ids_by_group(facturi_de_afisat)
             facturi_de_afisat = [
                 factura for factura in facturi_de_afisat
                 if str(getattr(factura, "id_factura", "") or "") in latest_ids
-                or (instantaneu.furnizor == "hidroelectrica" and _hidroelectrica_are_rest_de_plata(factura))
             ]
 
         # 1. Facturi reale, dacă există
         for factura in facturi_de_afisat:
             item = _apply_manual_invoice_status(hass, _build_invoice_item(maybe_coord, instantaneu, factura))
-            item = _aplica_metadate_loc_consum(hass, item)
-            if _item_este_ignorat(hass, item):
-                continue
 
             # Pentru cardul de "ultima factură" ignorăm documentele de tip credit/storno.
             # Altfel, la unii furnizori (ex. myElectrica) putem afișa greșit un credit
@@ -1358,9 +1118,6 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
         if instantaneu.furnizor == "eon":
             for cont in instantaneu.conturi or []:
                 fallback_item = _apply_manual_invoice_status(hass, _build_eon_fallback_item(maybe_coord, instantaneu, cont))
-                fallback_item = _aplica_metadate_loc_consum(hass, fallback_item)
-                if _item_este_ignorat(hass, fallback_item):
-                    continue
                 if fallback_item is None:
                     continue
 
@@ -1404,13 +1161,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                     hass,
                     _build_hidroelectrica_fallback_item(maybe_coord, instantaneu, cont),
                 )
-                fallback_item = _aplica_metadate_loc_consum(hass, fallback_item)
-                if _item_este_ignorat(hass, fallback_item):
-                    continue
                 if fallback_item is None:
-                    continue
-
-                if fallback_item.get("status") == "unpaid" and _exista_restanta_hidroelectrica_pentru_cont(grouped, fallback_item):
                     continue
 
                 group_key = _cheie_grupare_factura(fallback_item)
@@ -1445,71 +1196,6 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     )
     return items
 
-
-
-def _este_estimare_hidroelectrica_item(item: dict[str, Any]) -> bool:
-    """Detectează rândurile de estimare Hidroelectrica afișate separat de factură."""
-    text = normalize_text(
-        " ".join(
-            str(item.get(key) or "")
-            for key in ("invoice_title", "invoice_id", "status_raw", "tip_serviciu", "tip_utilitate")
-        )
-    ).lower()
-    return "estimare" in text
-
-
-def _cheie_restanta_hidroelectrica_item(item: dict[str, Any]) -> tuple[str, str, str]:
-    """Grupează rândurile Hidroelectrica care aparțin aceluiași loc de consum."""
-    locatie = normalize_text(item.get("locatie_cheie") or item.get("eticheta_locatie") or "").lower()
-    contract = normalize_text(item.get("id_contract") or "").lower()
-    cont = normalize_text(item.get("id_cont") or "").lower()
-    nume = normalize_text(item.get("nume_cont") or item.get("adresa_originala") or "").lower()
-    return (locatie, contract, cont or nume)
-
-
-def _ajusteaza_itemuri_hidroelectrica_sold_cumulat(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Corectează rândurile Hidroelectrica în care soldul total dublează o estimare.
-
-    Portalul Hidroelectrica poate expune simultan o estimare individuală și un rând
-    de tip factură/sold curent care conține totalul tuturor restanțelor. În dashboard
-    acestea trebuie afișate ca două rânduri distincte reale: estimarea rămâne cu
-    valoarea ei, iar rândul de sold total este redus la diferența neacoperită.
-    """
-    grupuri: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-
-    for item in items:
-        if normalize_text(item.get("furnizor")).lower() != "hidroelectrica":
-            continue
-        if item.get("status") != "unpaid":
-            continue
-        grupuri.setdefault(_cheie_restanta_hidroelectrica_item(item), []).append(item)
-
-    for grup in grupuri.values():
-        if len(grup) < 2 or not any(_este_estimare_hidroelectrica_item(item) for item in grup):
-            continue
-
-        valori = [(item, _valoare_neplatita_item(item)) for item in grup]
-        valori = [(item, valoare) for item, valoare in valori if valoare > 0]
-        if len(valori) < 2:
-            continue
-
-        candidat, valoare_candidat = max(valori, key=lambda pair: pair[1])
-        total_alte_randuri = round(sum(valoare for item, valoare in valori if item is not candidat), 2)
-        diferenta = round(valoare_candidat - total_alte_randuri, 2)
-
-        if total_alte_randuri <= 0 or diferenta <= 0.01 or diferenta >= valoare_candidat:
-            continue
-
-        candidat["amount_original"] = candidat.get("amount")
-        candidat["unpaid_amount_original"] = candidat.get("unpaid_amount")
-        candidat["unpaid_total_original"] = candidat.get("unpaid_total")
-        candidat["amount"] = diferenta
-        candidat["unpaid_amount"] = diferenta
-        candidat["unpaid_total"] = diferenta
-        candidat["hidroelectrica_sold_cumulat_ajustat"] = True
-        candidat["hidroelectrica_sold_cumulat_acoperit"] = total_alte_randuri
-
-    return items
 
 def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
     total_unpaid = 0.0

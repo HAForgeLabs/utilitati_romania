@@ -1,7 +1,7 @@
 {
   "domain": "utilitati_romania",
   "name": "Utilitati Romania",
-  "version": "1.10.0",
+  "version": "1.9.2b9",
   "documentation": "https://github.com/HAForgeLabs/utilitati_romania",
   "issue_tracker": "https://github.com/HAForgeLabs/utilitati_romania/issues",
   "codeowners": [
@@ -12,8 +12,7 @@
   "iot_class": "cloud_polling",
   "requirements": [
     "curl-cffi==0.7.4",
-    "certifi>=2024.0.0",
-    "pypdf>=5.0.0"
+    "certifi>=2024.0.0"
   ],
   "loggers": [
     "custom_components.utilitati_romania"

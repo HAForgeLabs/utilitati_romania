@@ -849,7 +849,12 @@ class ClientFurnizorApaGalati(ClientFurnizor):
             total_de_plata = _numar(item.get("total_de_plata"))
             stare = _stare_factura(item, rest)
             raw = dict(item)
-            raw["rest_plata"] = rest if rest is not None else (total_de_plata if stare != "platita" else 0.0)
+            if stare == "platita":
+                raw["rest_plata"] = 0.0
+            elif rest is not None:
+                raw["rest_plata"] = rest
+            else:
+                raw["rest_plata"] = total_de_plata or 0.0
             raw["numar_factura"] = id_factura
             facturi.append(
                 FacturaUtilitate(
@@ -1036,7 +1041,7 @@ def _spanuri_dupa_camp(html_text: str) -> dict[str, dict[int, str]]:
     return rezultat
 
 
-def _randuri_din_spanuri(html_text: str, campuri: list[str]) -> list[dict[str, str]]:
+def _randuri_din_spanuri(html_text: str, campuri: list[str], *, prefera_vizibil: bool = False) -> list[dict[str, str]]:
     spanuri = _spanuri_dupa_camp(html_text)
     indecsi: set[int] = set()
     for camp in campuri:
@@ -1046,9 +1051,16 @@ def _randuri_din_spanuri(html_text: str, campuri: list[str]) -> list[dict[str, s
     for index in sorted(indecsi):
         rand: dict[str, str] = {}
         for camp in campuri:
-            valoare = spanuri.get(f"hidden_{camp}", {}).get(index)
-            if valoare in (None, ""):
-                valoare = spanuri.get(camp, {}).get(index, "")
+            valoare_vizibila = spanuri.get(camp, {}).get(index)
+            valoare_ascunsa = spanuri.get(f"hidden_{camp}", {}).get(index)
+            if prefera_vizibil:
+                valoare = valoare_vizibila
+                if valoare in (None, ""):
+                    valoare = valoare_ascunsa or ""
+            else:
+                valoare = valoare_ascunsa
+                if valoare in (None, ""):
+                    valoare = valoare_vizibila or ""
             rand[camp] = valoare
         if any(rand.values()):
             randuri.append(rand)
@@ -1148,6 +1160,7 @@ def _extrage_facturi(html_text: str) -> list[dict[str, Any]]:
             "data_gratie",
             "suma_platita",
         ],
+        prefera_vizibil=True,
     ):
         rezultat.append(
             {

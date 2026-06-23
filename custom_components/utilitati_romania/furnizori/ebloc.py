@@ -622,14 +622,15 @@ class ClientFurnizorEbloc(ClientFurnizor):
             lista_plata = _construieste_lista_plata(pachet, date_brute.get("luna_curenta"))
             luna = lista_plata.luna or date_brute.get("luna_curenta") or "curent"
 
-            if lista_plata.valoare is None:
+            valoare_factura = _valoare_factura_curenta(lista_plata)
+            if valoare_factura is None:
                 continue
 
             rezultate.append(
                 FacturaUtilitate(
                     id_factura=f"ebloc_{id_cont}_{_slug(luna)}",
                     titlu=f"Întreținere {luna}",
-                    valoare=lista_plata.valoare,
+                    valoare=valoare_factura,
                     moneda="RON",
                     data_emitere=_data_emitere_din_luna(luna),
                     data_scadenta=None,
@@ -642,6 +643,8 @@ class ClientFurnizorEbloc(ClientFurnizor):
                     date_brute={
                         "apartament": apartament,
                         "lista_plata": lista_plata.date_brute,
+                        "valoare_lista_plata": lista_plata.valoare,
+                        "valoare_de_plata": valoare_factura,
                         "sold_curent": lista_plata.sold_curent,
                         "nr_persoane": lista_plata.nr_persoane,
                     },
@@ -1309,6 +1312,17 @@ def _extrage_valoare_lista_din_structura(data: Any) -> float | None:
             return round(total, 2)
 
     return None
+def _valoare_factura_curenta(lista_plata: ListaPlataEbloc) -> float | None:
+    sold_curent = lista_plata.sold_curent
+    if sold_curent is not None and sold_curent > 0:
+        return round(float(sold_curent), 2)
+
+    if lista_plata.valoare is not None:
+        return round(float(lista_plata.valoare), 2)
+
+    return None
+
+
 def _construieste_lista_plata(pachet: dict[str, Any], luna_curenta: str | None) -> ListaPlataEbloc:
     sold_curent = _extrage_sold_curent(pachet)
     home_info = _prima_intrare_dict(pachet.get("home_info_web") or {})
@@ -1331,8 +1345,6 @@ def _construieste_lista_plata(pachet: dict[str, Any], luna_curenta: str | None) 
         or _extrage_plati_web(pachet.get("plati_ap_web") or {})
         or _extrage_plati_web(pachet.get("plati_toti_web") or {})
     )
-    if valoare is None and plati:
-        valoare = plati[0].valoare
 
     if sold_curent is None:
         sold_curent = 0.0 if valoare is not None and plati else None

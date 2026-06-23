@@ -31,7 +31,6 @@ from .eon_const import (
     URL_CONTRACTS_WITH_SUBCONTRACTS,
     URL_GRAPHIC_CONSUMPTION,
     URL_INVOICE_BALANCE,
-    URL_INVOICE_METER_DETAILS,
     URL_INVOICE_BALANCE_PROSUM,
     URL_INVOICES_PROSUM,
     URL_INVOICES_UNPAID,
@@ -537,18 +536,6 @@ class EonApiClient:
             f"{URL_INVOICE_BALANCE_PROSUM}{params}",
             f"invoice_balance_prosum ({account_contract})",
         )
-
-
-    async def async_fetch_invoice_meter_details(self, invoice_number: str):
-        """Citește detaliile de contor pentru o factură E.ON.
-
-        Endpoint-ul conține consumul facturat, indexul vechi/nou și perioada
-        de consum. Este folosit pentru calculul costului mediu pe unitate.
-        """
-        if not invoice_number:
-            return None
-        url = URL_INVOICE_METER_DETAILS.format(invoiceNumber=invoice_number)
-        return await self._request_with_token("GET", url, f"invoice_meter_details ({invoice_number})")
 
     async def async_fetch_payments(self, account_contract: str, max_pages: int | None = None):
         return await self._paginated_request(

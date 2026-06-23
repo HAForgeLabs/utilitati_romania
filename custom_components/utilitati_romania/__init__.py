@@ -29,14 +29,9 @@ from .const import (
     SERVICIU_SET_INVOICE_STATUS,
     SERVICIU_SUBMIT_READING,
     SERVICIU_SET_NOTIFICATION_PREFERENCES,
-    SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY,
 )
 from .coordonator import CoordonatorUtilitatiRomania
 from .grupare_facturi import async_incarca_grupari_facturi
-from .locuri_ignorate import (
-    async_incarca_locuri_ignorate,
-    async_seteaza_loc_consum_ignorat,
-)
 from .facturi_status_manual import (
     async_incarca_statusuri_facturi_manuale,
     async_seteaza_status_manual_factura,
@@ -53,7 +48,7 @@ from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licent
 
 _LOGGER = logging.getLogger(__name__)
 
-_FRONTEND_VERSION = "1.10.0"
+_FRONTEND_VERSION = "1.9.2b9"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -402,12 +397,6 @@ def _provider_open_target(provider: str | None) -> dict[str, str] | None:
             "fallback": "https://plataonline.apaoradea.ro/",
         }
 
-    if key == "hidro_prahova":
-        return {
-            "mode": "url",
-            "fallback": "https://www.client-hph.ro/index.php?action=login",
-        }
-
     return None
 
 
@@ -551,30 +540,6 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
         )
 
 
-    async def _async_handle_set_consumption_point_visibility(call: ServiceCall) -> None:
-        ignored = bool(call.data.get("ignored", False))
-        key = await async_seteaza_loc_consum_ignorat(
-            hass,
-            cheie=call.data.get("cheie"),
-            entry_id=call.data.get("entry_id"),
-            furnizor=call.data.get("provider") or call.data.get("furnizor"),
-            id_cont=call.data.get("id_cont"),
-            id_contract=call.data.get("id_contract"),
-            locatie_cheie=call.data.get("locatie_cheie"),
-            eticheta=call.data.get("eticheta") or call.data.get("label"),
-            ignored=ignored,
-        )
-        if not key:
-            raise ValueError("Locul de consum nu a putut fi identificat.")
-
-        await hass.services.async_call(
-            "homeassistant",
-            "update_entity",
-            {"entity_id": ["sensor.administrare_integrare_facturi_utilitati"]},
-            blocking=False,
-        )
-
-
     async def _async_handle_set_notification_preferences(call: ServiceCall) -> None:
         preferinte = {
             "facturi_noi": call.data.get("facturi_noi", True),
@@ -681,7 +646,6 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMENIU, SERVICIU_SET_INVOICE_STATUS, _async_handle_set_invoice_status)
     hass.services.async_register(DOMENIU, SERVICIU_SUBMIT_READING, _async_handle_submit_reading)
     hass.services.async_register(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES, _async_handle_set_notification_preferences)
-    hass.services.async_register(DOMENIU, SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY, _async_handle_set_consumption_point_visibility)
     hass.data[DOMENIU]["_services_registered"] = True
 
 
@@ -699,8 +663,6 @@ def _async_remove_services_if_unused(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMENIU, SERVICIU_SUBMIT_READING)
     if hass.services.has_service(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES):
         hass.services.async_remove(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES)
-    if hass.services.has_service(DOMENIU, SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY):
-        hass.services.async_remove(DOMENIU, SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY)
     hass.data[DOMENIU]["_services_registered"] = False
 
 
@@ -896,7 +858,6 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     _async_schedule_admin_reload_after_start(hass)
     await async_incarca_grupari_facturi(hass)
     await async_incarca_statusuri_facturi_manuale(hass)
-    await async_incarca_locuri_ignorate(hass)
     await _async_register_static_paths(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
@@ -954,7 +915,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _async_ensure_services(hass)
     await async_incarca_grupari_facturi(hass)
     await async_incarca_statusuri_facturi_manuale(hass)
-    await async_incarca_locuri_ignorate(hass)
     await _async_register_static_paths(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)

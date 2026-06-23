@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.0";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.9.2b9";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -788,7 +788,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "hidro_prahova"].includes(providerKey)) {
+    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea"].includes(providerKey)) {
       return null;
     }
 
@@ -933,7 +933,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
           entityId.includes("hidroelectrica") ||
           entityId.includes("myelectrica") ||
           entityId.includes("apa_canal") ||
-          entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("hidro_prahova") ||
+          entityId.includes("apa_brasov") || entityId.includes("apa_oradea") ||
           entityId.includes("apacanal") ||
           entityId.includes("ebloc") ||
           text.includes("hidro") ||
@@ -1055,7 +1055,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       return controls;
     }
 
-    if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "hidro_prahova") {
+    if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea") {
       const base = sensorObject.replace(/_citire_index_permisa$/, "").replace(/_citire_permisa$/, "");
       const attrs = readingSensor.attributes || {};
       const sensorIdCont = String(attrs.id_cont ?? provider?.id_cont ?? "").trim();
@@ -1537,7 +1537,6 @@ _buildProviderRefreshButton(provider) {
       rervest: "App. RER Vest",
       comprest: "Portal Comprest",
       apa_oradea: "Portal Apă Oradea",
-      hidro_prahova: "Portal Hidro Prahova",
     };
     return labels[key] || "";
   }
@@ -2051,7 +2050,7 @@ _buildProviderRefreshButton(provider) {
 
         try {
           const providerKey = String(wrapper?.getAttribute("data-provider") || "").trim().toLowerCase();
-          if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "hidro_prahova") {
+          if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea") {
             await this._hass.callService("utilitati_romania", "submit_reading", {
               provider: providerKey,
               entry_id: String(wrapper?.getAttribute("data-entry-id") || ""),
@@ -2061,7 +2060,7 @@ _buildProviderRefreshButton(provider) {
             });
           } else {
             if (providerKey === "eon") {
-              const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|hidro_prahova|apacanal|ebloc)/i;
+              const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|apacanal|ebloc)/i;
               if (wrongProviderPattern.test(String(numberEntityId)) || wrongProviderPattern.test(String(buttonEntityId))) {
                 throw new Error("Cardul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina sau actualizează integrarea.");
               }
