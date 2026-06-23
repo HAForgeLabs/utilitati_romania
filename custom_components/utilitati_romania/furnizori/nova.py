@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from io import BytesIO
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 import aiohttp
@@ -21,6 +23,7 @@ ENDPOINT_LOGIN = "/accounts/login/client"
 ENDPOINT_COMUTARE_CONT = "/accounts/switch"
 ENDPOINT_PUNCTE_CONSUM = "/metering-points"
 ENDPOINT_FACTURI = "/invoices"
+ENDPOINT_FACTURA_DOWNLOAD = "/invoices/download"
 ENDPOINT_BALANTE = "/balances"
 ENDPOINT_PLATI = "/payments"
 ENDPOINT_AUTOCITIRI = "/self-readings"
@@ -195,6 +198,71 @@ class ClientApiNova:
         if not isinstance(data, dict):
             raise EroareRaspunsNova(f"Tip de răspuns neașteptat pentru portal {endpoint}: {type(data)}")
         return data
+
+
+    async def _request_portal_bytes(
+        self,
+        metoda: str,
+        endpoint: str,
+        *,
+        json_data: dict[str, Any] | None = None,
+        authorization: str | None = None,
+        autentificat: bool = True,
+    ) -> bytes:
+        """Trimite o cerere către portalul Nova și returnează răspuns binar.
+
+        Este folosit pentru descărcarea PDF-urilor de factură, care nu pot fi
+        procesate prin helperul JSON standard.
+        """
+
+        if autentificat and not authorization:
+            if not self._portal_token_valid():
+                await self.async_login_portal()
+            if self._portal_token:
+                authorization = f"Bearer {self._portal_token}"
+
+        antete: dict[str, str] = {
+            "Accept": "application/pdf, application/json, */*",
+            "Content-Type": "application/json",
+            "Origin": "https://myaccount.nova-energy.ro",
+            "Referer": "https://myaccount.nova-energy.ro/",
+            "User-Agent": "Mozilla/5.0",
+        }
+        if authorization:
+            antete["Authorization"] = authorization
+
+        try:
+            async with self._sesiune.request(
+                metoda,
+                self._url(endpoint, baza=URL_BAZA_PORTAL),
+                headers=antete,
+                json=json_data,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as raspuns:
+                continut = await raspuns.read()
+                if raspuns.status in (401, 403):
+                    raise EroareAutentificareNova(f"Autentificare eșuată pentru portal {endpoint}: HTTP {raspuns.status}")
+                if raspuns.status >= 400:
+                    text = continut[:500].decode("utf-8", errors="replace")
+                    raise EroareApiNova(f"Nova portal a returnat HTTP {raspuns.status} pentru {endpoint}: {text}")
+                return continut
+        except EroareApiNova:
+            raise
+        except aiohttp.ClientError as err:
+            raise EroareConectareNova(f"Eroare de conectare la portal {endpoint}: {err}") from err
+        except TimeoutError as err:
+            raise EroareConectareNova(f"Timeout la portal {endpoint}") from err
+
+    async def async_download_invoice_pdf(self, invoice_id: str) -> bytes | None:
+        """Descarcă PDF-ul unei facturi Nova din portal."""
+        invoice_id = str(invoice_id or "").strip()
+        if not invoice_id:
+            return None
+        return await self._request_portal_bytes(
+            "POST",
+            ENDPOINT_FACTURA_DOWNLOAD,
+            json_data={"invoiceId": invoice_id},
+        )
 
     async def async_login_portal(self) -> DateSesiuneNova:
         """Autentifică sesiunea pentru API-ul de portal Nova."""
@@ -536,6 +604,36 @@ class ClientApiNova:
                     factura["_nova_account"] = cont_activ
                     factura["_nova_account_id"] = id_cont_nova
 
+            factura_reprezentativa = _alege_factura_reprezentativa_nova([f for f in facturi_cont or [] if isinstance(f, dict)])
+            if isinstance(factura_reprezentativa, dict):
+                invoice_id = str(factura_reprezentativa.get("invoiceId") or "").strip()
+                if invoice_id:
+                    try:
+                        pdf_bytes = await self.async_download_invoice_pdf(invoice_id)
+                        detalii_pdf = _detalii_consum_din_pdf_nova(
+                            pdf_bytes,
+                            tip_serviciu=_normalizeaza_tip_serviciu(
+                                factura_reprezentativa.get("utilityType")
+                                or factura_reprezentativa.get("serviceType")
+                                or factura_reprezentativa.get("type")
+                            ),
+                            valoare_fallback=_valoare_afisata_factura_nova(factura_reprezentativa),
+                        )
+                        if detalii_pdf:
+                            factura_reprezentativa["consum_facturat_pdf"] = detalii_pdf
+                    except EroareApiNova as err:
+                        _LOGGER.debug(
+                            "Nova: nu s-a putut descărca/parsa PDF-ul facturii %s: %s",
+                            invoice_id,
+                            err,
+                        )
+                    except Exception:
+                        _LOGGER.debug(
+                            "Nova: eroare neașteptată la parsarea PDF-ului facturii %s",
+                            invoice_id,
+                            exc_info=True,
+                        )
+
             conturi_date.append(
                 {
                     "account": cont_activ,
@@ -850,6 +948,17 @@ class ClientFurnizorNova(ClientFurnizor):
             ultima = _alege_factura_reprezentativa_nova(facturi_cont)
             rest_ultima = _rest_plata_factura_nova(ultima) if ultima else None
             valoare_ultima = _valoare_afisata_factura_nova(ultima) if ultima else None
+            detalii_pdf_ultima = (ultima or {}).get("consum_facturat_pdf") if isinstance(ultima, dict) else {}
+            if not isinstance(detalii_pdf_ultima, dict):
+                detalii_pdf_ultima = {}
+            consum_unitate_ultima = _float_sigur(detalii_pdf_ultima.get("consum_kwh"))
+            cost_mediu_unitate = _float_sigur(detalii_pdf_ultima.get("cost_mediu_unitate_ultima_factura"))
+            unitate_consum_ultima = detalii_pdf_ultima.get("unitate_consum") or ("kWh" if consum_unitate_ultima else None)
+            pret_prosumator = _float_sigur(detalii_pdf_ultima.get("pret_mediu_energie_prosumator_ultima_factura"))
+            energie_livrata_prosumator = _float_sigur(detalii_pdf_ultima.get("energie_livrata_prosumator_kwh"))
+            energie_compensata_prosumator = _float_sigur(detalii_pdf_ultima.get("energie_compensata_prosumator_kwh"))
+            energie_reportata_prosumator = _float_sigur(detalii_pdf_ultima.get("energie_reportata_prosumator_kwh"))
+            valoare_energie_prosumator = _float_sigur(detalii_pdf_ultima.get("valoare_energie_prosumator_ultima_factura"))
             sold_total = _float_sigur(balanta_cont.get("total")) if isinstance(balanta_cont, dict) else None
             sold_prosumator = _float_sigur(balanta_cont.get("prosumer")) if isinstance(balanta_cont, dict) else None
             sold_credit = round(float(sold_total), 2) if sold_total is not None and sold_total < 0 else None
@@ -882,6 +991,13 @@ class ClientFurnizorNova(ClientFurnizor):
                 ConsumUtilitate(cheie="id_ultima_factura", valoare=str((ultima or {}).get("invoiceId") or "") or None, unitate=None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu),
                 ConsumUtilitate(cheie="valoare_ultima_factura", valoare=valoare_ultima, unitate="RON", id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu),
                 ConsumUtilitate(cheie="urmatoarea_scadenta", valoare=scadenta_ultima.strftime("%d.%m.%Y") if scadenta_ultima else None, unitate=None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu),
+                ConsumUtilitate(cheie="consum_unitate_ultima_factura", valoare=consum_unitate_ultima, unitate=unitate_consum_ultima, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu, date_brute=detalii_pdf_ultima),
+                ConsumUtilitate(cheie="cost_mediu_unitate_ultima_factura", valoare=cost_mediu_unitate, unitate=f"RON/{unitate_consum_ultima}" if unitate_consum_ultima else None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu, date_brute=detalii_pdf_ultima),
+                ConsumUtilitate(cheie="pret_mediu_energie_prosumator_ultima_factura", valoare=pret_prosumator, unitate="RON/kWh" if pret_prosumator else None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu, date_brute=detalii_pdf_ultima),
+                ConsumUtilitate(cheie="energie_livrata_prosumator_ultima_factura", valoare=energie_livrata_prosumator, unitate="kWh" if energie_livrata_prosumator is not None else None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu, date_brute=detalii_pdf_ultima),
+                ConsumUtilitate(cheie="energie_compensata_prosumator_ultima_factura", valoare=energie_compensata_prosumator, unitate="kWh" if energie_compensata_prosumator is not None else None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu, date_brute=detalii_pdf_ultima),
+                ConsumUtilitate(cheie="energie_reportata_prosumator_ultima_factura", valoare=energie_reportata_prosumator, unitate="kWh" if energie_reportata_prosumator is not None else None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu, date_brute=detalii_pdf_ultima),
+                ConsumUtilitate(cheie="valoare_energie_prosumator_ultima_factura", valoare=valoare_energie_prosumator, unitate="RON" if valoare_energie_prosumator is not None else None, id_cont=cont.id_cont, tip_utilitate=cont.tip_utilitate, tip_serviciu=cont.tip_serviciu, date_brute=detalii_pdf_ultima),
             ])
         return consumuri
 
@@ -1287,6 +1403,250 @@ def _prima_valoare_nova(*valori: Any) -> Any:
             return valoare
     return None
 
+
+
+def _float_text_factura(valoare: Any) -> float | None:
+    """Transformă valori numerice din PDF-uri românești în float."""
+    if valoare in (None, ""):
+        return None
+    text = str(valoare).strip()
+    text = text.replace(" ", " ")
+    text = re.sub(r"[^0-9,.-]", "", text)
+    if not text:
+        return None
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _text_pdf_nova(pdf_bytes: bytes | None) -> str:
+    """Extrage textul din PDF-ul Nova, dacă pypdf este disponibil."""
+    if not pdf_bytes:
+        return ""
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        _LOGGER.debug("Nova: pypdf nu este disponibil pentru parsarea facturii PDF.")
+        return ""
+
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        bucati = []
+        for page in reader.pages:
+            try:
+                bucati.append(page.extract_text() or "")
+            except Exception:
+                continue
+        return "\n".join(bucati)
+    except Exception:
+        _LOGGER.debug("Nova: PDF-ul facturii nu a putut fi parsat.", exc_info=True)
+        return ""
+
+
+def _detalii_consum_din_pdf_nova(pdf_bytes: bytes | None, *, tip_serviciu: str | None, valoare_fallback: float | None = None) -> dict[str, Any]:
+    """Extrage consumul facturat din factura PDF Nova.
+
+    Nova expune în API valoarea facturii, dar consumul detaliat este în PDF.
+    Folosim cantitatea facturată în kWh pentru energie electrică și gaz, iar
+    consumul în mc rămâne atribut informativ pentru gaz.
+    """
+    text = _text_pdf_nova(pdf_bytes)
+    if not text:
+        return {}
+
+    text_liniar = re.sub(r"\s+", " ", text)
+    valoare_factura = None
+    for pattern in (
+        r"VALOARE\s+FACTUR[ĂA]\s+CURENT[ĂA]\s*(?:lei)?\s*[: ]+([0-9.,]+)",
+        r"Valoare\s+factur[ăa]\s+curent[ăa]\s*(?:lei)?\s*[: ]+([0-9.,]+)",
+    ):
+        m = re.search(pattern, text_liniar, flags=re.IGNORECASE)
+        if m:
+            valoare_factura = _float_text_factura(m.group(1))
+            break
+    if valoare_factura is None:
+        valoare_factura = valoare_fallback
+
+    consum_kwh = None
+    tip = (tip_serviciu or "").lower()
+    patternuri_kwh = []
+    if "gaz" in tip:
+        patternuri_kwh.extend([
+            r"CONSUM\s+GAZE\s+NATURALE\s*(?:KWh)?\s*[: ]+([0-9.,]+)",
+            r"Cantitatea\s+facturat[ăa](?:\s*\(\s*KWh(?:/mc)?\s*\))?\s*[: ]+([0-9.,]+)",
+        ])
+    else:
+        patternuri_kwh.extend([
+            r"CONSUM\s+ENERGIE\s+ACTIV[ĂA]\s*(?:KWh)?\s*[: ]+([0-9.,]+)",
+            r"Cantitatea\s+facturat[ăa](?:\s*\(\s*KWh(?:/mc)?\s*\))?\s*[: ]+([0-9.,]+)",
+        ])
+    patternuri_kwh.append(r"([0-9.,]+)\s*KWh")
+
+    for pattern in patternuri_kwh:
+        valori = [_float_text_factura(x) for x in re.findall(pattern, text_liniar, flags=re.IGNORECASE)]
+        valori = [x for x in valori if x is not None and x > 0]
+        if valori:
+            consum_kwh = max(valori) if len(valori) > 1 else valori[0]
+            break
+
+    consum_mc = None
+    m_mc = re.search(r"Consum\s*\(\s*mc\s*\)\s*[: ]+([0-9.,]+)", text_liniar, flags=re.IGNORECASE)
+    if m_mc:
+        consum_mc = _float_text_factura(m_mc.group(1))
+
+    perioada = None
+    m_perioada = re.search(r"Perioad[ăa]\s+(?:de\s+)?(?:facturare|consum)\s*[: ]+([0-9./ -]+)", text_liniar, flags=re.IGNORECASE)
+    if m_perioada:
+        perioada = m_perioada.group(1).strip()
+
+    rezultat: dict[str, Any] = {
+        "sursa": "pdf_nova",
+        "valoare_factura_curenta": round(valoare_factura, 2) if valoare_factura is not None else None,
+        "unitate_consum": "kWh" if consum_kwh else None,
+        "consum_kwh": round(consum_kwh, 3) if consum_kwh else None,
+        "consum_mc": round(consum_mc, 3) if consum_mc else None,
+        "perioada_consum": perioada,
+    }
+    if valoare_factura and consum_kwh:
+        rezultat["cost_mediu_unitate_ultima_factura"] = round(valoare_factura / consum_kwh, 4)
+
+    detalii_prosumator = _detalii_prosumator_din_text_pdf_nova(text)
+    if detalii_prosumator:
+        rezultat.update(detalii_prosumator)
+
+    return {k: v for k, v in rezultat.items() if v not in (None, "")}
+
+
+def _normalizeaza_text_pdf_nova(text: str) -> str:
+    """Normalizează textul PDF Nova pentru expresii regulate stabile."""
+    translit = str.maketrans({
+        "ă": "a", "â": "a", "î": "i", "ș": "s", "ş": "s", "ț": "t", "ţ": "t",
+        "Ă": "A", "Â": "A", "Î": "I", "Ș": "S", "Ş": "S", "Ț": "T", "Ţ": "T",
+    })
+    return re.sub(r"\s+", " ", text.translate(translit)).strip()
+
+
+def _detalii_prosumator_din_text_pdf_nova(text: str) -> dict[str, Any]:
+    """Extrage prețul mediu recunoscut pentru energia de prosumator.
+
+    Factura Nova pentru prosumatori poate conține atât energia consumată din
+    rețea, cât și energia produsă/livrată. Nu amestecăm aceste valori cu
+    senzorul de cost al consumului: aici calculăm separat prețul mediu al
+    energiei livrate/compensate/reportate, acolo unde factura expune datele.
+    """
+    normalizat = _normalizeaza_text_pdf_nova(text)
+    if not re.search(r"prosumator|prosumer|produsa si livrata|livrata in retea", normalizat, flags=re.IGNORECASE):
+        return {}
+
+    rezultat: dict[str, Any] = {"sursa_prosumator": "pdf_nova"}
+
+    # Rezumatul din anexa prosumator: energie produsă/livrată, consumată,
+    # compensată și reportată. Aceste valori sunt utile ca atribute.
+    extrageri_rezumat = (
+        ("energie_livrata_prosumator_kwh", r"Energie electrica produsa si livrata in retea \(KWh\)\s*([0-9.,]+)\s*KWh"),
+        ("energie_consumata_retea_kwh", r"Energie electrica consumata din retea \(KWh\)\s*([0-9.,]+)\s*KWh"),
+        ("energie_compensata_prosumator_kwh", r"Energie electrica compensata \(KWh\)\s*([0-9.,]+)\s*KWh"),
+        ("energie_reportata_prosumator_kwh", r"Energie electrica reportata \(KWh\)\s*([0-9.,]+)\s*KWh"),
+        ("energie_returnata_prosumator_kwh", r"Energie electrica returnata \(KWh\)\s*([0-9.,]+)\s*KWh"),
+    )
+    for cheie, pattern in extrageri_rezumat:
+        m = re.search(pattern, normalizat, flags=re.IGNORECASE)
+        if m:
+            valoare = _float_text_factura(m.group(1))
+            if valoare is not None:
+                rezultat[cheie] = round(valoare, 3)
+
+    # În unele PDF-uri Nova, etichetele „compensată / reportată / returnată”
+    # apar înaintea celor trei valori. Le mapăm în ordinea afișată în anexă.
+    if not all(cheie in rezultat for cheie in (
+        "energie_compensata_prosumator_kwh",
+        "energie_reportata_prosumator_kwh",
+        "energie_returnata_prosumator_kwh",
+    )):
+        m_grup = re.search(
+            r"Energie electrica compensata \(KWh\)\s+"
+            r"Energie electrica reportata \(KWh\)\s+"
+            r"Energie electrica returnata \(KWh\)\s+"
+            r"([0-9.,]+)\s*KWh\s+([0-9.,]+)\s*KWh\s+([0-9.,]+)\s*KWh",
+            normalizat,
+            flags=re.IGNORECASE,
+        )
+        if m_grup:
+            for cheie, valoare_text in zip((
+                "energie_compensata_prosumator_kwh",
+                "energie_reportata_prosumator_kwh",
+                "energie_returnata_prosumator_kwh",
+            ), m_grup.groups(), strict=False):
+                valoare = _float_text_factura(valoare_text)
+                if valoare is not None:
+                    rezultat[cheie] = round(valoare, 3)
+
+    preturi: list[float] = []
+    cantitati: list[float] = []
+    valori: list[float] = []
+
+    # Linia din serviciile facturate pentru energia compensată în factura curentă.
+    for m in re.finditer(
+        r"Energie electrica produsa si livrata in SEN de prosumator\s+"
+        r"[0-9./-]+\s+KWH\s+(-?[0-9.,]+)\s+([0-9.,]+)\s+(-?[0-9.,]+)",
+        normalizat,
+        flags=re.IGNORECASE,
+    ):
+        cantitate = abs(_float_text_factura(m.group(1)) or 0.0)
+        pret = _float_text_factura(m.group(2))
+        valoare = abs(_float_text_factura(m.group(3)) or 0.0)
+        if cantitate > 0:
+            cantitati.append(cantitate)
+        if pret is not None and pret > 0:
+            preturi.append(pret)
+        if valoare > 0:
+            valori.append(valoare)
+
+    # Liniile de tip „Prosumer Surplus” din situația cantităților reportate.
+    for m in re.finditer(
+        r"Prosumer\s+Surplus\s+[A-Za-z]+/[0-9]{4}\s+(-?[0-9.,]+)\s+(-?[0-9.,]+)",
+        normalizat,
+        flags=re.IGNORECASE,
+    ):
+        cantitate = abs(_float_text_factura(m.group(1)) or 0.0)
+        valoare = abs(_float_text_factura(m.group(2)) or 0.0)
+        if cantitate > 0 and valoare > 0:
+            cantitati.append(cantitate)
+            valori.append(valoare)
+            preturi.append(valoare / cantitate)
+
+    # Dacă avem subtotaluri/totaluri, le folosim doar ca fallback pentru preț.
+    m_total = re.search(r"Total\s+([0-9.,]+)\s+(-?[0-9.,]+)\s+vreaulanova", normalizat, flags=re.IGNORECASE)
+    if m_total:
+        cantitate = abs(_float_text_factura(m_total.group(1)) or 0.0)
+        valoare = abs(_float_text_factura(m_total.group(2)) or 0.0)
+        if cantitate > 0 and valoare > 0:
+            preturi.append(valoare / cantitate)
+
+    pret_final = None
+    if preturi:
+        # De regulă tariful este constant pe factură; mediana simplă evită ca
+        # totalurile mari să suprascrie tariful curent când apar și rânduri istorice.
+        preturi_sortate = sorted(preturi)
+        pret_final = preturi_sortate[len(preturi_sortate) // 2]
+        rezultat["pret_mediu_energie_prosumator_ultima_factura"] = round(pret_final, 4)
+
+    cantitate_livrata = _float_sigur(rezultat.get("energie_livrata_prosumator_kwh"))
+    if pret_final is not None and cantitate_livrata is not None and cantitate_livrata > 0:
+        rezultat["cantitate_energie_prosumator_kwh"] = round(cantitate_livrata, 3)
+        rezultat["valoare_energie_prosumator_ultima_factura"] = round(pret_final * cantitate_livrata, 2)
+    else:
+        if valori:
+            rezultat["valoare_energie_prosumator_ultima_factura"] = round(sum(valori), 2)
+        if cantitati:
+            rezultat["cantitate_energie_prosumator_kwh"] = round(sum(cantitati), 3)
+
+    return rezultat if "pret_mediu_energie_prosumator_ultima_factura" in rezultat else {}
 
 def _float_sigur(valoare: Any) -> float | None:
     if valoare in (None, "", "null"):

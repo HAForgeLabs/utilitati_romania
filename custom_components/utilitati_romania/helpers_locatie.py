@@ -291,6 +291,59 @@ def _extract_street_number_pair(text: str) -> tuple[str, str, str]:
     return prefix, street_name, number
 
 
+
+
+def _extract_secondary_address_values(text: str) -> dict[str, str]:
+    normalized = normalize_text(text)
+    values: dict[str, str] = {}
+    marker_map = {
+        "bl": "bl",
+        "bloc": "bl",
+        "sc": "sc",
+        "scara": "sc",
+        "et": "et",
+        "etaj": "et",
+        "ap": "ap",
+        "apt": "ap",
+        "apartament": "ap",
+    }
+    pattern = re.compile(
+        r"\b(bl|bloc|sc|scara|et|etaj|ap|apt|apartament)\.?\s*[:\-]?\s*([a-z0-9\-/]+)",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(normalized):
+        key = marker_map.get(match.group(1).strip().lower())
+        value = str(match.group(2) or "").strip(" ,.-").lower()
+        if key and value and key not in values:
+            values[key] = value
+    return values
+
+
+def _secondary_key_suffix(text: str) -> str:
+    values = _extract_secondary_address_values(text)
+    parts: list[str] = []
+    for key in ("bl", "sc", "et", "ap"):
+        value = values.get(key)
+        if value:
+            parts.extend([key, value])
+    if not parts:
+        return ""
+    suffix = "_".join(parts)
+    suffix = re.sub(r"[^a-z0-9]+", "_", suffix)
+    suffix = re.sub(r"_+", "_", suffix).strip("_")
+    return suffix
+
+
+def _secondary_label_suffix(text: str) -> list[str]:
+    values = _extract_secondary_address_values(text)
+    labels = {"bl": "Bl.", "sc": "Sc.", "et": "Et.", "ap": "Ap."}
+    result: list[str] = []
+    for key in ("bl", "sc", "et", "ap"):
+        value = values.get(key)
+        if value:
+            result.append(f"{labels[key]} {value.upper()}")
+    return result
+
 def _normalize_street_for_key(prefix: str, street_name: str) -> str:
     parts: list[str] = []
 
@@ -353,11 +406,20 @@ def normalize_location_key(cont: Any) -> str:
 
     if street_name:
         street_key = _normalize_street_for_key(prefix, street_name)
+        suffix = _secondary_key_suffix(best_candidate)
+        key_parts = [street_key]
         if number:
-            return f"{street_key}_{normalize_text(number)}".strip("_")
-        return street_key or _fallback_key_from_text(best_candidate)
+            key_parts.append(normalize_text(number))
+        if suffix:
+            key_parts.append(suffix)
+        key = "_".join(part for part in key_parts if part).strip("_")
+        return key or _fallback_key_from_text(best_candidate)
 
-    return _fallback_key_from_text(best_candidate)
+    fallback_key = _fallback_key_from_text(best_candidate)
+    suffix = _secondary_key_suffix(best_candidate)
+    if suffix and not fallback_key.endswith(f"_{suffix}"):
+        return f"{fallback_key}_{suffix}".strip("_")
+    return fallback_key
 
 
 def build_location_label(cont: Any) -> str:
@@ -410,6 +472,9 @@ def build_location_label(cont: Any) -> str:
         parts = [f"{pretty_prefix} {street_pretty}"]
         if number:
             parts.append(f"Nr. {number.upper()}")
+        secondary_parts = _secondary_label_suffix(best_candidate)
+        if secondary_parts:
+            parts.append(" ".join(secondary_parts))
         if locality:
             parts.append(locality.title())
         return ", ".join(parts)

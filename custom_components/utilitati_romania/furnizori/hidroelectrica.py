@@ -361,7 +361,19 @@ def _construieste_factura_curenta_din_bill(
 
     este_prosumator = _detecteaza_prosumator_din_factura(bill)
     categorie = 'injectie' if este_prosumator and (suma is None or suma <= 0) else 'consum'
-    stare = 'neplatita' if (rest_plata or 0) > 0 else None
+    # `rembalance` poate fi soldul total al contului, nu restul individual al
+    # facturii curente. Pentru rândul de factură folosim suma facturii curente
+    # atunci când soldul total este mai mare decât factura curentă; soldul total
+    # rămâne disponibil separat în senzori prin `sold_curent`.
+    rest_plata_factura = rest_plata
+    if (
+        rest_plata is not None
+        and suma is not None
+        and rest_plata > suma > 0
+    ):
+        rest_plata_factura = suma
+
+    stare = 'neplatita' if (rest_plata_factura or 0) > 0 else None
 
     return FacturaUtilitate(
         id_factura=str(numar_factura or ''),
@@ -377,8 +389,128 @@ def _construieste_factura_curenta_din_bill(
         tip_utilitate='curent',
         tip_serviciu='curent',
         este_prosumator=este_prosumator,
-        date_brute={**bill, 'rest_plata': rest_plata, '_synthetic_current_bill': True},
+        date_brute={
+            **bill,
+            'rest_plata': rest_plata_factura,
+            'sold_total_cont': rest_plata,
+            '_synthetic_current_bill': True,
+        },
     )
+
+
+def _valoare_debug(valoare: Any) -> Any:
+    if isinstance(valoare, (str, int, float, bool)) or valoare is None:
+        return valoare
+    if isinstance(valoare, date):
+        return valoare.isoformat()
+    return str(valoare)
+
+
+def _rezumat_debug_hidroelectrica(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    rezultat: dict[str, Any] = {}
+    for cheie in (
+        'exbel', 'invoiceNo', 'InvoiceNo', 'invoiceNumber', 'invoiceId',
+        'invoiceType', 'type', 'billamount', 'amount', 'rembalance',
+        'remainingAmount', 'billdate', 'billDate', 'invoiceDate', 'date',
+        'duedate', 'dueDate', 'status', 'Status', 'paymentStatus',
+    ):
+        if cheie in payload:
+            rezultat[cheie] = _valoare_debug(payload.get(cheie))
+    return rezultat
+
+
+
+def _aloca_restante_din_sold_total_hidroelectrica(
+    facturi: list[FacturaUtilitate],
+    sold_total: float | None,
+) -> None:
+    """Marchează facturile neachitate folosind soldul total Hidroelectrica.
+
+    API-ul Hidroelectrica poate returna în `GetBill.rembalance` totalul de plată
+    pentru cont, iar în istoricul de facturi poate returna facturile individuale
+    fără un `remainingAmount` completat. În această situație nu trebuie să
+    afișăm soldul total ca factură separată; distribuim soldul pe cele mai noi
+    facturi de consum, în ordinea scadenței, până acoperim totalul.
+    """
+    if sold_total is None or sold_total <= 0:
+        return
+
+    facturi_consum = [
+        factura for factura in facturi
+        if factura.categorie == 'consum'
+        and factura.valoare is not None
+        and factura.valoare > 0
+    ]
+    if not facturi_consum:
+        return
+
+    # Dacă istoricul are deja resturi explicite, nu suprascriem datele certe.
+    total_explicit = 0.0
+    are_rest_explicit = False
+    for factura in facturi_consum:
+        rest = _float_ro(factura.date_brute.get('rest_plata'))
+        if rest is None:
+            rest = _float_ro(factura.date_brute.get('remainingAmount'))
+        if rest is not None:
+            are_rest_explicit = True
+            if rest > 0:
+                total_explicit += rest
+
+    if are_rest_explicit and abs(total_explicit - sold_total) < 0.01:
+        return
+
+    # Ordonăm de la cea mai nouă/scadentă factură către cele mai vechi. Pentru
+    # cazul cu mai multe facturi neachitate, soldul total este acoperit de
+    # ultimele facturi, nu de o factură sintetică.
+    facturi_ordonate = sorted(
+        facturi_consum,
+        key=lambda factura: (
+            factura.data_scadenta or date.min,
+            factura.data_emitere or date.min,
+            str(factura.id_factura or ''),
+        ),
+        reverse=True,
+    )
+
+    ramas = round(float(sold_total), 2)
+    selectate: list[tuple[FacturaUtilitate, float]] = []
+
+    for factura in facturi_ordonate:
+        if ramas <= 0.01:
+            break
+        valoare = round(float(factura.valoare or 0), 2)
+        if valoare <= 0:
+            continue
+        rest = min(valoare, ramas)
+        if rest <= 0.01:
+            continue
+        selectate.append((factura, round(rest, 2)))
+        ramas = round(ramas - rest, 2)
+
+    if not selectate:
+        return
+
+    suma_selectata = round(sum(rest for _, rest in selectate), 2)
+    # Dacă soldul total nu poate fi explicat rezonabil prin ultimele facturi,
+    # nu forțăm marcaje greșite. Toleranța acoperă rotunjiri și plăți parțiale.
+    if abs(suma_selectata - sold_total) > 0.05 and ramas > 0.05:
+        return
+
+    selectate_ids = {id(factura) for factura, _ in selectate}
+
+    for factura in facturi_consum:
+        if id(factura) not in selectate_ids:
+            if _float_ro(factura.date_brute.get('rest_plata')) is None:
+                factura.date_brute['rest_plata'] = 0.0
+            continue
+
+        rest = next(rest for selectata, rest in selectate if selectata is factura)
+        factura.date_brute['rest_plata'] = rest
+        factura.date_brute['sold_total_cont'] = round(float(sold_total), 2)
+        factura.date_brute['rest_plata_alocat_din_sold_total'] = True
+        factura.stare = 'neplatita'
 
 
 class ClientFurnizorHidroelectrica(ClientFurnizor):
@@ -415,6 +547,7 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
         facturi: list[FacturaUtilitate] = []
         consumuri: list[ConsumUtilitate] = []
         exista_prosumator = False
+        debug_facturi: list[dict[str, Any]] = []
 
         azi = datetime.now().date()
         de_la = (azi - timedelta(days=365 * 2)).strftime('%Y-%m-%d')
@@ -440,6 +573,15 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
             except Exception:
                 billing_payload = None
             lista_facturi = _extrage_lista_facturi(billing_payload)
+
+            debug_facturi.append({
+                'id_cont': account_number or uan,
+                'id_contract': uan,
+                'alias': alias_cont,
+                'get_bill': _rezumat_debug_hidroelectrica(bill),
+                'istoric_count': len(lista_facturi),
+                'istoric': [_rezumat_debug_hidroelectrica(item) for item in lista_facturi[:10]],
+            })
 
             try:
                 usage_payload = await self.api.async_fetch_usage(uan, account_number)
@@ -521,12 +663,26 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
                 if factura.id_factura:
                     facturi_cont_ids.add(factura.id_factura)
 
+            rembalance = _float_ro(bill.get('rembalance'))
+            _aloca_restante_din_sold_total_hidroelectrica(facturi_cont, rembalance)
+
+            # GetBill expune uneori `rembalance` ca sold total al contului, nu ca
+            # factură individuală. Dacă istoricul conține deja facturi neachitate
+            # explicite, nu mai adăugăm factura sintetică din GetBill în lista
+            # afișată în dashboard, pentru a nu dubla soldul cumulat. Senzorii de
+            # sold folosesc în continuare valorile din GetBill mai jos.
+            facturi_reale_neachitate = [
+                factura for factura in facturi_cont
+                if (factura.date_brute.get('rest_plata') or 0) > 0
+                or str(factura.stare or '').strip().lower() in {'neplatita', 'neachitata', 'unpaid'}
+            ]
+
             factura_curenta = _construieste_factura_curenta_din_bill(
                 bill,
                 id_cont=id_cont_unic,
                 id_contract=uan,
             )
-            if factura_curenta is not None:
+            if factura_curenta is not None and not facturi_reale_neachitate:
                 exista_prosumator = exista_prosumator or factura_curenta.este_prosumator
                 if not factura_curenta.id_factura or factura_curenta.id_factura not in facturi_cont_ids:
                     facturi_cont.append(factura_curenta)
@@ -535,7 +691,6 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
 
             facturi.extend(facturi_cont)
 
-            rembalance = _float_ro(bill.get('rembalance'))
             billamount = _float_ro(bill.get('billamount'))
             duedate = _parseaza_data(str(bill.get('duedate') or ''))
             numar_factura = _extrage_numar_factura_lizibil(bill)
@@ -601,5 +756,8 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
             conturi=conturi,
             facturi=facturi,
             consumuri=consumuri,
-            extra={'este_prosumator': exista_prosumator},
+            extra={
+                'este_prosumator': exista_prosumator,
+                'hidroelectrica_debug_facturi': debug_facturi,
+            },
         )

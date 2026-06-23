@@ -474,6 +474,63 @@ def _id_factura(factura: dict | None) -> str | None:
     return rezultat or None
 
 
+
+def _detalii_consum_factura_eon(detalii: dict | None) -> dict[str, Any]:
+    """Normalizează detaliile de contor din factura E.ON.
+
+    Pentru gaz, E.ON oferă atât consumul în mc, cât și consumul convertit
+    energetic în kWh. Pentru calculul costului mediu folosim kWh, deoarece
+    factura este detaliată energetic.
+    """
+    if not isinstance(detalii, dict):
+        return {}
+
+    meter_details = detalii.get("meterDetails")
+    if not isinstance(meter_details, list) or not meter_details:
+        return {}
+
+    consum_kwh = 0.0
+    consum_mc = 0.0
+    perioade: list[str] = []
+    serie_contor = None
+    index_vechi = None
+    index_nou = None
+    factura_id = None
+
+    for item in meter_details:
+        if not isinstance(item, dict):
+            continue
+        val_kwh = _to_float(item.get("energyConsumptionValue") or item.get("energyConsumption"), 0.0)
+        val_mc = _to_float(item.get("consumptionMcValue") or item.get("consumptionMc"), 0.0)
+        if val_kwh > 0:
+            consum_kwh += val_kwh
+        if val_mc > 0:
+            consum_mc += val_mc
+        if not serie_contor and item.get("meterSeries"):
+            serie_contor = _safe_str(item.get("meterSeries"))
+        if index_vechi is None and item.get("oldIndex") not in (None, ""):
+            index_vechi = _safe_str(item.get("oldIndex"))
+        if index_nou is None and item.get("newIndex") not in (None, ""):
+            index_nou = _safe_str(item.get("newIndex"))
+        if not factura_id and item.get("invoiceNumber"):
+            factura_id = _safe_str(item.get("invoiceNumber"))
+        perioada = _safe_str(item.get("consumptionPeriod"))
+        if perioada and perioada not in perioade:
+            perioade.append(perioada)
+
+    rezultat: dict[str, Any] = {
+        "sursa": "invoice_meter_details",
+        "invoice_number": factura_id,
+        "unitate_consum": "kWh" if consum_kwh > 0 else None,
+        "consum_kwh": round(consum_kwh, 3) if consum_kwh > 0 else None,
+        "consum_mc": round(consum_mc, 3) if consum_mc > 0 else None,
+        "serie_contor": serie_contor,
+        "index_vechi": index_vechi,
+        "index_nou": index_nou,
+        "perioada_consum": "; ".join(perioade) if perioade else None,
+    }
+    return {k: v for k, v in rezultat.items() if v not in (None, "")}
+
 async def asyncio_gather_eon(*aws):
     rezultate = []
     for coro in aws:
@@ -627,6 +684,18 @@ class ClientFurnizorEon(ClientFurnizor):
             urmatoarea_scadenta = _ultima_data_scadenta(ultima_factura)
             data_ultima_factura = _data_emitere_factura(ultima_factura)
 
+            detalii_contor_factura: dict[str, Any] = {}
+            if id_ultima_factura:
+                try:
+                    detalii_raw = await self._api.async_fetch_invoice_meter_details(id_ultima_factura)
+                    detalii_contor_factura = _detalii_consum_factura_eon(detalii_raw)
+                except Exception:
+                    _LOGGER.debug(
+                        "E.ON: nu s-au putut citi detaliile de contor pentru factura %s",
+                        id_ultima_factura,
+                        exc_info=True,
+                    )
+
             if factura_restanta:
                 valoare_ultima_factura = round(sold_factura, 2)
                 tip_ultima_valoare = "factura"
@@ -666,6 +735,14 @@ class ClientFurnizorEon(ClientFurnizor):
                     "id_ultima_factura": id_ultima_factura,
                     "valoare_ultima_factura": valoare_ultima_factura,
                     "tip_ultima_valoare": tip_ultima_valoare,
+                    "data_ultima_factura": data_ultima_factura,
+                    "detalii_contor_ultima_factura": detalii_contor_factura,
+                    "consum_unitate_ultima_factura": detalii_contor_factura.get("consum_kwh"),
+                    "unitate_consum_ultima_factura": "kWh" if detalii_contor_factura.get("consum_kwh") else None,
+                    "consum_mc_ultima_factura": detalii_contor_factura.get("consum_mc"),
+                    "valoare_factura_cost_unitate": _valoare_factura(ultima_factura) or valoare_ultima_factura,
+                    "cost_mediu_unitate_ultima_factura": round((_valoare_factura(ultima_factura) or valoare_ultima_factura) / detalii_contor_factura.get("consum_kwh"), 4) if detalii_contor_factura.get("consum_kwh") and (_valoare_factura(ultima_factura) or valoare_ultima_factura) else None,
+                    "unitate_cost_mediu": "kWh" if detalii_contor_factura.get("consum_kwh") else None,
                     "data_ultima_factura": data_ultima_factura,
                     "urmatoarea_scadenta": urmatoarea_scadenta,
                     "ultima_plata_data": _safe_str((ultima_plata or {}).get("data")) or None,
@@ -784,6 +861,8 @@ class ClientFurnizorEon(ClientFurnizor):
                     ConsumUtilitate("ultima_plata_valoare", round(_to_float(loc.get("ultima_plata_valoare"), 0.0), 2), "RON", id_cont=id_cont, tip_serviciu=tip_serviciu, tip_utilitate=loc.get("tip_utilitate_cod"), date_brute=loc),
                     ConsumUtilitate("ultima_plata_data", _safe_str(loc.get("ultima_plata_data")) or None, None, id_cont=id_cont, tip_serviciu=tip_serviciu, tip_utilitate=loc.get("tip_utilitate_cod"), date_brute=loc),
                     ConsumUtilitate("tip_ultima_valoare", _safe_str(loc.get("tip_ultima_valoare")) or None, None, id_cont=id_cont, tip_serviciu=tip_serviciu, tip_utilitate=loc.get("tip_utilitate_cod"), date_brute=loc),
+                    ConsumUtilitate("consum_unitate_ultima_factura", loc.get("consum_unitate_ultima_factura"), loc.get("unitate_consum_ultima_factura"), id_cont=id_cont, tip_serviciu=tip_serviciu, tip_utilitate=loc.get("tip_utilitate_cod"), date_brute=loc),
+                    ConsumUtilitate("cost_mediu_unitate_ultima_factura", loc.get("cost_mediu_unitate_ultima_factura"), f"RON/{loc.get('unitate_cost_mediu')}" if loc.get("unitate_cost_mediu") else None, id_cont=id_cont, tip_serviciu=tip_serviciu, tip_utilitate=loc.get("tip_utilitate_cod"), date_brute=loc),
                 ]
             )
 

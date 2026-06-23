@@ -1312,17 +1312,6 @@ def _extrage_valoare_lista_din_structura(data: Any) -> float | None:
             return round(total, 2)
 
     return None
-def _valoare_factura_curenta(lista_plata: ListaPlataEbloc) -> float | None:
-    sold_curent = lista_plata.sold_curent
-    if sold_curent is not None and sold_curent > 0:
-        return round(float(sold_curent), 2)
-
-    if lista_plata.valoare is not None:
-        return round(float(lista_plata.valoare), 2)
-
-    return None
-
-
 def _construieste_lista_plata(pachet: dict[str, Any], luna_curenta: str | None) -> ListaPlataEbloc:
     sold_curent = _extrage_sold_curent(pachet)
     home_info = _prima_intrare_dict(pachet.get("home_info_web") or {})
@@ -1345,7 +1334,6 @@ def _construieste_lista_plata(pachet: dict[str, Any], luna_curenta: str | None) 
         or _extrage_plati_web(pachet.get("plati_ap_web") or {})
         or _extrage_plati_web(pachet.get("plati_toti_web") or {})
     )
-
     if sold_curent is None:
         sold_curent = 0.0 if valoare is not None and plati else None
 
@@ -1362,6 +1350,27 @@ def _construieste_lista_plata(pachet: dict[str, Any], luna_curenta: str | None) 
     )
 
 
+
+
+
+
+def _valoare_factura_curenta(lista_plata: ListaPlataEbloc) -> float | None:
+    """Returneaza valoarea care trebuie afisata ca factura curenta e-bloc.
+
+    Pentru e-bloc, suma relevanta pentru o factura neplatita este soldul curent
+    / suma de plata returnata de portal. Valoarea listei de plata se pastreaza
+    ca fallback informativ, dar nu folosim ultima plata ca valoare de factura.
+    """
+
+    sold = _bani_sigur(lista_plata.sold_curent)
+    if sold is not None and sold > 0:
+        return sold
+
+    valoare = _bani_sigur(lista_plata.valoare)
+    if valoare is not None and valoare > 0:
+        return valoare
+
+    return None
 
 
 def _adauga_luni(data_initiala: date, luni: int) -> date:
