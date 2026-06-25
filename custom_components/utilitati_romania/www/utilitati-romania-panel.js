@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b8";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b9";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -456,27 +456,61 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return normalized || this._locationKey(location) || "locatie";
   }
 
+  _billingDisplayName(location, provider = null) {
+    const manualFromProvider = this._cleanLocationCandidate(provider?.eticheta_grupare_manuala || provider?.grupare_facturi || provider?.billing_group);
+    if (manualFromProvider) return manualFromProvider;
+
+    const matched = provider ? this._matchedBillingGroupEntity(location, provider) : null;
+    const saved = this._cleanLocationCandidate(matched?.savedValue);
+    if (saved) return saved;
+
+    return this._displayLocationName(location);
+  }
+
   _displayLocations(locations) {
     const groups = new Map();
 
     for (const location of locations || []) {
-      const label = this._displayLocationName(location);
-      const key = this._displayLocationGroupKey(location);
-      if (!groups.has(key)) {
-        groups.set(key, {
-          ...location,
-          _dashboard_display_name: label,
-          _dashboard_source_locations: [],
-          furnizori: [],
-          total_neplatit: 0,
-        });
+      const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
+
+      if (!providers.length) {
+        const label = this._displayLocationName(location);
+        const key = this._displayLocationGroupKey(location);
+        if (!groups.has(key)) {
+          groups.set(key, {
+            ...location,
+            _dashboard_display_name: label,
+            _dashboard_source_locations: [location],
+            furnizori: [],
+            total_neplatit: this._num(location?.total_neplatit),
+          });
+        }
+        continue;
       }
 
-      const group = groups.get(key);
-      group._dashboard_source_locations.push(location);
-      const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
-      group.furnizori.push(...providers);
-      group.total_neplatit += this._num(location?.total_neplatit);
+      for (const provider of providers) {
+        const label = this._billingDisplayName(location, provider);
+        const normalized = this._normalizeText(label);
+        const key = normalized || this._displayLocationGroupKey(location);
+        if (!groups.has(key)) {
+          groups.set(key, {
+            ...location,
+            locatie_cheie: key,
+            eticheta_locatie: label,
+            _dashboard_display_name: label,
+            _dashboard_source_locations: [],
+            furnizori: [],
+            total_neplatit: 0,
+          });
+        }
+
+        const group = groups.get(key);
+        group._dashboard_source_locations.push(location);
+        group.furnizori.push(provider);
+        if (this._status(provider) === "unpaid") {
+          group.total_neplatit += this._providerUnpaidTotal(provider);
+        }
+      }
     }
 
     return Array.from(groups.values()).map((location) => ({
@@ -1015,7 +1049,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const dueText = days < 0 ? `întârziată cu ${Math.abs(days)} zile` : days === 0 ? "scadentă azi" : `${days} zile rămase`;
     return `
       <article class="due ${dueTone}">
-        <div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._displayLocationName(location))}</span></div>
+        <div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._billingDisplayName(location, provider))}</span></div>
         <div class="due-right"><b>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</b><small>${this._escape(dueText)}</small></div>
       </article>
     `;
@@ -1209,8 +1243,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (grouping === "due_date") return this._invoiceDueDateGroup(entry);
     if (grouping === "urgency") return this._invoiceUrgencyGroup(entry);
     if (grouping === "amount") return this._invoiceAmountGroup(entry);
-    const title = this._displayLocationName(entry?.location);
-    return { key: `location_${this._displayLocationGroupKey(entry?.location)}`, title, order: 0 };
+    const title = this._billingDisplayName(entry?.location, entry?.provider);
+    const key = this._normalizeText(title) || this._displayLocationGroupKey(entry?.location);
+    return { key: `location_${key}`, title, order: 0 };
   }
 
   _buildInvoiceGroups(entries, grouping) {
@@ -2001,7 +2036,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const providers = this._allProviders(summary.locations || []).map(({ location, provider }) => {
       const reading = this._getReadingData(location, provider);
       return {
-        locatie: this._displayLocationName(location),
+        locatie: this._billingDisplayName(location, provider),
         furnizor: this._providerName(provider),
         status_factura: this._statusLabel(this._status(provider)),
         scadenta: this._date(this._providerDue(provider)),
@@ -2196,6 +2231,80 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
 
+  _billingGroupEntitySignature(location, provider) {
+    return this._normalizeText([
+      this._providerName(provider),
+      provider?.furnizor_label,
+      provider?.furnizor,
+      provider?.provider,
+      provider?.adresa_originala,
+      provider?.adresa,
+      provider?.address,
+      provider?.nume_cont,
+      provider?.account_name,
+      provider?.cont,
+      provider?.id_cont,
+      provider?.id_contract,
+      provider?.cod_client,
+      provider?.pod,
+      provider?.ppe,
+      location?.locatie_cheie,
+      location?.eticheta_locatie,
+      location?.name,
+      this._rawLocationName(location),
+      this._bestLocationLabel(this._locationCandidates(location, provider)),
+    ].filter(Boolean).join(" "));
+  }
+
+  _matchedBillingGroupEntity(location, provider) {
+    if (!provider) return null;
+    const groups = this._billingGroupEntities(this._summary()).filter((item) => this._cleanLocationCandidate(item?.savedValue));
+    if (!groups.length) return null;
+
+    const providerKey = this._providerKey(provider);
+    const providerName = this._normalizeText(this._providerName(provider));
+    const signature = this._billingGroupEntitySignature(location, provider);
+    const identifiers = [
+      provider?.id_cont,
+      provider?.id_contract,
+      provider?.cod_client,
+      provider?.pod,
+      provider?.ppe,
+      provider?.nume_cont,
+      provider?.adresa_originala,
+      provider?.adresa,
+      this._rawLocationName(location),
+      location?.locatie_cheie,
+      location?.eticheta_locatie,
+    ].map((value) => this._normalizeText(value)).filter((value) => value && value.length > 2);
+
+    let best = null;
+    for (const item of groups) {
+      const entityText = this._normalizeText([item.entityId, item.friendly, item.label, item.provider, item.matchKey].filter(Boolean).join(" "));
+      let score = 0;
+
+      if (providerKey && entityText.includes(providerKey.replace(/_/g, " "))) score += 35;
+      if (providerKey && entityText.includes(providerKey)) score += 35;
+      if (providerName && entityText.includes(providerName)) score += 35;
+
+      for (const identifier of identifiers) {
+        const compactIdentifier = identifier.replace(/\s+/g, "");
+        const compactEntity = entityText.replace(/\s+/g, "");
+        if (identifier && entityText.includes(identifier)) score += Math.min(70, 20 + identifier.length);
+        else if (compactIdentifier && compactEntity.includes(compactIdentifier)) score += Math.min(70, 20 + compactIdentifier.length);
+      }
+
+      const terms = signature.split(/\s+/).filter((term) => term.length > 2 && !["romania", "facturi", "grupare", "strada", "numar"].includes(term));
+      for (const term of terms) {
+        if (entityText.includes(term)) score += Math.min(8, term.length);
+      }
+
+      if (!best || score > best.score) best = { item, score };
+    }
+
+    return best?.score >= 55 ? best.item : null;
+  }
+
   _renderSettings(summary) {
     const mobileSelect = this._mobileDeviceSelectEntity();
     const mobileOptions = Array.isArray(mobileSelect?.attributes?.options) ? mobileSelect.attributes.options : [];
@@ -2359,7 +2468,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
             const reading = this._getReadingData(location, provider);
             const status = this._status(provider);
             const readingTone = reading.isOpen ? "open" : reading.available ? "closed" : "missing";
-            return `<article class="provider-status-row"><div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._displayLocationName(location))}</span></div><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span><span class="pill ${readingTone}">${this._escape(reading.isOpen ? "Citire deschisă" : reading.available ? "Citire închisă" : "Citire nedetectată")}</span></article>`;
+            return `<article class="provider-status-row"><div><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._billingDisplayName(location, provider))}</span></div><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span><span class="pill ${readingTone}">${this._escape(reading.isOpen ? "Citire deschisă" : reading.available ? "Citire închisă" : "Citire nedetectată")}</span></article>`;
           }).join("") : `<div class="empty">Nu există furnizori în senzorul agregat.</div>`}
         </div>
       </section>

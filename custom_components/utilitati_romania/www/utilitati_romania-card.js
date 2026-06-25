@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b8";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b9";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -470,6 +470,12 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return String(a.provider?.invoice_title || "").localeCompare(String(b.provider?.invoice_title || ""), "ro");
   }
 
+  _billingDisplayName(location, provider = null) {
+    const manual = String(provider?.eticheta_grupare_manuala || provider?.grupare_facturi || provider?.billing_group || "").trim();
+    if (manual && !["unknown", "unavailable", "null", "undefined"].includes(manual.toLowerCase())) return manual;
+    return location?.eticheta_locatie || location?.locatie_cheie || "Locație";
+  }
+
   _invoiceStatusGroup(entry) {
     const status = entry?.status || "unknown";
     const order = { unpaid: 0, paid: 1, credit: 2, unknown: 3 };
@@ -562,9 +568,10 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (grouping === "due_date") return this._invoiceDueDateGroup(entry);
     if (grouping === "urgency") return this._invoiceUrgencyGroup(entry);
     if (grouping === "amount") return this._invoiceAmountGroup(entry);
+    const title = this._billingDisplayName(entry?.location, entry?.provider);
     return {
-      key: entry?.location?.locatie_cheie || entry?.location?.eticheta_locatie || "locatie",
-      title: entry?.location?.eticheta_locatie || entry?.location?.locatie_cheie || "Locație",
+      key: this._normalizeText(title) || entry?.location?.locatie_cheie || entry?.location?.eticheta_locatie || "locatie",
+      title,
       order: 0,
     };
   }
