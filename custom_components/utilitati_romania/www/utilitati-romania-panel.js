@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b9";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b11";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -15,6 +15,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._invoiceGrouping = this._loadInvoiceGroupingPreference() || "location";
     this._invoiceFilter = this._loadInvoiceFilterPreference() || "all";
     this._settingsDrafts = new Map();
+    this._dashboardDrafts = new Map();
     this._licenseDraft = "";
     this._interactiveUntil = 0;
   }
@@ -40,7 +41,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (Date.now() < this._interactiveUntil) return true;
     const active = this.shadowRoot.activeElement;
     if (!active) return false;
-    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias], [data-billing-group], [data-consumption-visibility]");
+    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias], [data-billing-group], [data-dashboard-pref-text], [data-consumption-visibility]");
   }
 
   _holdRenderBriefly(ms = 3500) {
@@ -2382,12 +2383,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
             <label class="setting-field">
               <span>Text buton</span>
               <small>Ex. Înapoi, Acasă, Dashboard principal</small>
-              <input type="text" data-dashboard-pref-text="backButtonLabel" value="${this._escape(dashboardPrefs.backButtonLabel || "Înapoi")}" placeholder="Înapoi">
+              <input type="text" data-dashboard-pref-text="backButtonLabel" value="${this._escape(this._dashboardDrafts.has("backButtonLabel") ? this._dashboardDrafts.get("backButtonLabel") : (dashboardPrefs.backButtonLabel || "Înapoi"))}" placeholder="Înapoi">
             </label>
             <label class="setting-field">
               <span>Pagina destinație</span>
               <small>Poți folosi o cale Home Assistant, de exemplu /lovelace, /dashboard-home/0 sau valoarea history pentru revenire în browser.</small>
-              <input type="text" data-dashboard-pref-text="backButtonTarget" value="${this._escape(dashboardPrefs.backButtonTarget || "/lovelace")}" placeholder="/lovelace">
+              <input type="text" data-dashboard-pref-text="backButtonTarget" value="${this._escape(this._dashboardDrafts.has("backButtonTarget") ? this._dashboardDrafts.get("backButtonTarget") : (dashboardPrefs.backButtonTarget || "/lovelace"))}" placeholder="/lovelace">
             </label>
           </div>
         </div>
@@ -2626,10 +2627,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .contact-action ha-icon { color:#4ea1ff; }
 
       .settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
-      .setting-block { display:grid; gap:14px; padding:18px; border-radius:20px; background:#f7f9fc; border:1px solid rgba(17,32,51,.06); }
+      .setting-block { display:grid; gap:14px; align-content:start; padding:18px; border-radius:20px; background:#f7f9fc; border:1px solid rgba(17,32,51,.06); }
       .setting-block h3 { margin:0 0 6px; font-size:18px; }
       .setting-block p,.setting-hint { color:#6b7b90; margin:0; line-height:1.45; }
       .setting-block select,.location-alias-row input { width:100%; border:1px solid rgba(17,32,51,.12); border-radius:16px; padding:13px 14px; font:inherit; background:#fff; color:#142033; outline:none; }
+      .setting-block select { height:48px; min-height:48px; align-self:start; }
       .settings-list,.location-alias-list { display:grid; gap:12px; }
       .consumption-visibility-card { overflow:hidden; }
       .consumption-stats { display:grid; grid-template-columns:repeat(2,minmax(0,170px)); gap:12px; margin:16px 0 18px; }
@@ -2985,6 +2987,25 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         const prefs = this._dashboardPreferences();
         prefs[input.getAttribute("data-dashboard-pref")] = input.checked;
         this._saveJsonPreference("dashboard_preferences", prefs);
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-dashboard-pref-text]").forEach((input) => {
+      input.addEventListener("focus", () => this._holdRenderBriefly(9000));
+      input.addEventListener("input", (event) => {
+        const key = input.getAttribute("data-dashboard-pref-text");
+        const value = event.target.value || "";
+        const prefs = this._dashboardPreferences();
+        prefs[key] = value;
+        this._dashboardDrafts.set(key, value);
+        this._saveJsonPreference("dashboard_preferences", prefs);
+        this._holdRenderBriefly(9000);
+      });
+      input.addEventListener("blur", () => {
+        const key = input.getAttribute("data-dashboard-pref-text");
+        const prefs = this._dashboardPreferences();
+        prefs[key] = input.value || "";
+        this._saveJsonPreference("dashboard_preferences", prefs);
+        window.setTimeout(() => this._dashboardDrafts.delete(key), 200);
       });
     });
     this.shadowRoot.querySelectorAll("[data-location-alias]").forEach((input) => {
