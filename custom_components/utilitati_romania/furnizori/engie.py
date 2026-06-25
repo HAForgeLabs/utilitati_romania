@@ -22,6 +22,7 @@ URL_AUTENTIFICARE = f"{URL_BAZA}/v1/login"
 URL_REFRESH_TOKEN = "https://auth.engie.ro/oauth/token"
 URL_PROFIL = f"{URL_BAZA}/v1/user/me"
 URL_LOCURI_CONSUM = f"{URL_BAZA}/v1/placesofconsumption"
+URL_INDEX = f"{URL_BAZA}/v1/index"
 URL_SOLD = f"{URL_BAZA}/v1/invoices/ballance-details"
 URL_WIDGET_SOLD = f"{URL_BAZA}/v1/widgets/ballance"
 URL_CONTRACTE = f"{URL_BAZA}/v1/contracts"
@@ -109,6 +110,48 @@ def _unwrap(raw: Any) -> Any:
         return raw.get("data")
     return raw
 
+
+
+
+def _mesaj_eroare_engie(data: Any) -> str | None:
+    if not isinstance(data, dict):
+        return None
+
+    mesaje: list[str] = []
+
+    def adauga(value: Any) -> None:
+        if isinstance(value, bool):
+            return
+        text = _text(value)
+        if text and text.lower() not in {"true", "false", "none", "null"} and text not in mesaje:
+            mesaje.append(text)
+
+    errors = data.get("errors")
+    if isinstance(errors, dict):
+        for cheie in ("erori", "error", "message", "errorMessage", "description"):
+            adauga(errors.get(cheie))
+        for value in errors.values():
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, dict):
+                        for cheie in ("erori", "error", "message", "errorMessage", "description"):
+                            adauga(item.get(cheie))
+                    else:
+                        adauga(item)
+    elif isinstance(errors, list):
+        for item in errors:
+            if isinstance(item, dict):
+                for cheie in ("erori", "error", "message", "errorMessage", "description"):
+                    adauga(item.get(cheie))
+            else:
+                adauga(item)
+    else:
+        adauga(errors)
+
+    for cheie in ("message", "error_description", "error", "detail", "title"):
+        adauga(data.get(cheie))
+
+    return "; ".join(mesaje) if mesaje else None
 
 def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
@@ -386,6 +429,29 @@ def _instalatie(divizie: dict[str, Any]) -> str:
             return _text(_valoare_din_chei(first, ("installation_number", "installationNumber", "number", "id")))
         return _text(first)
     return _text(_valoare_din_chei(divizie, ("installation_number", "installationNumber", "installation", "installation_id")))
+
+
+def _instalatie_din_index(data: Any) -> str:
+    if isinstance(data, list):
+        for item in data:
+            gasit = _instalatie_din_index(item)
+            if gasit:
+                return gasit
+        return ""
+    if isinstance(data, dict):
+        direct = _text(_valoare_din_chei(data, (
+            "installation_number", "installationNumber", "installation", "installation_id",
+            "installationId", "installationNo", "installation_no",
+        )))
+        if direct:
+            return direct
+        for cheie in ("installations", "meters", "counters", "index_readings", "readings", "data"):
+            value = data.get(cheie)
+            if isinstance(value, (list, dict)):
+                gasit = _instalatie_din_index(value)
+                if gasit:
+                    return gasit
+    return ""
 
 
 def _serie_contor(data: Any) -> str | None:
@@ -912,6 +978,45 @@ class ClientApiEngie:
             params["serie_contor"] = serie
         return await self._request_json("GET", f"{URL_BAZA}/v1/index/{poc}", params=params)
 
+    async def async_transmite_index(self, poc: str, division: str, installation: str, index: int | str) -> dict[str, Any]:
+        await self._asigura_autentificare()
+        payload = {
+            "poc_number": str(poc),
+            "division": str(division or "gaz"),
+            "installation_number": int(installation) if str(installation).isdigit() else str(installation),
+            "index": str(index),
+        }
+
+        for incercare in range(2):
+            try:
+                headers = self._headers()
+                headers["source"] = "desktop"
+                headers["Origin"] = "https://my.engie.ro"
+                headers["Referer"] = "https://my.engie.ro/"
+                async with self._sesiune.post(
+                    URL_INDEX,
+                    json=payload,
+                    headers=headers,
+                    timeout=TIMEOUT_API,
+                ) as raspuns:
+                    if raspuns.status == 401 and incercare == 0:
+                        self._obtinut_monotonic = 0.0
+                        await self._asigura_autentificare()
+                        continue
+                    data = await self._json_sigur(raspuns)
+                    if not isinstance(data, dict):
+                        data = {"data": data}
+                    data["http_status"] = raspuns.status
+                    if raspuns.status >= 400 and data.get("error") is not True:
+                        mesaj = _mesaj_eroare_engie(data) or f"ENGIE a returnat HTTP {raspuns.status} la transmiterea indexului."
+                        data["error"] = True
+                        data.setdefault("errors", {"erori": mesaj})
+                    return data
+            except (aiohttp.ClientError, TimeoutError) as err:
+                raise EroareConectare(f"Eroare conectare ENGIE la transmiterea indexului: {err}") from err
+
+        raise EroareAutentificare("Sesiune ENGIE expirată")
+
     async def async_istoric_facturi(self, poc: str, pa: str, start: str, end: str) -> Any:
         params = {"startDate": start, "endDate": end, "pa": pa}
         try:
@@ -1076,6 +1181,8 @@ class ClientFurnizorEngie(ClientFurnizor):
                 facturi_loc = _lista_facturi(invoices_raw)
                 consum_lunar = _lista_consum(consumption_raw)
                 index_data = _unwrap(index_raw)
+                if not installation:
+                    installation = _instalatie_din_index(index_data)
                 pod_index = _pod_din_index(index_data)
                 if not pod and pod_index:
                     pod = pod_index

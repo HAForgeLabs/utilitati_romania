@@ -53,7 +53,7 @@ from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licent
 
 _LOGGER = logging.getLogger(__name__)
 
-_FRONTEND_VERSION = "1.10.1"
+_FRONTEND_VERSION = "1.10.7b8"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -65,6 +65,126 @@ _ADMIN_PLATFORME = [Platform.SENSOR, Platform.BUTTON, Platform.TEXT, Platform.SE
 def _slug_legacy(text: str | None) -> str:
     value = str(text or "cont").lower()
     return "".join(ch if ch.isalnum() else "_" for ch in value).strip("_")[:100] or "cont"
+
+
+
+
+def _mesaj_eroare_engie(data) -> str | None:
+    if not isinstance(data, dict):
+        return None
+
+    mesaje: list[str] = []
+
+    def adauga(value) -> None:
+        if value in (None, "") or isinstance(value, bool):
+            return
+        text = str(value).strip()
+        if text and text.lower() not in {"true", "false", "none", "null"} and text not in mesaje:
+            mesaje.append(text)
+
+    errors = data.get("errors")
+    if isinstance(errors, dict):
+        for cheie in ("erori", "error", "message", "errorMessage", "description"):
+            adauga(errors.get(cheie))
+        for value in errors.values():
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        for cheie in ("erori", "error", "message", "errorMessage", "description"):
+                            adauga(item.get(cheie))
+                    else:
+                        adauga(item)
+    elif isinstance(errors, list):
+        for item in errors:
+            if isinstance(item, dict):
+                for cheie in ("erori", "error", "message", "errorMessage", "description"):
+                    adauga(item.get(cheie))
+            else:
+                adauga(item)
+    else:
+        adauga(errors)
+
+    for cheie in ("message", "error_description", "error", "detail", "title"):
+        adauga(data.get(cheie))
+
+    return "; ".join(mesaje) if mesaje else None
+
+
+def _engie_index_ascuns(raw: dict) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    index_data = raw.get("index") if isinstance(raw.get("index"), dict) else {}
+    installations = index_data.get("installations") if isinstance(index_data.get("installations"), list) else []
+    for item in installations:
+        if isinstance(item, dict) and item.get("hide_index") is True:
+            return True
+    return bool(index_data.get("hide_index") is True)
+
+
+def _engie_cauta_in_date_index(data, chei: tuple[str, ...]) -> str:
+    """Cauta recursiv o valoare tehnica ENGIE in datele brute/index."""
+    if isinstance(data, dict):
+        for cheie in chei:
+            valoare = data.get(cheie)
+            if valoare not in (None, ""):
+                return str(valoare).strip()
+        for valoare in data.values():
+            if isinstance(valoare, (dict, list)):
+                gasit = _engie_cauta_in_date_index(valoare, chei)
+                if gasit:
+                    return gasit
+    elif isinstance(data, list):
+        for item in data:
+            gasit = _engie_cauta_in_date_index(item, chei)
+            if gasit:
+                return gasit
+    return ""
+
+
+def _engie_date_tehnice_index(raw_or_cont, cont=None) -> tuple[str, str, str]:
+    """Extrage datele necesare pentru transmiterea indexului ENGIE.
+
+    In raspunsurile ENGIE, installation_number poate veni in datele principale ale
+    locului de consum sau in raspunsul dedicat pentru index, de obicei in
+    index.installations[0].installation_number. Din acest motiv cautarea este
+    intentionat mai toleranta si recursiva.
+    """
+    if cont is None and not isinstance(raw_or_cont, dict):
+        cont = raw_or_cont
+        raw = getattr(cont, "date_brute", None) or {}
+    else:
+        raw = raw_or_cont if isinstance(raw_or_cont, dict) else {}
+
+    poc = (
+        str(raw.get("poc") or raw.get("poc_number") or raw.get("pocNumber") or "").strip()
+        or _engie_cauta_in_date_index(raw, ("poc_number", "pocNumber", "poc"))
+    )
+    division = (
+        str(raw.get("division") or raw.get("utility") or "").strip().lower()
+        or _engie_cauta_in_date_index(raw, ("division", "utility", "type")).lower()
+        or str(getattr(cont, "tip_serviciu", None) or getattr(cont, "tip_utilitate", None) or "gaz").strip().lower()
+    )
+    installation = (
+        str(raw.get("installation_number") or raw.get("installationNumber") or "").strip()
+        or _engie_cauta_in_date_index(
+            raw,
+            (
+                "installation_number",
+                "installationNumber",
+                "installation",
+                "installation_id",
+                "installationId",
+                "installationNo",
+                "installation_no",
+            ),
+        )
+    )
+    return poc, division or "gaz", installation
+
+
+def _engie_are_date_tehnice_index(raw_or_cont, cont=None) -> bool:
+    poc, division, installation = _engie_date_tehnice_index(raw_or_cont, cont)
+    return bool(poc and division and installation)
 
 
 APA_CANAL_OBJECT_KEY_MAP = {
@@ -592,8 +712,8 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
         id_contract = str(call.data.get("id_contract") or "").strip()
         raw_value = call.data.get("value")
 
-        if provider not in {"apa_canal"}:
-            raise ValueError("Serviciul de transmitere directă acceptă momentan doar furnizorul Apă Canal Sibiu.")
+        if provider not in {"apa_canal", "engie"}:
+            raise ValueError("Serviciul de transmitere directă acceptă momentan doar furnizorii Apă Canal Sibiu și ENGIE.")
 
         try:
             index_value = int(float(str(raw_value).replace(",", ".")))
@@ -616,7 +736,8 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
             break
 
         if coordonator is None or getattr(coordonator, "data", None) is None:
-            raise ValueError("Nu am găsit intrarea Apă Canal Sibiu pentru transmiterea indexului.")
+            nume_furnizor = "ENGIE" if provider == "engie" else "Apă Canal Sibiu"
+            raise ValueError(f"Nu am găsit intrarea {nume_furnizor} pentru transmiterea indexului.")
 
         cont_selectat = None
         for cont in getattr(coordonator.data, "conturi", []) or []:
@@ -630,7 +751,89 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
                 break
 
         if cont_selectat is None:
-            raise ValueError("Nu am găsit contractul Apă Canal Sibiu pentru transmiterea indexului.")
+            nume_furnizor = "ENGIE" if provider == "engie" else "Apă Canal Sibiu"
+            raise ValueError(f"Nu am găsit contractul {nume_furnizor} pentru transmiterea indexului.")
+
+        if provider == "engie":
+            raw = getattr(cont_selectat, "date_brute", None) or {}
+            poc, division, installation = _engie_date_tehnice_index(raw, cont_selectat)
+            alias = getattr(cont_selectat, "nume", None) or getattr(cont_selectat, "adresa", None) or id_cont
+
+            if not poc or not division or not installation:
+                mesaj = "Nu am putut identifica datele tehnice necesare pentru transmiterea indexului ENGIE."
+                persistent_notification.async_create(
+                    hass,
+                    mesaj,
+                    title="Utilități România – ENGIE",
+                    notification_id=f"utilitati_romania_engie_trimite_index_eroare_{getattr(cont_selectat, 'id_cont', id_cont)}",
+                )
+                raise ValueError(mesaj)
+
+            if _engie_index_ascuns(raw):
+                mesaj = "ENGIE nu permite transmiterea indexului pentru acest loc de consum în acest moment."
+                persistent_notification.async_create(
+                    hass,
+                    mesaj,
+                    title="Utilități România – ENGIE",
+                    notification_id=f"utilitati_romania_engie_trimite_index_eroare_{getattr(cont_selectat, 'id_cont', id_cont)}",
+                )
+                raise ValueError(mesaj)
+
+            api = getattr(coordonator.client, "api", None)
+            transmitere = getattr(api, "async_transmite_index", None)
+            if not callable(transmitere):
+                mesaj = "Clientul ENGIE nu are disponibilă metoda de transmitere index."
+                persistent_notification.async_create(
+                    hass,
+                    mesaj,
+                    title="Utilități România – ENGIE",
+                    notification_id=f"utilitati_romania_engie_trimite_index_eroare_{getattr(cont_selectat, 'id_cont', id_cont)}",
+                )
+                raise ValueError(mesaj)
+
+            rezultat = await transmitere(poc, division, installation, index_value)
+            if not isinstance(rezultat, dict):
+                mesaj = "Transmiterea indexului ENGIE nu a returnat un răspuns valid."
+                persistent_notification.async_create(
+                    hass,
+                    mesaj,
+                    title="Utilități România – ENGIE",
+                    notification_id=f"utilitati_romania_engie_trimite_index_eroare_{getattr(cont_selectat, 'id_cont', id_cont)}",
+                )
+                raise ValueError(mesaj)
+
+            if rezultat.get("error") is True or int(rezultat.get("http_status") or 200) >= 400:
+                mesaj = _mesaj_eroare_engie(rezultat) or "ENGIE a refuzat transmiterea indexului."
+                persistent_notification.async_create(
+                    hass,
+                    mesaj,
+                    title="Utilități România – ENGIE",
+                    notification_id=f"utilitati_romania_engie_trimite_index_eroare_{getattr(cont_selectat, 'id_cont', id_cont)}",
+                )
+                raise ValueError(mesaj)
+
+            await async_salveaza_citire(
+                hass,
+                "engie",
+                getattr(cont_selectat, "id_cont", None),
+                float(index_value),
+                sursa="panel",
+                extra={
+                    "poc": poc,
+                    "division": division,
+                    "installation_number": installation,
+                    "unitate": "m³" if division == "gaz" else "kWh",
+                },
+            )
+
+            persistent_notification.async_create(
+                hass,
+                f"Indexul **{index_value}** a fost transmis cu succes pentru **{alias}**.",
+                title="Utilități România – ENGIE",
+                notification_id=f"utilitati_romania_engie_trimite_index_{getattr(cont_selectat, 'id_cont', id_cont)}",
+            )
+            await coordonator.async_request_refresh()
+            return
 
         raw = getattr(cont_selectat, "date_brute", None) or {}
         window = raw.get("meter_reading_window") or {}

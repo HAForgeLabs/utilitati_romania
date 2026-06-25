@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.1";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b8";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -322,10 +322,58 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return location?.eticheta_locatie || location?.nume || location?.locatie_cheie || "Locație";
   }
 
+  _toDisplayCase(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/\b([a-zăâîșşțţ])/gi, (match) => match.toUpperCase());
+  }
+
+  _cleanTechnicalLocationCandidate(value) {
+    let text = String(value ?? "").replace(/\s+/g, " ").trim();
+    if (!text) return "";
+
+    const normalized = this._normalizeText(text);
+    const isTechnicalApaBrasov =
+      normalized.includes("corespondenta") &&
+      normalized.includes("apa rece contorizata") &&
+      normalized.includes("strada");
+
+    if (!isTechnicalApaBrasov) return text;
+
+    const streetMatch = text.match(/\bstrada\s+(.+?)(?:\s*,?\s*(?:loc|jud)\b|\s*\((?:exc|excel).*?$|$)/i);
+    if (!streetMatch) return text;
+
+    let segment = streetMatch[1].replace(/\s+/g, " ").trim().replace(/[;,.:\-]+$/g, "");
+    segment = segment.replace(/\bBRASOV\b.*$/i, "").trim().replace(/[;,.:\-]+$/g, "");
+
+    let number = "";
+    const numberMatch = segment.match(/(?:^|[\s,])nr\.?\s*[:\-]?\s*([0-9]+)\s*([a-z])?\b/i);
+    if (numberMatch) {
+      number = `${numberMatch[1]}${numberMatch[2] || ""}`.toUpperCase();
+      segment = segment.slice(0, numberMatch.index).trim().replace(/[;,.:\-]+$/g, "");
+    } else {
+      const inlineNumber = segment.match(/^(.*?)[\s,]+([0-9]+)\s*([a-z])?$/i);
+      if (inlineNumber) {
+        segment = inlineNumber[1].trim();
+        number = `${inlineNumber[2]}${inlineNumber[3] || ""}`.toUpperCase();
+      }
+    }
+
+    segment = segment
+      .replace(/\b(?:nu|nedeterminat|apa rece contorizata|brasov populatie|populatie)\b/gi, " ")
+      .replace(/[^a-zA-ZăâîșşțţĂÂÎȘŞȚŢ0-9 .'-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!segment) return text;
+    const street = this._toDisplayCase(segment);
+    return number ? `${street} ${number}` : street;
+  }
+
   _cleanLocationCandidate(value) {
     const text = String(value ?? "").trim();
     if (!text || ["-", "—", "none", "null", "undefined"].includes(text.toLowerCase())) return "";
-    return text.replace(/\s+/g, " ").trim();
+    return this._cleanTechnicalLocationCandidate(text).replace(/\s+/g, " ").trim();
   }
 
   _locationLabelScore(value) {
@@ -393,11 +441,48 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
   _displayLocationName(location) {
+    const override = this._cleanLocationCandidate(location?._dashboard_display_name);
+    if (override) return override;
     const key = this._locationKey(location);
     const aliases = this._locationAliases();
     const alias = this._cleanLocationCandidate(aliases[key]);
     if (alias) return alias;
     return this._bestLocationLabel(this._locationCandidates(location)) || String(this._rawLocationName(location) || "Locație").trim();
+  }
+
+  _displayLocationGroupKey(location) {
+    const label = this._displayLocationName(location);
+    const normalized = this._normalizeText(label);
+    return normalized || this._locationKey(location) || "locatie";
+  }
+
+  _displayLocations(locations) {
+    const groups = new Map();
+
+    for (const location of locations || []) {
+      const label = this._displayLocationName(location);
+      const key = this._displayLocationGroupKey(location);
+      if (!groups.has(key)) {
+        groups.set(key, {
+          ...location,
+          _dashboard_display_name: label,
+          _dashboard_source_locations: [],
+          furnizori: [],
+          total_neplatit: 0,
+        });
+      }
+
+      const group = groups.get(key);
+      group._dashboard_source_locations.push(location);
+      const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
+      group.furnizori.push(...providers);
+      group.total_neplatit += this._num(location?.total_neplatit);
+    }
+
+    return Array.from(groups.values()).map((location) => ({
+      ...location,
+      total_neplatit_formatat: this._money(location.total_neplatit, "RON"),
+    }));
   }
 
   _mobileDeviceSelectEntity() {
@@ -738,20 +823,43 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return provider?.due_date || provider?.scadenta || provider?.data_scadenta || provider?.invoice_due_date || null;
   }
 
+  _isDigiProvider(provider) {
+    return this._providerKey(provider) === "digi" || this._normalizeText(provider?.furnizor || provider?.furnizor_label || provider?.provider || "").includes("digi");
+  }
+
+  _looksLikeDigiInternalInvoiceId(provider, value) {
+    if (!this._isDigiProvider(provider)) return false;
+    const text = String(value ?? "").trim();
+    if (!/^\d{8,}$/.test(text)) return false;
+    const internalIds = [provider?.invoice_id, provider?.id_factura, provider?.last_invoice_id, provider?.ultima_factura_id, provider?.id_ultima_factura]
+      .map((item) => String(item ?? "").trim())
+      .filter(Boolean);
+    return internalIds.includes(text);
+  }
+
+  _cleanDigiInvoiceTitle(provider, title, documentNumber = "") {
+    let text = String(title ?? "").trim();
+    if (!text || !this._isDigiProvider(provider)) return text;
+    text = text.replace(/\s+/g, " ");
+    text = text.replace(/\s*[·-]\s*factura\s+\d{8,}\b/gi, "").trim();
+    if (/^factura\s+\d{8,}$/i.test(text)) return documentNumber ? `Factura ${documentNumber}` : "Factură Digi";
+    return text || (documentNumber ? `Factura ${documentNumber}` : "Factură Digi");
+  }
+
   _providerDocumentNumber(provider) {
     const candidates = [
       provider?.numar_factura,
       provider?.nr_factura,
       provider?.invoice_number,
       provider?.invoice_no,
-      provider?.invoice_id,
-      provider?.id_factura,
       provider?.document_number,
       provider?.document_no,
       provider?.numar_document,
       provider?.nr_document,
       provider?.nr_doc,
       provider?.serie_numar,
+      provider?.invoice_id,
+      provider?.id_factura,
       provider?.last_invoice_id,
       provider?.ultima_factura_id,
       provider?.id_ultima_factura,
@@ -762,6 +870,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     for (const value of candidates) {
       const text = String(value ?? "").trim();
       if (!text || ["-", "—", "none", "null", "undefined"].includes(text.toLowerCase())) continue;
+      if (this._looksLikeDigiInternalInvoiceId(provider, text)) continue;
       return text.replace(/\s+/g, " ");
     }
     return "";
@@ -778,14 +887,16 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .find((value) => value && !["-", "—", "none", "null", "undefined"].includes(value.toLowerCase()));
     const documentNumber = this._providerDocumentNumber(provider);
 
-    if (title && title !== "Ultima factură") {
-      const normalizedTitle = this._normalizeText(title);
+    const displayTitle = this._cleanDigiInvoiceTitle(provider, title, documentNumber);
+
+    if (displayTitle && displayTitle !== "Ultima factură") {
+      const normalizedTitle = this._normalizeText(displayTitle);
       const normalizedDocument = this._normalizeText(documentNumber);
       if (documentNumber && normalizedTitle === normalizedDocument) return `Factura ${documentNumber}`;
       if (documentNumber && !normalizedTitle.includes(normalizedDocument) && !normalizedTitle.includes("factura")) {
-        return `${title} · factura ${documentNumber}`;
+        return `${displayTitle} · factura ${documentNumber}`;
       }
-      return title;
+      return displayTitle;
     }
 
     if (documentNumber) return `Factura ${documentNumber}`;
@@ -876,6 +987,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
 
   _renderOverview(attrs, locations) {
     const soon = this._soonProviders(locations);
+    const displayLocations = this._displayLocations(locations);
     return `
       <div class="grid two">
         <section class="panel-card">
@@ -884,7 +996,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         </section>
         <section class="panel-card">
           <div class="card-head"><div><span class="eyebrow">locații</span><h2>Sumar pe locuri de consum</h2></div></div>
-          ${locations.length ? locations.map((location, index) => this._locationCompact(location, index)).join("") : `<div class="empty">Nu există încă date agregate. Verifică dacă există cel puțin un furnizor configurat.</div>`}
+          ${displayLocations.length ? displayLocations.map((location, index) => this._locationCompact(location, index)).join("") : `<div class="empty">Nu există încă date agregate. Verifică dacă există cel puțin un furnizor configurat.</div>`}
         </section>
       </div>
       <section class="panel-card wide">
@@ -1097,7 +1209,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (grouping === "due_date") return this._invoiceDueDateGroup(entry);
     if (grouping === "urgency") return this._invoiceUrgencyGroup(entry);
     if (grouping === "amount") return this._invoiceAmountGroup(entry);
-    return { key: entry?.location?.locatie_cheie || entry?.location?.eticheta_locatie || "locatie", title: this._displayLocationName(entry?.location), order: 0 };
+    const title = this._displayLocationName(entry?.location);
+    return { key: `location_${this._displayLocationGroupKey(entry?.location)}`, title, order: 0 };
   }
 
   _buildInvoiceGroups(entries, grouping) {
@@ -1370,22 +1483,43 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const base = sensorObject.replace(/_citire_permisa$/, "");
       const targetIdCont = String(provider?.id_cont ?? readingSensor.attributes?.id_cont ?? "").trim();
       const targetIdContract = String(provider?.id_contract ?? readingSensor.attributes?.id_contract ?? "").trim();
-      let currentEntity = states[`sensor.${base}_index_contor`] || null;
-      if (!currentEntity) {
-        currentEntity = Object.values(states).find((stateObj) => {
-          if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
-          const attrs = stateObj.attributes || {};
-          const idCont = String(attrs.id_cont ?? "").trim();
-          const idContract = String(attrs.id_contract ?? attrs.cod_contract ?? "").trim();
-          const entityId = String(stateObj.entity_id || "").toLowerCase();
-          const text = this._entityFriendlyText(stateObj);
-          const sameContext = (targetIdCont && idCont && idCont === targetIdCont) || (targetIdContract && idContract && idContract === targetIdContract);
-          const looksLikeCurrentIndex = entityId.includes("index_contor") || text.includes("index contor");
-          const belongsToEngie = entityId.includes("engie") || text.includes("engie") || entityId.includes(base);
-          return looksLikeCurrentIndex && belongsToEngie && (sameContext || this._textMatchesAny(text, terms) || entityId.includes(base));
-        });
-      }
-      if (currentEntity) {
+      const matchesEngieContext = (stateObj) => {
+        const attrs = stateObj?.attributes || {};
+        const idCont = String(attrs.id_cont ?? "").trim();
+        const idContract = String(attrs.id_contract ?? attrs.cod_contract ?? "").trim();
+        if (targetIdCont && idCont && idCont === targetIdCont) return true;
+        if (targetIdContract && idContract && idContract === targetIdContract) return true;
+        const entityId = String(stateObj?.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        return entityId.includes(base) || this._textMatchesAny(text, terms);
+      };
+      let currentEntity = states[`sensor.${base}_index_contor`] || Object.values(states).find((stateObj) => {
+        if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
+        const entityId = String(stateObj.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        const looksLikeCurrentIndex = entityId.includes("index_contor") || text.includes("index contor");
+        const belongsToEngie = entityId.includes("engie") || text.includes("engie") || entityId.includes(base);
+        return looksLikeCurrentIndex && belongsToEngie && matchesEngieContext(stateObj);
+      }) || null;
+      const numberEntity = states[`number.${base}_index_de_transmis`] || Object.values(states).find((stateObj) => {
+        if (!stateObj?.entity_id?.startsWith("number.")) return false;
+        const entityId = String(stateObj.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        const looksLikeInput = entityId.includes("index_de_transmis") || text.includes("index de transmis");
+        const belongsToEngie = entityId.includes("engie") || text.includes("engie") || entityId.includes(base);
+        return looksLikeInput && belongsToEngie && matchesEngieContext(stateObj);
+      }) || null;
+      const buttonEntity = states[`button.${base}_trimite_index`] || Object.values(states).find((stateObj) => {
+        if (!stateObj?.entity_id?.startsWith("button.")) return false;
+        const entityId = String(stateObj.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        const looksLikeSubmit = entityId.includes("trimite_index") || text.includes("trimite index");
+        const belongsToEngie = entityId.includes("engie") || text.includes("engie") || entityId.includes(base);
+        return looksLikeSubmit && belongsToEngie && matchesEngieContext(stateObj);
+      }) || null;
+      if (numberEntity && buttonEntity) {
+        controls.push({ key: `${providerKey}_${provider.id_cont || targetIdCont || base}`, providerKey, label: "Index de transmis", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
+      } else if (currentEntity) {
         controls.push({ key: `${providerKey}_${provider.id_cont || targetIdCont || base}_current`, label: "Index curent", numberEntityId: null, buttonEntityId: null, currentEntityId: currentEntity.entity_id });
       }
       return controls;
@@ -1466,7 +1600,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       return controls;
     }
 
-    if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati" || providerKey === "hidro_prahova") {
+    if (providerKey === "engie" || providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati" || providerKey === "hidro_prahova") {
       const base = sensorObject.replace(/_citire_index_permisa$/, "").replace(/_citire_permisa$/, "");
       const attrs = readingSensor.attributes || {};
       const sensorIdCont = String(attrs.id_cont ?? provider?.id_cont ?? "").trim();
@@ -1605,10 +1739,20 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return match ? Number(match[1]) : 1;
   }
 
+  _shouldShowReadingEntry(data) {
+    if (!data?.available) return false;
+    if (data.readingSensorEntityId) return true;
+    const controls = Array.isArray(data.controls) ? data.controls : [];
+    if (controls.some((control) => control?.numberEntityId || control?.buttonEntityId || control?.currentEntityId)) return true;
+    if (data.period || data.start || data.end || Number.isFinite(Number(data.daysUntil))) return true;
+    return false;
+  }
+
   _collectReadingEntries(locations) {
     const entriesByKey = new Map();
     for (const item of this._allProviders(locations)) {
       const data = this._getReadingData(item.location, item.provider);
+      if (!this._shouldShowReadingEntry(data)) continue;
       const entry = { ...item, data };
       const key = this._readingEntryKey(item.location, item.provider, data);
       const existing = entriesByKey.get(key);
@@ -2045,26 +2189,10 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         };
       })
       .filter((item) => !isGenericEblocGroup(item))
-      .reduce((items, item) => {
-        // După ștergeri/readăugări, Home Assistant poate păstra mai multe
-        // entități text de grupare pentru aceeași locație. În setările
-        // dashboardului afișăm o singură intrare per etichetă activă și
-        // păstrăm varianta care are grupare salvată sau entity_id-ul cel mai vechi.
-        const key = item.matchKey || this._normalizeText(item.label);
-        const existingIndex = items.findIndex((candidate) => (candidate.matchKey || this._normalizeText(candidate.label)) === key);
-        if (existingIndex === -1) {
-          items.push(item);
-          return items;
-        }
-        const existing = items[existingIndex];
-        const itemHasValue = Boolean(item.savedValue);
-        const existingHasValue = Boolean(existing.savedValue);
-        const itemScore = (itemHasValue ? 100 : 0) - (Number((item.entityId.match(/_(\d+)$/) || [0, 0])[1]) || 0);
-        const existingScore = (existingHasValue ? 100 : 0) - (Number((existing.entityId.match(/_(\d+)$/) || [0, 0])[1]) || 0);
-        if (itemScore > existingScore) items[existingIndex] = item;
-        return items;
-      }, [])
-      .sort((a, b) => `${a.label} ${a.savedValue}`.localeCompare(`${b.label} ${b.savedValue}`, "ro"));
+      // Nu deduplicam dupa eticheta afisata. Pentru furnizori precum Hidroelectrica
+      // pot exista doua locuri de consum cu adrese/nume foarte apropiate, iar
+      // utilizatorul trebuie sa poata corecta gruparea fiecarui cont separat.
+      .sort((a, b) => `${a.label} ${a.entityId}`.localeCompare(`${b.label} ${b.entityId}`, "ro"));
   }
 
 
@@ -2306,14 +2434,16 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .invoice-main .invoice-location { color:#8aa7cf; font-size:12px; font-weight:900; letter-spacing:.02em; }
       .due-right { text-align:right; }
       .due-right small { color:#6b7b90; font-weight:800; }
-      .location-compact { justify-content:space-between; }
+      .location-compact { display:grid; grid-template-columns:42px minmax(0,1fr) auto; align-items:center; justify-content:initial; }
+      .location-compact > b { margin-left:0; text-align:right; flex:0 0 auto; justify-self:end; }
       .location-icon,.provider-badge { width:42px; height:42px; border-radius:14px; display:grid; place-items:center; background:#e8f2ff; color:#2369bb; font-weight:900; flex:0 0 auto; }
       .financial-chip-row { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
       .financial-chip { display:inline-flex; align-items:center; gap:5px; padding:5px 8px; border-radius:999px; background:rgba(15,118,110,.09); color:#0f766e; font-size:11px; font-weight:800; line-height:1; white-space:nowrap; }
       .financial-chip ha-icon { width:14px; height:14px; color:currentColor; }
       .financial-chip span { display:inline; margin:0; color:inherit; font-size:11px; }
       .financial-chip strong { display:inline; font-size:11px; color:inherit; }
-      .location-compact-main { min-width:0; }
+      .location-compact-main { min-width:0; width:100%; justify-self:start; flex:1 1 auto; text-align:left; }
+      .location-compact-main strong { display:block; text-align:left; overflow-wrap:anywhere; }
       .summary-strip,.details-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
       .summary-strip div,.details-grid div { padding:16px; border-radius:18px; background:#f7f9fc; min-width:0; }
       .summary-strip strong,.details-grid strong { display:block; overflow-wrap:anywhere; }
@@ -2621,7 +2751,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._render();
 
     try {
-      if (providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati" || providerKey === "hidro_prahova") {
+      if (providerKey === "engie" || providerKey === "apa_canal" || providerKey === "apa_brasov" || providerKey === "apa_oradea" || providerKey === "apa_galati" || providerKey === "hidro_prahova") {
         await this._hass.callService("utilitati_romania", "submit_reading", {
           provider: providerKey,
           entry_id: String(wrapper?.getAttribute("data-entry-id") || ""),

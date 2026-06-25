@@ -12,6 +12,7 @@ from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_device_eon, slug_serviciu_loc_eon, tip_serviciu_eon
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
+from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .naming import build_provider_slug
 
 
@@ -62,6 +63,82 @@ def _primul_registru_apa_canal(coordonator: CoordonatorUtilitatiRomania, id_cont
     return registre[0] if registre else {}
 
 
+
+
+def _engie_index_ascuns(cont) -> bool:
+    raw = getattr(cont, "date_brute", None) or {}
+    index_data = raw.get("index") if isinstance(raw.get("index"), dict) else {}
+    installations = index_data.get("installations") if isinstance(index_data.get("installations"), list) else []
+    for item in installations:
+        if isinstance(item, dict) and item.get("hide_index") is True:
+            return True
+    return bool(index_data.get("hide_index") is True)
+
+
+def _engie_cauta_in_date_index(data, chei: tuple[str, ...]) -> str:
+    """Cauta recursiv o valoare tehnica ENGIE in datele brute/index."""
+    if isinstance(data, dict):
+        for cheie in chei:
+            valoare = data.get(cheie)
+            if valoare not in (None, ""):
+                return str(valoare).strip()
+        for valoare in data.values():
+            if isinstance(valoare, (dict, list)):
+                gasit = _engie_cauta_in_date_index(valoare, chei)
+                if gasit:
+                    return gasit
+    elif isinstance(data, list):
+        for item in data:
+            gasit = _engie_cauta_in_date_index(item, chei)
+            if gasit:
+                return gasit
+    return ""
+
+
+def _engie_date_tehnice_index(raw_or_cont, cont=None) -> tuple[str, str, str]:
+    """Extrage datele necesare pentru transmiterea indexului ENGIE.
+
+    In raspunsurile ENGIE, installation_number poate veni in datele principale ale
+    locului de consum sau in raspunsul dedicat pentru index, de obicei in
+    index.installations[0].installation_number. Din acest motiv cautarea este
+    intentionat mai toleranta si recursiva.
+    """
+    if cont is None and not isinstance(raw_or_cont, dict):
+        cont = raw_or_cont
+        raw = getattr(cont, "date_brute", None) or {}
+    else:
+        raw = raw_or_cont if isinstance(raw_or_cont, dict) else {}
+
+    poc = (
+        str(raw.get("poc") or raw.get("poc_number") or raw.get("pocNumber") or "").strip()
+        or _engie_cauta_in_date_index(raw, ("poc_number", "pocNumber", "poc"))
+    )
+    division = (
+        str(raw.get("division") or raw.get("utility") or "").strip().lower()
+        or _engie_cauta_in_date_index(raw, ("division", "utility", "type")).lower()
+        or str(getattr(cont, "tip_serviciu", None) or getattr(cont, "tip_utilitate", None) or "gaz").strip().lower()
+    )
+    installation = (
+        str(raw.get("installation_number") or raw.get("installationNumber") or "").strip()
+        or _engie_cauta_in_date_index(
+            raw,
+            (
+                "installation_number",
+                "installationNumber",
+                "installation",
+                "installation_id",
+                "installationId",
+                "installationNo",
+                "installation_no",
+            ),
+        )
+    )
+    return poc, division or "gaz", installation
+
+
+def _engie_are_date_tehnice_index(raw_or_cont, cont=None) -> bool:
+    poc, division, installation = _engie_date_tehnice_index(raw_or_cont, cont)
+    return bool(poc and division and installation)
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -97,6 +174,11 @@ async def async_setup_entry(
         elif coordonator.data.furnizor == "apa_canal":
             for cont in coordonator.data.conturi:
                 entitati.append(NumarIndexApaCanal(coordonator, cont))
+
+        elif coordonator.data.furnizor == "engie":
+            for cont in coordonator.data.conturi:
+                if _engie_are_date_tehnice_index(cont):
+                    entitati.append(NumarIndexEngie(coordonator, cont))
 
         elif coordonator.data.furnizor == "ebloc":
             for cont in coordonator.data.conturi:
@@ -279,6 +361,63 @@ class NumarIndexApaCanal(EntitateUtilitatiRomania, RestoreNumber):
     def available(self) -> bool:
         registru = _primul_registru_apa_canal(self.coordinator, self.cont.id_cont)
         return _citire_permisa_curenta(self.coordinator, self.cont.id_cont) and bool(registru.get('device_id') and registru.get('register_id'))
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._attr_native_value = int(float(value))
+        self.async_write_ha_state()
+
+
+class NumarIndexEngie(EntitateUtilitatiRomania, RestoreNumber):
+    _attr_native_min_value = 0
+    _attr_native_max_value = 99999999
+    _attr_native_step = 1
+    _attr_icon = "mdi:counter"
+    _attr_mode = "box"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        alias = alias_loc_engie(cont.nume, cont.adresa, cont.id_cont)
+        slug = slug_loc_engie(cont.id_cont, alias, cont.adresa)
+        tip = str(cont.tip_serviciu or cont.tip_utilitate or "").lower()
+        self._attr_native_unit_of_measurement = "m³" if tip == "gaz" else "kWh"
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_engie_{cont.id_cont}_index_de_transmis"
+        self._attr_name = f"Index de transmis {alias}"
+        self._attr_device_info = info_device_engie(coordonator.intrare.entry_id, cont)
+        self._attr_suggested_object_id = f"engie_{cont.id_cont}_{slug}_index_de_transmis"
+        self.entity_id = f"number.engie_{cont.id_cont}_{slug}_index_de_transmis"
+        self._attr_native_value = 0
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        ultima_stare = await self.async_get_last_number_data()
+        if ultima_stare and ultima_stare.native_value is not None:
+            self._attr_native_value = int(float(ultima_stare.native_value))
+            return
+
+        valoare_curenta = _valoare_consum_curent(self.coordinator, self.cont.id_cont, "index_contor")
+        if valoare_curenta is not None:
+            self._attr_native_value = int(float(valoare_curenta))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        poc, division, installation = _engie_date_tehnice_index(self.cont)
+        return {
+            "furnizor": "engie",
+            "id_cont": getattr(self.cont, "id_cont", None),
+            "id_contract": getattr(self.cont, "id_contract", None),
+            "poc": poc,
+            "division": division,
+            "installation_number": installation,
+        }
+
+    @property
+    def available(self) -> bool:
+        return (
+            _citire_permisa_curenta(self.coordinator, self.cont.id_cont)
+            and not _engie_index_ascuns(self.cont)
+            and _engie_are_date_tehnice_index(self.cont)
+        )
 
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = int(float(value))

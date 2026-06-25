@@ -296,6 +296,69 @@ def _extract_secondary_parts(text: str) -> dict[str, str]:
     return found
 
 
+
+def _components_from_technical_brasov_text(text: str) -> _AddressComponents | None:
+    """Extrage adresele Apă Brașov venite ca etichete tehnice din portal.
+
+    Unele contracte sunt returnate cu texte lungi de forma:
+    ``corespondenta P020/... nedeterminat Apa rece contorizata ... Nu Strada ...``.
+    Aceste texte trebuie reduse la strada și număr înainte să ajungă în
+    gruparea dashboardului.
+    """
+    normalized = normalize_text(text)
+    if not normalized:
+        return None
+
+    normalized_low = normalized.lower()
+    if "corespondenta" not in normalized_low and "coresponden" not in normalized_low and "apa rece contorizata" not in normalized_low:
+        return None
+
+    street_match = re.search(
+        rf"\b{_STREET_PREFIX_PATTERN}\b\.?\s+(.+?)(?:\s*,?\s*(?:loc|jud)\b|$)",
+        normalized,
+        re.IGNORECASE,
+    )
+    if not street_match:
+        return None
+
+    segment = street_match.group(1).strip(" ,.;:-")
+    segment = re.sub(r"\bbrasov\b.*$", "", segment, flags=re.IGNORECASE).strip(" ,.;:-")
+    segment = re.sub(r"\((?:exc|excel).*?$", "", segment, flags=re.IGNORECASE).strip(" ,.;:-")
+
+    number = ""
+    number_match = re.search(
+        r"(?:^|[,\s]+)(?:nr\.?|numar(?:ul)?|numărul)\s*[:\-]?\s*([0-9]+\s*[a-z]?)\b",
+        segment,
+        re.IGNORECASE,
+    )
+    if number_match:
+        number = _clean_token(number_match.group(1).replace(" ", ""))
+        street_segment = segment[: number_match.start()].strip(" ,.;:-")
+    else:
+        inline_number = re.search(r"^(.*?)[\s,]+([0-9]+\s*[a-z]?)$", segment, re.IGNORECASE)
+        if inline_number:
+            street_segment = inline_number.group(1).strip(" ,.;:-")
+            number = _clean_token(inline_number.group(2).replace(" ", ""))
+        else:
+            street_segment = segment
+
+    street_segment = re.sub(
+        r"\b(?:corespondenta|coresponden[tț]ă|nedeterminat|apa\s+rece\s+contorizata|brasov\s+populatie|populatie|nu)\b",
+        " ",
+        street_segment,
+        flags=re.IGNORECASE,
+    )
+    street_segment = re.sub(r"\bP\d{3}/\d+\b", " ", street_segment, flags=re.IGNORECASE)
+    street_segment = re.sub(r"\b\d{1,2}\.\d{1,2}\.\d{4}\b", " ", street_segment)
+    street_segment = re.sub(r"\b\d{4,}\b", " ", street_segment)
+    street_segment = re.sub(r"\s+", " ", street_segment).strip(" ,.;:-")
+
+    street = _clean_street_name(street_segment)
+    if not street:
+        return None
+
+    return _AddressComponents(street=street, number=number)
+
 def _components_from_labeled(text: str) -> _AddressComponents | None:
     normalized = normalize_text(text)
     secondary = _extract_secondary_parts(normalized)
@@ -390,7 +453,11 @@ def _components_from_parts(text: str) -> _AddressComponents | None:
 
 
 def _extract_components(text: str) -> _AddressComponents | None:
-    return _components_from_labeled(text) or _components_from_parts(text)
+    return (
+        _components_from_technical_brasov_text(text)
+        or _components_from_labeled(text)
+        or _components_from_parts(text)
+    )
 
 
 def _best_components(candidates: list[str]) -> _AddressComponents | None:

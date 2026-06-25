@@ -2041,6 +2041,47 @@ class SenzorContMyElectrica(EntitateUtilitatiRomania, SensorEntity):
         return attrs
 
 
+
+def _engie_cauta_in_date_sensor(data, chei: tuple[str, ...]) -> str:
+    if isinstance(data, dict):
+        for cheie in chei:
+            valoare = data.get(cheie)
+            if valoare not in (None, ""):
+                return str(valoare).strip()
+        for cheie in ("index", "installations", "meters", "counters", "index_readings", "readings", "data"):
+            valoare = data.get(cheie)
+            if isinstance(valoare, (dict, list)):
+                gasit = _engie_cauta_in_date_sensor(valoare, chei)
+                if gasit:
+                    return gasit
+    elif isinstance(data, list):
+        for item in data:
+            gasit = _engie_cauta_in_date_sensor(item, chei)
+            if gasit:
+                return gasit
+    return ""
+
+
+def _engie_date_tehnice_sensor(cont) -> tuple[str, str, str]:
+    raw = getattr(cont, "date_brute", None) or {}
+    poc = (
+        str(raw.get("poc") or raw.get("poc_number") or raw.get("pocNumber") or "").strip()
+        or _engie_cauta_in_date_sensor(raw.get("index"), ("poc_number", "pocNumber", "poc"))
+    )
+    division = (
+        str(raw.get("division") or raw.get("utility") or "").strip().lower()
+        or _engie_cauta_in_date_sensor(raw.get("index"), ("division", "utility", "type")).lower()
+        or str(getattr(cont, "tip_serviciu", None) or getattr(cont, "tip_utilitate", None) or "gaz").strip().lower()
+    )
+    installation = (
+        str(raw.get("installation_number") or raw.get("installationNumber") or "").strip()
+        or _engie_cauta_in_date_sensor(raw.get("index"), (
+            "installation_number", "installationNumber", "installation", "installation_id",
+            "installationId", "installationNo", "installation_no",
+        ))
+    )
+    return poc, division or "gaz", installation
+
 def info_device_digi(entry_id: str, cont) -> DeviceInfo:
     ident = getattr(cont, "id_cont", "digi")
     nume = getattr(cont, "nume", "Digi")
@@ -2095,13 +2136,16 @@ class SenzorContEngie(EntitateUtilitatiRomania, SensorEntity):
     def extra_state_attributes(self):
         cont = self._cont_actual
         raw = getattr(cont, "date_brute", None) or {}
+        poc, division, installation = _engie_date_tehnice_sensor(cont)
         attrs = {
-            "poc": raw.get("poc"),
+            "id_cont": cont.id_cont,
+            "id_contract": cont.id_contract,
+            "poc": poc,
             "pa": raw.get("pa"),
             "pod": raw.get("pod"),
             "contract_account": raw.get("contract_account"),
-            "installation_number": raw.get("installation_number"),
-            "division": raw.get("division"),
+            "installation_number": installation,
+            "division": division,
             "adresa": cont.adresa,
             "tip_serviciu": cont.tip_serviciu,
         }
@@ -2130,6 +2174,11 @@ class SenzorContEngie(EntitateUtilitatiRomania, SensorEntity):
             attrs["date_index"] = raw.get("index")
             attrs["perioada_citire"] = _valoare_consum(self.coordinator.data, "perioada_citire", cont.id_cont)
             attrs["zile_pana_citire_index"] = _valoare_consum(self.coordinator.data, "zile_pana_citire_index", cont.id_cont)
+            index_data = raw.get("index") if isinstance(raw.get("index"), dict) else {}
+            interval = index_data.get("next_read_dates") if isinstance(index_data.get("next_read_dates"), dict) else {}
+            if interval:
+                attrs["inceput_perioada"] = interval.get("startDate") or interval.get("start_date")
+                attrs["sfarsit_perioada"] = interval.get("endDate") or interval.get("end_date")
         elif key == "consum_lunar":
             consum = raw.get("consum_lunar") or []
             attrs["numar_inregistrari"] = len(consum)

@@ -28,6 +28,7 @@ from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_dev
 from .furnizori.hidroelectrica_helper import build_usage_entity, safe_get
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
+from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .naming import build_provider_slug
 from .furnizori.apa_brasov import nume_scurt_locatie_apa_brasov
 
@@ -76,6 +77,129 @@ def _primul_registru_apa_canal(coordonator: CoordonatorUtilitatiRomania, id_cont
     return registre[0] if registre else {}
 
 
+
+
+def _mesaj_eroare_engie(data) -> str | None:
+    if not isinstance(data, dict):
+        return None
+
+    mesaje: list[str] = []
+
+    def adauga(value) -> None:
+        if value in (None, "") or isinstance(value, bool):
+            return
+        text = str(value).strip()
+        if text and text.lower() not in {"true", "false", "none", "null"} and text not in mesaje:
+            mesaje.append(text)
+
+    errors = data.get("errors")
+    if isinstance(errors, dict):
+        for cheie in ("erori", "error", "message", "errorMessage", "description"):
+            adauga(errors.get(cheie))
+        for value in errors.values():
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        for cheie in ("erori", "error", "message", "errorMessage", "description"):
+                            adauga(item.get(cheie))
+                    else:
+                        adauga(item)
+    elif isinstance(errors, list):
+        for item in errors:
+            if isinstance(item, dict):
+                for cheie in ("erori", "error", "message", "errorMessage", "description"):
+                    adauga(item.get(cheie))
+            else:
+                adauga(item)
+    else:
+        adauga(errors)
+
+    for cheie in ("message", "error_description", "error", "detail", "title"):
+        adauga(data.get(cheie))
+
+    return "; ".join(mesaje) if mesaje else None
+
+
+def _engie_date_index(raw: dict) -> dict:
+    index_data = raw.get("index") if isinstance(raw.get("index"), dict) else {}
+    if not isinstance(index_data, dict):
+        return {}
+    return index_data
+
+
+def _engie_index_ascuns(raw: dict) -> bool:
+    index_data = _engie_date_index(raw)
+    installations = index_data.get("installations") if isinstance(index_data.get("installations"), list) else []
+    for item in installations:
+        if isinstance(item, dict) and item.get("hide_index") is True:
+            return True
+    return bool(index_data.get("hide_index") is True)
+
+
+def _engie_cauta_in_date_index(data, chei: tuple[str, ...]) -> str:
+    """Cauta recursiv o valoare tehnica ENGIE in datele brute/index."""
+    if isinstance(data, dict):
+        for cheie in chei:
+            valoare = data.get(cheie)
+            if valoare not in (None, ""):
+                return str(valoare).strip()
+        for valoare in data.values():
+            if isinstance(valoare, (dict, list)):
+                gasit = _engie_cauta_in_date_index(valoare, chei)
+                if gasit:
+                    return gasit
+    elif isinstance(data, list):
+        for item in data:
+            gasit = _engie_cauta_in_date_index(item, chei)
+            if gasit:
+                return gasit
+    return ""
+
+
+def _engie_date_tehnice_index(raw_or_cont, cont=None) -> tuple[str, str, str]:
+    """Extrage datele necesare pentru transmiterea indexului ENGIE.
+
+    In raspunsurile ENGIE, installation_number poate veni in datele principale ale
+    locului de consum sau in raspunsul dedicat pentru index, de obicei in
+    index.installations[0].installation_number. Din acest motiv cautarea este
+    intentionat mai toleranta si recursiva.
+    """
+    if cont is None and not isinstance(raw_or_cont, dict):
+        cont = raw_or_cont
+        raw = getattr(cont, "date_brute", None) or {}
+    else:
+        raw = raw_or_cont if isinstance(raw_or_cont, dict) else {}
+
+    poc = (
+        str(raw.get("poc") or raw.get("poc_number") or raw.get("pocNumber") or "").strip()
+        or _engie_cauta_in_date_index(raw, ("poc_number", "pocNumber", "poc"))
+    )
+    division = (
+        str(raw.get("division") or raw.get("utility") or "").strip().lower()
+        or _engie_cauta_in_date_index(raw, ("division", "utility", "type")).lower()
+        or str(getattr(cont, "tip_serviciu", None) or getattr(cont, "tip_utilitate", None) or "gaz").strip().lower()
+    )
+    installation = (
+        str(raw.get("installation_number") or raw.get("installationNumber") or "").strip()
+        or _engie_cauta_in_date_index(
+            raw,
+            (
+                "installation_number",
+                "installationNumber",
+                "installation",
+                "installation_id",
+                "installationId",
+                "installationNo",
+                "installation_no",
+            ),
+        )
+    )
+    return poc, division or "gaz", installation
+
+
+def _engie_are_date_tehnice_index(raw_or_cont, cont=None) -> bool:
+    poc, division, installation = _engie_date_tehnice_index(raw_or_cont, cont)
+    return bool(poc and division and installation)
 def _admin_license_text_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
     registry = er.async_get(hass)
     unique_id = f"{entry.entry_id}_admin_cod_licenta_noua"
@@ -149,6 +273,11 @@ async def async_setup_entry(
     elif coordonator.data and coordonator.data.furnizor == "apa_canal":
         for cont in coordonator.data.conturi:
             entitati.append(ButonTrimiteIndexApaCanal(coordonator, cont))
+    elif coordonator.data and coordonator.data.furnizor == "engie":
+        for cont in coordonator.data.conturi:
+            raw = getattr(cont, "date_brute", None) or {}
+            if raw.get("poc") and raw.get("division") and raw.get("installation_number"):
+                entitati.append(ButonTrimiteIndexEngie(coordonator, cont))
     elif coordonator.data and coordonator.data.furnizor == "ebloc":
         entitati.append(ButonCurataSesiuniEbloc(coordonator))
         for cont in coordonator.data.conturi:
@@ -618,6 +747,117 @@ class ButonTrimiteIndexApaCanal(EntitateUtilitatiRomania, ButtonEntity):
             f"Indexul **{index_value}** a fost transmis cu succes pentru **{self._alias}**.",
             title="Utilități România – Apă Canal Sibiu",
             notification_id=f"utilitati_romania_apa_canal_trimite_index_{self.cont.id_cont}",
+        )
+        await self.coordinator.async_request_refresh()
+
+
+class ButonTrimiteIndexEngie(EntitateUtilitatiRomania, ButtonEntity):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        alias = alias_loc_engie(cont.nume, cont.adresa, cont.id_cont)
+        slug = slug_loc_engie(cont.id_cont, alias, cont.adresa)
+        self._alias = alias
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_engie_{cont.id_cont}_trimite_index"
+        self._attr_name = f"Trimite index {alias}"
+        self._attr_icon = "mdi:send-circle"
+        self._attr_device_info = info_device_engie(coordonator.intrare.entry_id, cont)
+        self._attr_suggested_object_id = f"engie_{cont.id_cont}_{slug}_trimite_index"
+        self.entity_id = f"button.engie_{cont.id_cont}_{slug}_trimite_index"
+        self._entity_numar = f"number.engie_{cont.id_cont}_{slug}_index_de_transmis"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        poc, division, installation = _engie_date_tehnice_index(self.cont)
+        return {
+            "furnizor": "engie",
+            "id_cont": getattr(self.cont, "id_cont", None),
+            "id_contract": getattr(self.cont, "id_contract", None),
+            "poc": poc,
+            "division": division,
+            "installation_number": installation,
+        }
+
+    @property
+    def available(self) -> bool:
+        raw = getattr(self.cont, "date_brute", None) or {}
+        return (
+            _citire_permisa_curenta(self.coordinator, self.cont.id_cont)
+            and not _engie_index_ascuns(raw)
+            and _engie_are_date_tehnice_index(self.cont)
+        )
+
+    async def async_press(self) -> None:
+        stare_numar = self.hass.states.get(self._entity_numar)
+        if not stare_numar:
+            raise HomeAssistantError(f"Nu există entitatea {self._entity_numar}.")
+
+        try:
+            index_value = int(float(stare_numar.state))
+        except (TypeError, ValueError) as err:
+            raise HomeAssistantError("Valoarea indexului introdus nu este validă.") from err
+
+        raw = getattr(self.cont, "date_brute", None) or {}
+        poc, division, installation = _engie_date_tehnice_index(raw, self.cont)
+
+        if not poc or not division or not installation:
+            mesaj = "Nu am putut identifica datele tehnice necesare pentru transmiterea indexului ENGIE."
+            persistent_notification.async_create(
+                self.hass,
+                mesaj,
+                title="Utilități România – ENGIE",
+                notification_id=f"utilitati_romania_engie_trimite_index_eroare_{self.cont.id_cont}",
+            )
+            raise HomeAssistantError(mesaj)
+        if not self.available:
+            mesaj = "Perioada de transmitere a indexului ENGIE nu este activă pentru acest loc de consum."
+            persistent_notification.async_create(
+                self.hass,
+                mesaj,
+                title="Utilități România – ENGIE",
+                notification_id=f"utilitati_romania_engie_trimite_index_eroare_{self.cont.id_cont}",
+            )
+            raise HomeAssistantError(mesaj)
+
+        rezultat = await self.coordinator.client.api.async_transmite_index(poc, division, installation, index_value)
+        if not isinstance(rezultat, dict):
+            mesaj = "Transmiterea indexului ENGIE nu a returnat un răspuns valid."
+            persistent_notification.async_create(
+                self.hass,
+                mesaj,
+                title="Utilități România – ENGIE",
+                notification_id=f"utilitati_romania_engie_trimite_index_eroare_{self.cont.id_cont}",
+            )
+            raise HomeAssistantError(mesaj)
+        if rezultat.get("error") is True or int(rezultat.get("http_status") or 200) >= 400:
+            mesaj = _mesaj_eroare_engie(rezultat) or "ENGIE a refuzat transmiterea indexului."
+            persistent_notification.async_create(
+                self.hass,
+                mesaj,
+                title="Utilități România – ENGIE",
+                notification_id=f"utilitati_romania_engie_trimite_index_eroare_{self.cont.id_cont}",
+            )
+            raise HomeAssistantError(mesaj)
+
+        await async_salveaza_citire(
+            self.hass,
+            "engie",
+            self.cont.id_cont,
+            float(index_value),
+            sursa="card",
+            extra={
+                "poc": poc,
+                "division": division,
+                "installation_number": installation,
+                "unitate": "m³" if division == "gaz" else "kWh",
+            },
+        )
+
+        persistent_notification.async_create(
+            self.hass,
+            f"Indexul **{index_value}** a fost transmis cu succes pentru **{self._alias}**.",
+            title="Utilități România – ENGIE",
+            notification_id=f"utilitati_romania_engie_trimite_index_{self.cont.id_cont}",
         )
         await self.coordinator.async_request_refresh()
 

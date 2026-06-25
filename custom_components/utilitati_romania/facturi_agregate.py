@@ -559,6 +559,8 @@ def _build_invoice_item(
         cont,
     )
 
+    raw_factura = _raw_dict(factura)
+
     invoice_title = getattr(factura, "titlu", None) or "Ultima factură"
 
     # Curățăm titlurile tehnice E.ON de forma "Factura eon_xxx_ultima"
@@ -575,6 +577,23 @@ def _build_invoice_item(
         consum_id_text = str(consum_id or "").strip()
         invoice_title = consum_id_text or "Ultima factură"
 
+    real_invoice_number = (
+        raw_factura.get("numar_factura")
+        or raw_factura.get("invoice_number")
+        or raw_factura.get("number")
+        or raw_factura.get("series_number")
+        or raw_factura.get("serie_numar")
+        or raw_factura.get("document_number")
+    )
+    raw_invoice_id = getattr(factura, "id_factura", None)
+    if instantaneu.furnizor == "digi" and real_invoice_number is not None:
+        real_text = str(real_invoice_number).strip()
+        raw_id_text = str(raw_invoice_id or "").strip()
+        # Digi foloseste un ID intern numeric pentru deschiderea detaliilor.
+        # Daca nu am reusit sa extragem seria/numarul real din popup, nu il afisam ca document.
+        if raw_id_text and real_text == raw_id_text:
+            real_invoice_number = None
+
     item = {
         "entry_id": coordonator.intrare.entry_id,
         "entry_title": coordonator.intrare.title,
@@ -590,6 +609,9 @@ def _build_invoice_item(
         "tip_utilitate": getattr(factura, "tip_utilitate", None) or (getattr(cont, "tip_utilitate", None) if cont else None),
         "tip_serviciu": getattr(factura, "tip_serviciu", None) or (getattr(cont, "tip_serviciu", None) if cont else None),
         "invoice_id": _curata_identificator_factura(getattr(factura, "id_factura", None)) if instantaneu.furnizor == "hidroelectrica" else getattr(factura, "id_factura", None),
+        "invoice_number": real_invoice_number,
+        "numar_factura": real_invoice_number,
+        "document_number": real_invoice_number,
         "invoice_title": (_curata_identificator_factura(invoice_title) or "Ultima factură") if instantaneu.furnizor == "hidroelectrica" else invoice_title,
         "issue_date": _format_date(getattr(factura, "data_emitere", None)),
         "due_date": _format_date(getattr(factura, "data_scadenta", None)),

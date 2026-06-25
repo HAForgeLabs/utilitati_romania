@@ -154,8 +154,16 @@ RE_CURRENT_ROW = re.compile(
 )
 
 RE_DETAILS_TITLE = re.compile(
-    r"Factura\s+([^<]+?)\s+din data de\s+([0-9.\-/]+)",
+    r"Factura\s+([^<]+?)\s+din\s+data\s+de\s+([0-9.\-/]+)",
     re.I | re.S,
+)
+RE_DETAILS_TITLE_TEXT = re.compile(
+    r"\bFactura\s+#?\s*((?:[A-Z]{2,}\d{2}\s*(?:nr\.?\s*)?)?\d{5,})\s+din\s+data\s+de\s+([0-9.\-/]+)",
+    re.I,
+)
+RE_DETAILS_OBJECT_NAME = re.compile(
+    r"name=[\"']Factura\s+#?\s*([^\"']+)[\"']",
+    re.I,
 )
 RE_PDF = re.compile(
     r'href=["\']([^"\']*?/my-account/invoices/pdf-download[^"\']+)["\']',
@@ -823,7 +831,9 @@ class DigiApiClient:
             )
 
         html_unescaped = unescape(html)
-        title_match = RE_DETAILS_TITLE.search(html_unescaped)
+        details_text = self._html_to_text(html_unescaped)
+        title_match = RE_DETAILS_TITLE_TEXT.search(details_text) or RE_DETAILS_TITLE.search(html_unescaped)
+        object_title_match = RE_DETAILS_OBJECT_NAME.search(html_unescaped)
         pdf_match = RE_PDF.search(html_unescaped)
 
         label_money_matches = RE_LABEL_VALUE_MONEY.findall(html)
@@ -849,11 +859,16 @@ class DigiApiClient:
         invoice_number = None
         issue_date = None
         if title_match:
-            invoice_number = self._clean_text(title_match.group(1))
+            invoice_number = self._normalize_invoice_number(title_match.group(1))
             issue_date = self._clean_text(title_match.group(2))
 
-        if not invoice_number:
-            invoice_number = invoice_id
+        if not invoice_number and object_title_match:
+            invoice_number = self._normalize_invoice_number(object_title_match.group(1))
+
+        # Digi foloseste invoice_id numeric doar ca identificator intern pentru detalii/download.
+        # Nu il expunem drept numar de document daca nu putem extrage seria reala din popup.
+        if invoice_number and str(invoice_number).strip() == str(invoice_id).strip():
+            invoice_number = None
 
         total_value = money_map.get("total")
         rest_value = money_map.get("rest")
@@ -901,6 +916,21 @@ class DigiApiClient:
             return float(clean)
         except ValueError:
             return None
+
+    @staticmethod
+    def _html_to_text(html: str) -> str:
+        text = re.sub(r"<br\s*/?>", " ", html, flags=re.I)
+        text = re.sub(r"</(?:div|p|li|tr|td|th|h[1-6])>", " ", text, flags=re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        return re.sub(r"\s+", " ", unescape(text)).strip()
+
+    @staticmethod
+    def _normalize_invoice_number(value: str | None) -> str | None:
+        text = re.sub(r"\s+", " ", unescape(str(value or ""))).strip()
+        if not text:
+            return None
+        text = re.sub(r"\bnr\.?\s+", "", text, flags=re.I)
+        return text.strip() or None
 
     @staticmethod
     def _clean_text(text: str) -> str:

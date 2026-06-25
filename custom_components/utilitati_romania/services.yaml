@@ -19,9 +19,9 @@ submit_reading:
   fields:
     provider:
       name: Furnizor
-      description: Cheia internă a furnizorului. Momentan este acceptat apa_canal.
+      description: Cheia internă a furnizorului. Sunt acceptați apa_canal și engie.
       required: true
-      example: apa_canal
+      example: engie
     entry_id:
       name: Intrare configurare
       description: ID-ul intrării de configurare, dacă este disponibil în card.

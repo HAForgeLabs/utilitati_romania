@@ -117,6 +117,99 @@ def _extrage_numar_factura_lizibil(sursa: dict[str, Any]) -> str | None:
     return None
 
 
+
+def _normalizare_identificator_hidroelectrica(valoare: Any) -> str:
+    """Normalizeaza identificatorii de cont/contract din raspunsurile Hidroelectrica."""
+    text = str(valoare or "").strip()
+    if not text:
+        return ""
+    return "".join(ch for ch in text if ch.isalnum()).lower()
+
+
+def _valori_identificare_factura_hidroelectrica(intrare: dict[str, Any]) -> set[str]:
+    """Extrage identificatorii de cont/contract gasiti pe o factura Hidroelectrica.
+
+    In mod normal istoricul este cerut pentru un singur contract, dar portalul poate
+    returna uneori date suficient de largi pentru mai multe locuri de consum. Cand
+    factura contine explicit un cont/contract, folosim acea informatie pentru a nu
+    o atasa la locul de consum gresit.
+    """
+    if not isinstance(intrare, dict):
+        return set()
+
+    chei = (
+        "contractAccountID",
+        "ContractAccountID",
+        "contractAccountId",
+        "utilityAccountNumber",
+        "UtilityAccountNumber",
+        "accountNumber",
+        "AccountNumber",
+        "ca",
+        "CA",
+        "contract",
+        "Contract",
+        "contractNo",
+        "ContractNo",
+        "contractNumber",
+        "ContractNumber",
+        "businessPartner",
+        "BusinessPartner",
+        "partner",
+        "Partner",
+        "bp",
+        "BP",
+        "installation",
+        "Installation",
+        "pod",
+        "POD",
+    )
+    valori: set[str] = set()
+    for cheie in chei:
+        valoare = intrare.get(cheie)
+        if isinstance(valoare, (list, tuple, set)):
+            for element in valoare:
+                normalizat = _normalizare_identificator_hidroelectrica(element)
+                if normalizat:
+                    valori.add(normalizat)
+        else:
+            normalizat = _normalizare_identificator_hidroelectrica(valoare)
+            if normalizat:
+                valori.add(normalizat)
+    return valori
+
+
+def _factura_apartine_contului_hidroelectrica(
+    intrare: dict[str, Any],
+    *,
+    uan: str,
+    account_number: str,
+    pod: str = "",
+    instalare: str = "",
+) -> bool:
+    """Verifica defensiv daca factura poate fi atasata contului curent.
+
+    Daca factura nu expune identificatori de cont, o pastram pentru compatibilitate,
+    deoarece unele raspunsuri Hidroelectrica contin doar numar/valoare/scadenta.
+    Daca expune identificatori si niciunul nu se potriveste cu locul curent, factura
+    este ignorata pentru contul respectiv ca sa nu ajunga sub o locatie gresita.
+    """
+    valori_factura = _valori_identificare_factura_hidroelectrica(intrare)
+    if not valori_factura:
+        return True
+
+    valori_cont = {
+        _normalizare_identificator_hidroelectrica(uan),
+        _normalizare_identificator_hidroelectrica(account_number),
+        _normalizare_identificator_hidroelectrica(pod),
+        _normalizare_identificator_hidroelectrica(instalare),
+    }
+    valori_cont.discard("")
+    if not valori_cont:
+        return True
+
+    return bool(valori_factura & valori_cont)
+
 def _detecteaza_prosumator_din_factura(factura: dict[str, Any]) -> bool:
     txt = ' '.join(str(factura.get(k, '')) for k in ('invoiceType', 'type', 'channel', 'status', 'exbel', 'invoiceId')).lower()
     suma = _float_ro(factura.get('amount'))
@@ -595,6 +688,24 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
                 pods_payload = None
             pod, instalare = _extrage_pod_si_instalare(pods_payload)
 
+            facturi_filtrate = [
+                intrare for intrare in lista_facturi
+                if _factura_apartine_contului_hidroelectrica(
+                    intrare,
+                    uan=uan,
+                    account_number=account_number,
+                    pod=pod,
+                    instalare=instalare,
+                )
+            ]
+            if len(facturi_filtrate) != len(lista_facturi):
+                _LOGGER.debug(
+                    "[HIDRO] Am ignorat %s facturi din istoricul contului %s deoarece identificatorii nu se potriveau cu locul de consum curent.",
+                    len(lista_facturi) - len(facturi_filtrate),
+                    account_number or uan,
+                )
+                lista_facturi = facturi_filtrate
+
             try:
                 window_payload = await self.api.async_fetch_window_dates(uan, account_number)
             except Exception:
@@ -657,7 +768,15 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
                     tip_utilitate='curent',
                     tip_serviciu='curent',
                     este_prosumator=pros,
-                    date_brute={**intrare, 'rest_plata': rest_plata},
+                    date_brute={
+                        **intrare,
+                        'rest_plata': rest_plata,
+                        'cont_sursa_id': id_cont_unic,
+                        'contract_sursa_id': uan,
+                        'account_number_sursa': account_number,
+                        'pod_sursa': pod,
+                        'instalare_sursa': instalare,
+                    },
                 )
                 facturi_cont.append(factura)
                 if factura.id_factura:
