@@ -2,13 +2,6 @@
 
 from __future__ import annotations
 
-# Portions of this file are derived from open-source Home Assistant custom
-# integrations originally authored by Cristian Necrea and published under the MIT License.
-#
-# Copyright (c) Cristian Necrea
-# Copyright (c) Marius Onițiu
-#
-# Licensed under the MIT License. See the LICENSE file in this repository.
 
 import asyncio
 import json
@@ -28,9 +21,11 @@ from .eon_const import (
     URL_CONTRACT_DETAILS,
     URL_CONTRACTS_DETAILS_LIST,
     URL_CONTRACTS_LIST,
+    URL_CONTRACT_SELF_SERVICE,
     URL_CONTRACTS_WITH_SUBCONTRACTS,
     URL_GRAPHIC_CONSUMPTION,
     URL_INVOICE_BALANCE,
+    URL_INVOICE_DASHBOARD_DATA,
     URL_INVOICE_METER_DETAILS,
     URL_INVOICE_BALANCE_PROSUM,
     URL_INVOICES_PROSUM,
@@ -41,10 +36,12 @@ from .eon_const import (
     URL_METER_SUBMIT,
     URL_MFA_LOGIN,
     URL_MFA_RESEND,
+    URL_PARTNERS_LIST,
     URL_PAYMENT_LIST,
     URL_REFRESH_TOKEN,
     URL_RESCHEDULING_PLANS,
     URL_USER_DETAILS,
+    URL_USER_WALLET,
 )
 from .eon_helper import generate_verify_hmac
 
@@ -66,6 +63,18 @@ def _mask_email(value: str) -> str:
     return f"{local_masked}@{domain}"
 
 
+def _extract_list_payload(data):
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in ("list", "items", "data", "partners", "accountContracts", "contracts"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
 class EonApiClient:
     """Client pentru API-ul E.ON România."""
 
@@ -79,6 +88,7 @@ class EonApiClient:
         self._expires_in: int = 3600
         self._refresh_token: str | None = None
         self._id_token: str | None = None
+        self._web_token: str | None = None
         self._uuid: str | None = None
         self._token_obtained_at: float = 0.0
 
@@ -91,7 +101,7 @@ class EonApiClient:
 
     @property
     def has_token(self) -> bool:
-        return self._access_token is not None
+        return self._access_token is not None or self._web_token is not None
 
     @property
     def uuid(self) -> str | None:
@@ -137,7 +147,7 @@ class EonApiClient:
         return age < effective_max
 
     def export_token_data(self) -> dict | None:
-        if self._access_token is None:
+        if self._access_token is None and self._web_token is None:
             return None
         return {
             "access_token": self._access_token,
@@ -145,6 +155,7 @@ class EonApiClient:
             "expires_in": self._expires_in,
             "refresh_token": self._refresh_token,
             "id_token": self._id_token,
+            "web_token": self._web_token,
             "uuid": self._uuid,
             "obtained_at_wallclock": time.time() - (time.monotonic() - self._token_obtained_at),
         }
@@ -155,6 +166,7 @@ class EonApiClient:
         self._expires_in = token_data.get("expires_in", 3600)
         self._refresh_token = token_data.get("refresh_token")
         self._id_token = token_data.get("id_token")
+        self._web_token = token_data.get("web_token")
         self._uuid = token_data.get("uuid")
 
         wallclock_obtained = token_data.get("obtained_at_wallclock")
@@ -188,11 +200,10 @@ class EonApiClient:
     async def async_login(self) -> bool:
         self._mfa_data = None
 
-        verify = generate_verify_hmac(self._username, AUTH_VERIFY_SECRET)
         payload = {
             "username": self._username,
             "password": self._password,
-            "verify": verify,
+            "rememberMe": False,
         }
 
         _LOGGER.debug("[LOGIN] Trimitere cerere: URL=%s, user=%s", URL_LOGIN, self._username)
@@ -203,6 +214,7 @@ class EonApiClient:
             ) as resp:
                 response_text = await resp.text()
                 _LOGGER.debug("[LOGIN] Răspuns: Status=%s", resp.status)
+                _LOGGER.warning("[EON DIAG] login status=%s body_len=%s", resp.status, len(response_text or ""))
 
                 data: dict[str, object] = {}
                 if response_text:
@@ -270,8 +282,6 @@ class EonApiClient:
         payload = {
             "uuid": self._mfa_data["uuid"],
             "code": code,
-            "interval": None,
-            "type": None,
         }
 
         try:
@@ -280,15 +290,33 @@ class EonApiClient:
             ) as resp:
                 response_text = await resp.text()
                 _LOGGER.debug("[MFA] Răspuns: Status=%s", resp.status)
+                _LOGGER.warning("[EON DIAG] mfa_complete status=%s body_len=%s", resp.status, len(response_text or ""))
 
                 if resp.status == 200:
-                    data = json.loads(response_text)
-                    access_token = data.get("access_token")
-                    if access_token:
+                    try:
+                        data = json.loads(response_text) if response_text else {}
+                    except (json.JSONDecodeError, ValueError):
+                        data = {}
+                    token_present = bool(
+                        data.get("access_token")
+                        or data.get("accessToken")
+                        or data.get("token")
+                        or data.get("refresh_token")
+                        or data.get("refreshToken")
+                    )
+                    if token_present:
                         self._apply_token_data(data)
                         self._mfa_data = None
+                        _LOGGER.warning(
+                            "[EON DIAG] mfa_complete success keys=%s access=%s web_token=%s refresh=%s",
+                            sorted(data.keys()),
+                            "yes" if self._access_token else "no",
+                            "yes" if self._web_token else "no",
+                            "yes" if self._refresh_token else "no",
+                        )
                         _LOGGER.debug("[MFA] Login 2FA reușit.")
                         return True
+                    _LOGGER.error("[MFA] Răspuns 200 fără token utilizabil. Chei=%s, Body=%s", sorted(data.keys()), response_text[:1000])
 
                 _LOGGER.error(
                     "[MFA] Autentificare 2FA eșuată. Cod HTTP=%s, Răspuns=%s",
@@ -368,7 +396,10 @@ class EonApiClient:
                 _LOGGER.debug("[REFRESH] Răspuns: Status=%s", resp.status)
 
                 if resp.status == 200:
-                    data = json.loads(response_text)
+                    try:
+                        data = json.loads(response_text) if response_text else {}
+                    except (json.JSONDecodeError, ValueError):
+                        data = {}
                     self._apply_token_data(data)
                     _LOGGER.debug("[REFRESH] Token reîmprospătat cu succes.")
                     return True
@@ -389,11 +420,12 @@ class EonApiClient:
             return False
 
     def _apply_token_data(self, data: dict) -> None:
-        self._access_token = data.get("access_token")
-        self._token_type = data.get("token_type", "Bearer")
-        self._expires_in = data.get("expires_in", 3600)
-        self._refresh_token = data.get("refresh_token")
-        self._id_token = data.get("idToken")
+        self._access_token = data.get("access_token") or data.get("accessToken")
+        self._token_type = data.get("token_type") or data.get("tokenType") or "Bearer"
+        self._expires_in = data.get("expires_in") or data.get("expiresIn") or 3600
+        self._refresh_token = data.get("refresh_token") or data.get("refreshToken")
+        self._id_token = data.get("idToken") or data.get("id_token")
+        self._web_token = data.get("token") or data.get("web_token")
         self._uuid = data.get("uuid")
         self._token_obtained_at = time.monotonic()
         self._token_generation += 1
@@ -406,6 +438,7 @@ class EonApiClient:
         self._access_token = None
         self._refresh_token = None
         self._id_token = None
+        self._web_token = None
         self._uuid = None
         self._token_obtained_at = 0.0
 
@@ -444,26 +477,85 @@ class EonApiClient:
     async def async_fetch_user_details(self):
         return await self._request_with_token("GET", URL_USER_DETAILS, "user_details")
 
+    async def async_fetch_user_wallet(self):
+        return await self._request_with_token("GET", URL_USER_WALLET, "user_wallet")
+
+    async def async_fetch_partners_list(self):
+        url = f"{URL_PARTNERS_LIST}?accountType=Individual&limit=-1&showOnlyActive=true"
+        data = await self._request_with_token("GET", url, "partners_list")
+        partners = _extract_list_payload(data)
+        _LOGGER.warning("[EON DIAG] partners_list count=%s raw_type=%s", len(partners), type(data).__name__)
+        return partners
+
     async def async_fetch_contracts_list(
         self,
         partner_code: str | None = None,
         collective_contract: str | None = None,
         limit: int | None = None,
     ):
-        params = {}
+        effective_limit = -1 if limit is None else limit
+
         if partner_code:
-            params["partnerCode"] = partner_code
+            payload = {"partnerCode": partner_code, "limit": effective_limit}
+            data = await self._request_with_token_post(
+                URL_CONTRACTS_LIST,
+                payload,
+                f"contracts_list partner={partner_code}",
+            )
+            contracts = _extract_list_payload(data)
+            _LOGGER.warning(
+                "[EON DIAG] contracts_list partner=%s count=%s raw_type=%s",
+                partner_code,
+                len(contracts),
+                type(data).__name__,
+            )
+            return contracts
+
         if collective_contract:
-            params["collectiveContract"] = collective_contract
-        if limit is not None:
-            params["limit"] = str(limit)
+            payload = {"collectiveContract": collective_contract, "limit": effective_limit}
+            data = await self._request_with_token_post(
+                URL_CONTRACTS_LIST,
+                payload,
+                f"contracts_list collective={collective_contract}",
+            )
+            contracts = _extract_list_payload(data)
+            if contracts:
+                return contracts
 
-        url = URL_CONTRACTS_LIST
-        if params:
-            query = "&".join(f"{k}={v}" for k, v in params.items())
-            url = f"{url}?{query}"
+        partners = await self.async_fetch_partners_list()
+        all_contracts: list = []
+        for partner in partners:
+            if not isinstance(partner, dict):
+                continue
+            code = (
+                partner.get("partnerCode")
+                or partner.get("code")
+                or partner.get("partnerId")
+                or partner.get("id")
+            )
+            if not code:
+                continue
+            contracts = await self.async_fetch_contracts_list(
+                partner_code=str(code),
+                limit=effective_limit,
+            )
+            if isinstance(contracts, list):
+                all_contracts.extend(contracts)
 
-        return await self._request_with_token("GET", url, "contracts_list")
+        if all_contracts:
+            _LOGGER.warning("[EON DIAG] contracts_list total=%s via partners", len(all_contracts))
+            return all_contracts
+
+        self_service = await self.async_fetch_self_service_contracts()
+        flattened_self_service = self._flatten_contract_items(self_service)
+        if flattened_self_service:
+            _LOGGER.warning("[EON DIAG] contracts_list self_service_flattened=%s", len(flattened_self_service))
+            return flattened_self_service
+
+        fallback = await self.async_fetch_contracts_with_subcontracts()
+        flattened = self._flatten_contract_items(fallback)
+        _LOGGER.warning("[EON DIAG] contracts_list fallback_flattened=%s", len(flattened))
+        return flattened
 
     async def async_fetch_contract_details(self, account_contract: str, include_meter_reading: bool = True):
         url = URL_CONTRACT_DETAILS.format(accountContract=account_contract)
@@ -471,10 +563,50 @@ class EonApiClient:
             url = f"{url}?includeMeterReading=true"
         return await self._request_with_token("GET", url, f"contract_details ({account_contract})")
 
+
+    async def async_fetch_self_service_contracts(self):
+        if not self._web_token:
+            _LOGGER.warning("[EON DIAG] self_service_contracts skipped: missing web_token")
+            return []
+
+        payload = {"token": self._web_token}
+        data = await self._request_with_token_post(
+            URL_CONTRACT_SELF_SERVICE,
+            payload,
+            "self_service_contracts",
+        )
+        items = _extract_list_payload(data)
+        _LOGGER.warning(
+            "[EON DIAG] self_service_contracts count=%s raw_type=%s",
+            len(items),
+            type(data).__name__,
+        )
+        return items
+
+    @staticmethod
+    def _flatten_contract_items(items):
+        flattened: list = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            details = item.get("contractDetails")
+            if isinstance(details, dict):
+                flattened.append(details)
+                for sub in item.get("subContracts") or []:
+                    if isinstance(sub, dict):
+                        sub_details = sub.get("contractDetails")
+                        flattened.append(sub_details if isinstance(sub_details, dict) else sub)
+            else:
+                flattened.append(item)
+        return flattened
+
     async def async_fetch_contracts_with_subcontracts(self, account_contract: str | None = None):
-        url = URL_CONTRACTS_WITH_SUBCONTRACTS
+        url = f"{URL_CONTRACTS_WITH_SUBCONTRACTS}?gdprMissingOnly=true&limit=-1&accountType=individual"
         label = f"contracts_with_subcontracts ({account_contract or 'all'})"
-        return await self._request_with_token("GET", url, label)
+        data = await self._request_with_token("GET", url, label)
+        items = _extract_list_payload(data)
+        _LOGGER.warning("[EON DIAG] contracts_with_subcontracts count=%s raw_type=%s", len(items), type(data).__name__)
+        return items
 
     async def async_fetch_contracts_details_list(self, account_contracts: list[str]):
         if not account_contracts:
@@ -519,6 +651,20 @@ class EonApiClient:
         )
 
     async def async_fetch_invoice_balance(self, account_contract: str, include_subcontracts: bool = False):
+        params = f"?accountContract={account_contract}"
+        data = await self._request_with_token(
+            "GET",
+            f"{URL_INVOICE_DASHBOARD_DATA}{params}",
+            f"invoice_dashboard_data ({account_contract})",
+        )
+        if isinstance(data, dict):
+            _LOGGER.warning(
+                "[EON DIAG] invoice_dashboard_data account=%s keys=%s",
+                account_contract,
+                sorted(data.keys()),
+            )
+            return data
+
         params = f"?accountContract={account_contract}"
         if include_subcontracts:
             params += "&includeSubcontracts=true"
@@ -740,11 +886,14 @@ class EonApiClient:
 
                 if resp.status == 200:
                     try:
-                        return json.loads(response_text), resp.status
+                        data = json.loads(response_text) if response_text else {}
                     except Exception:
-                        return await resp.json(), resp.status
+                        data = await resp.json()
+                    _LOGGER.debug("[EON DIAG] %s %s -> 200 type=%s", method, label, type(data).__name__)
+                    return data, resp.status
 
-                _LOGGER.error("[%s] Eroare %s %s -> HTTP=%s, Body=%s", label, method, url, resp.status, response_text)
+                _LOGGER.error("[%s] Eroare %s %s -> HTTP=%s, Body=%s", label, method, url, resp.status, response_text[:1000])
+                _LOGGER.warning("[EON DIAG] request_failed label=%s method=%s status=%s body_len=%s", label, method, resp.status, len(response_text or ""))
                 return None, resp.status
 
         except asyncio.TimeoutError:

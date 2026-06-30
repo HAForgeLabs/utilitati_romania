@@ -6,7 +6,16 @@ from datetime import datetime
 from typing import Any
 
 from homeassistant.components import persistent_notification
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+
+from .const import (
+    CONF_FURNIZOR,
+    CONF_MOBILE_NOTIFICATION_SERVICE,
+    DOMENIU,
+    FURNIZOR_ADMIN_GLOBAL,
+)
 from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
@@ -305,6 +314,8 @@ class ManagerNotificari:
             notification_id=notification_id,
         )
 
+        await self._trimite_pe_mobil(titlu=titlu, mesaj=mesaj, tip=tip, cheie=cheie)
+
         self.hass.bus.async_fire(
             EVENT_NOTIFICARE,
             {
@@ -315,6 +326,83 @@ class ManagerNotificari:
                 "cheie": cheie,
             },
         )
+
+
+    async def _trimite_pe_mobil(self, *, titlu: str, mesaj: str, tip: str, cheie: str) -> None:
+        serviciu = self._serviciu_notificare_mobil()
+        if not serviciu:
+            return
+
+        servicii_notify = self.hass.services.async_services().get("notify", {})
+        if serviciu not in servicii_notify:
+            _LOGGER.warning(
+                "Serviciul de notificare mobilă notify.%s nu este disponibil pentru notificarea %s.",
+                serviciu,
+                cheie,
+            )
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"Serviciul de notificare **notify.{serviciu}** nu mai este disponibil. "
+                    "Alege din nou telefonul pentru notificări în Setările integrării."
+                ),
+                title="Utilități România",
+                notification_id="utilitati_romania_notify_mobile_invalid",
+            )
+            return
+
+        try:
+            await self.hass.services.async_call(
+                "notify",
+                serviciu,
+                {
+                    "title": titlu,
+                    "message": mesaj,
+                    "data": {
+                        "tag": f"utilitati_romania_{cheie}",
+                        "group": "utilitati_romania",
+                        "channel": "Utilitati Romania",
+                        "notification_icon": "mdi:home-lightning-bolt",
+                    },
+                },
+                blocking=False,
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Nu am putut trimite notificarea Utilități România %s prin notify.%s.",
+                tip,
+                serviciu,
+            )
+
+    def _serviciu_notificare_mobil(self) -> str:
+        admin_entry = self._admin_entry()
+        if admin_entry is None:
+            return ""
+
+        serviciu = str(admin_entry.options.get(CONF_MOBILE_NOTIFICATION_SERVICE) or "").strip()
+        if serviciu and serviciu != "none":
+            return serviciu
+
+        entity_id = self._admin_notification_select_entity_id(admin_entry)
+        if not entity_id:
+            return ""
+
+        state = self.hass.states.get(entity_id)
+        serviciu = str(state.state if state else "").strip()
+        if not serviciu or serviciu == "none" or serviciu in {"unknown", "unavailable"}:
+            return ""
+        return serviciu
+
+    def _admin_entry(self) -> ConfigEntry | None:
+        for entry in self.hass.config_entries.async_entries(DOMENIU):
+            if entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:
+                return entry
+        return None
+
+    def _admin_notification_select_entity_id(self, entry: ConfigEntry) -> str | None:
+        registry = er.async_get(self.hass)
+        unique_id = f"{entry.entry_id}_admin_dispozitiv_mobil_notificari"
+        return registry.async_get_entity_id("select", DOMENIU, unique_id)
 
     @staticmethod
     def _safe_text(value: Any, default: str = "") -> str:

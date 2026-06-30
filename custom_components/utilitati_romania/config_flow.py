@@ -984,9 +984,29 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         return await self.async_step_confirmare_reautentificare()
 
     def _get_reauth_entry(self):
-        entries = self._async_current_entries()
+        entry_id = self.context.get("entry_id")
+        if entry_id:
+            entry = self.hass.config_entries.async_get_entry(entry_id)
+            if entry is not None:
+                return entry
+            _LOGGER.warning("Reautentificare: entry_id %s nu a fost gasit.", entry_id)
+
+        entries = [
+            entry
+            for entry in self._async_current_entries()
+            if entry.data.get(CONF_FURNIZOR) == self._furnizor
+        ]
+
         if not entries:
-            raise RuntimeError("Nu există intrare pentru reautentificare")
+            raise RuntimeError("Nu exista intrare pentru reautentificare")
+
+        if len(entries) > 1:
+            _LOGGER.warning(
+                "Reautentificare: exista mai multe intrari pentru furnizorul %s; "
+                "se foloseste prima intrare gasita ca fallback.",
+                self._furnizor,
+            )
+
         return entries[0]
 
     async def async_step_confirmare_reautentificare(

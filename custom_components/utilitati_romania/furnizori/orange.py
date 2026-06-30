@@ -69,6 +69,59 @@ def _orange_diag(etapa: str, date: dict[str, Any]) -> None:
         _LOGGER.warning("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
 
 
+
+def _diag_preview_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, dict):
+        return {
+            "type": "dict",
+            "keys": sorted(str(key) for key in value.keys())[:20],
+            "len": len(value),
+        }
+    if isinstance(value, list):
+        return {"type": "list", "len": len(value)}
+    text = str(value).strip()
+    if not text:
+        return ""
+    if any(ch.isdigit() for ch in text) and len(text) > 4:
+        return f"***{text[-4:]}"
+    return text[:80]
+
+
+def _diag_structura_dict(data: Any, *, keys: tuple[str, ...] = ()) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"type": type(data).__name__}
+
+    rezultat: dict[str, Any] = {
+        "keys": sorted(str(key) for key in data.keys())[:40],
+        "len": len(data),
+    }
+    for key in keys:
+        if key in data:
+            rezultat[key] = _diag_preview_value(data.get(key))
+    return rezultat
+
+
+def _diag_gaseste_chei(data: Any, cautate: tuple[str, ...], prefix: str = "") -> dict[str, Any]:
+    rezultate: dict[str, Any] = {}
+    if isinstance(data, dict):
+        for key, value in data.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            key_lower = str(key).lower()
+            if any(term in key_lower for term in cautate):
+                rezultate[path] = _diag_preview_value(value)
+            if isinstance(value, dict):
+                rezultate.update(_diag_gaseste_chei(value, cautate, path))
+            elif isinstance(value, list):
+                for index, item in enumerate(value[:3]):
+                    if isinstance(item, dict):
+                        rezultate.update(_diag_gaseste_chei(item, cautate, f"{path}[{index}]"))
+    return rezultate
+
+
 class ClientApiOrange:
     def __init__(self, sesiune: aiohttp.ClientSession, utilizator: str, parola: str) -> None:
         self._sesiune = sesiune
@@ -281,8 +334,12 @@ class ClientApiOrange:
                         "subscriberType": _text(item.get("subscriberType")),
                         "subscriberTypeDisplayName": _text(item.get("subscriberTypeDisplayName")),
                         "subscriptionName": _text(item.get("subscriptionName")),
+                        "commercialName": _text(item.get("commercialName") or item.get("offerName")),
+                        "serviceType": _text(item.get("serviceType") or item.get("serviceCategory")),
                         "profileId_present": bool(_text(item.get("profileId"))),
                         "subscriberId_present": bool(_text(item.get("subscriberId"))),
+                        "customerNumber_present": bool(_text(item.get("customerNumber"))),
+                        "keys": sorted(str(key) for key in item.keys())[:40],
                         "facturabil": _subscriber_facturabil(item),
                     }
                     for item in subscribers
@@ -292,6 +349,32 @@ class ClientApiOrange:
         )
 
         for subscriber in subscribers:
+            _orange_diag(
+                "subscriber_structura",
+                {
+                    "msisdn": _mascheaza_msisdn(subscriber.get("msisdn")),
+                    "structura": _diag_structura_dict(
+                        subscriber,
+                        keys=(
+                            "status",
+                            "subscriberType",
+                            "subscriberTypeDisplayName",
+                            "subscriptionName",
+                            "commercialName",
+                            "offerName",
+                            "serviceType",
+                            "serviceCategory",
+                            "customerNumber",
+                            "profileId",
+                            "subscriberId",
+                        ),
+                    ),
+                    "campuri_relevante": _diag_gaseste_chei(
+                        subscriber,
+                        ("invoice", "bill", "balance", "customer", "service", "subscription", "fiber", "fibra", "tv"),
+                    ),
+                },
+            )
             if not _subscriber_facturabil(subscriber):
                 _orange_diag(
                     "subscriber_sarit",
@@ -327,7 +410,17 @@ class ClientApiOrange:
                     {
                         "msisdn": _mascheaza_msisdn(msisdn),
                         "are_data": isinstance(data, dict),
-                        "keys": sorted(list(data.keys()))[:20] if isinstance(data, dict) else [],
+                        "data_structura": _diag_structura_dict(
+                            data,
+                            keys=("customerNumber", "status", "invoiceType", "hasInvoices", "serverDate"),
+                        ),
+                        "invoiceInfo": _diag_structura_dict(data.get("invoiceInfo") if isinstance(data, dict) else None),
+                        "balanceData": _diag_structura_dict(data.get("balanceData") if isinstance(data, dict) else None),
+                        "lastBill": _diag_structura_dict(data.get("lastBill") if isinstance(data, dict) else None),
+                        "campuri_relevante": _diag_gaseste_chei(
+                            data,
+                            ("invoice", "bill", "balance", "amount", "due", "customer", "service"),
+                        ),
                         "customerNumber_present": bool(_extrage_customer_number(raspuns)),
                     },
                 )
@@ -364,6 +457,11 @@ class ClientApiOrange:
                         "customerNumber_present": bool(customer_number),
                         "items": len(items) if isinstance(items, list) else 0,
                         "keys": sorted(list(raspuns_istoric.keys()))[:20] if isinstance(raspuns_istoric, dict) else [],
+                        "primul_item": _diag_structura_dict(items[0] if isinstance(items, list) and items else None),
+                        "campuri_relevante_primul_item": _diag_gaseste_chei(
+                            items[0] if isinstance(items, list) and items else None,
+                            ("invoice", "bill", "balance", "amount", "due", "status", "service"),
+                        ),
                     },
                 )
             except EroareApiOrange as err:

@@ -1,12 +1,5 @@
 """Constante pentru integrarea E·ON România."""
 
-# Portions of this file are derived from open-source Home Assistant custom
-# integrations originally authored by Cristian Necrea and published under the MIT License.
-#
-# Copyright (c) Cristian Necrea
-# Copyright (c) Marius Onițiu
-#
-# Licensed under the MIT License. See the LICENSE file in this repository.
 
 from homeassistant.const import Platform
 
@@ -29,7 +22,7 @@ DEFAULT_UPDATE_INTERVAL = 21600  # Interval de actualizare în secunde (6 ore)
 # ──────────────────────────────────────────────
 # Autentificare
 # ──────────────────────────────────────────────
-SUBSCRIPTION_KEY = "e43698af63d84daa9763bbef7918378f"
+SUBSCRIPTION_KEY = "674e9032df9d456fa371e17a4097a5b8"
 AUTH_VERIFY_SECRET = "zrAnQjN0bDjlTsKYmbpexjaBNY6wrCzuIqGWNgqoaJzlLrYiqd"
 
 # ──────────────────────────────────────────────
@@ -50,7 +43,9 @@ HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
     "Ocp-Apim-Subscription-Key": SUBSCRIPTION_KEY,
-    "User-Agent": "EON Myline/Android",
+    "Origin": "https://www.eon.ro",
+    "Referer": "https://www.eon.ro/myline/login",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
 }
 
 # ──────────────────────────────────────────────
@@ -61,23 +56,26 @@ API_BASE = "https://api2.eon.ro"
 # ──────────────────────────────────────────────
 # URL-uri API — Autentificare
 # ──────────────────────────────────────────────
-URL_LOGIN = f"{API_BASE}/users/{API_VERSION_USERS}/userauth/mobile-login"
+URL_LOGIN = f"{API_BASE}/users/{API_VERSION_USERS}/userauth/login"
 URL_REFRESH_TOKEN = f"{API_BASE}/users/{API_VERSION_USERS}/userauth/mobile-refresh-token"
 
 # ──────────────────────────────────────────────
 # URL-uri API — MFA (Two-Factor Authentication)
 # ──────────────────────────────────────────────
-URL_MFA_LOGIN = f"{API_BASE}/users/{API_VERSION_USERS}/second-factor-auth/mobile-login"
+URL_MFA_LOGIN = f"{API_BASE}/users/{API_VERSION_USERS}/second-factor-auth/login"
 URL_MFA_RESEND = f"{API_BASE}/users/{API_VERSION_USERS}/second-factor-auth/resend-code"
 URL_USER_DETAILS = f"{API_BASE}/users/{API_VERSION_USERS}/users/user-details"
+URL_USER_WALLET = f"{API_BASE}/users/{API_VERSION_USERS}/users/user-wallet"
 MFA_REQUIRED_CODE = "6054"
 
 # ──────────────────────────────────────────────
 # URL-uri API — Parteneri & Contracte
 # ──────────────────────────────────────────────
+URL_PARTNERS_LIST = f"{API_BASE}/partners/{API_VERSION_PARTNERS}/partners/list"
 URL_CONTRACTS_LIST = f"{API_BASE}/partners/{API_VERSION_PARTNERS}/account-contracts/list"
 URL_CONTRACTS_WITH_SUBCONTRACTS = f"{API_BASE}/partners/{API_VERSION_PARTNERS}/account-contracts/list-with-subcontracts"
 URL_CONTRACTS_DETAILS_LIST = f"{API_BASE}/partners/{API_VERSION_PARTNERS}/account-contracts/contracts-details-list"
+URL_CONTRACT_SELF_SERVICE = f"{API_BASE}/partners/{API_VERSION_PARTNERS}/self-service/account-contracts"
 URL_CONTRACT_DETAILS = f"{API_BASE}/partners/{API_VERSION_PARTNERS}/account-contracts/{{accountContract}}"
 
 # ──────────────────────────────────────────────
@@ -86,6 +84,7 @@ URL_CONTRACT_DETAILS = f"{API_BASE}/partners/{API_VERSION_PARTNERS}/account-cont
 URL_INVOICES_UNPAID = f"{API_BASE}/invoices/{API_VERSION_INVOICES}/invoices/list"
 URL_INVOICES_PROSUM = f"{API_BASE}/invoices/{API_VERSION_INVOICES}/invoices/list-prosum"
 URL_INVOICE_BALANCE = f"{API_BASE}/invoices/{API_VERSION_INVOICES}/invoices/invoice-balance"
+URL_INVOICE_DASHBOARD_DATA = f"{API_BASE}/invoices/{API_VERSION_INVOICES}/invoices/dashboard-data"
 URL_INVOICE_METER_DETAILS = f"{API_BASE}/invoices/{API_VERSION_INVOICES}/invoices/invoice-meter-details/{{invoiceNumber}}"
 URL_INVOICE_BALANCE_PROSUM = f"{API_BASE}/invoices/{API_VERSION_INVOICES}/invoices/invoice-balance-prosum"
 URL_PAYMENT_LIST = f"{API_BASE}/invoices/{API_VERSION_INVOICES}/payments/payment-list"

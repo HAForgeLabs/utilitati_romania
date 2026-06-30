@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b11";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b13";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -521,7 +521,16 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
   _mobileDeviceSelectEntity() {
+    return this._mobileSelectEntityByPurpose("deschidere furnizori");
+  }
+
+  _mobileNotificationSelectEntity() {
+    return this._mobileSelectEntityByPurpose("notificari");
+  }
+
+  _mobileSelectEntityByPurpose(purpose) {
     const states = Object.values(this._hass?.states || {});
+    const wanted = this._normalizeText(purpose || "");
     let best = null;
     let bestScore = -1;
     for (const stateObj of states) {
@@ -530,15 +539,15 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const entityId = String(stateObj.entity_id || "").toLowerCase();
       let score = 0;
       if (entityId.includes("utilitati_romania") || entityId.includes("administrare_integrare")) score += 40;
-      if (text.includes("dispozitiv mobil")) score += 80;
-      if (text.includes("deschidere furnizori")) score += 80;
+      if (text.includes("dispozitiv mobil")) score += 60;
+      if (wanted && text.includes(wanted)) score += 100;
       if (Array.isArray(stateObj.attributes?.options) && stateObj.attributes.options.some((item) => String(item).startsWith("mobile_app_"))) score += 40;
       if (score > bestScore) {
         best = stateObj;
         bestScore = score;
       }
     }
-    return bestScore >= 80 ? best : null;
+    return bestScore >= 140 ? best : null;
   }
 
   _mobileDeviceLabel(option) {
@@ -2310,6 +2319,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const mobileSelect = this._mobileDeviceSelectEntity();
     const mobileOptions = Array.isArray(mobileSelect?.attributes?.options) ? mobileSelect.attributes.options : [];
     const selectedMobile = mobileSelect?.state || "none";
+    const notificationMobileSelect = this._mobileNotificationSelectEntity();
+    const notificationMobileOptions = Array.isArray(notificationMobileSelect?.attributes?.options) ? notificationMobileSelect.attributes.options : [];
+    const selectedNotificationMobile = notificationMobileSelect?.state || "none";
     const prefs = this._notificationPreferences();
     const dashboardPrefs = this._dashboardPreferences();
     const aliases = this._locationAliases();
@@ -2418,7 +2430,18 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       </section>
       <section class="panel-card">
         <div class="card-head"><div><span class="eyebrow">notificări</span><h2>Ce notificări primești</h2></div><button class="primary dark small" data-save-notification-settings ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salvează..." : "Salvează notificările"}</button></div>
-        <div class="settings-list">
+        <div class="settings-grid compact">
+          <div class="setting-block">
+            <div><span class="eyebrow">telefon</span><h3>Dispozitiv pentru notificări</h3><p>Alege telefonul pe care se trimit notificările de facturi și indexuri. Notificările persistente din Home Assistant rămân active.</p></div>
+            ${notificationMobileSelect ? `
+              <select data-mobile-notification-select data-entity-id="${this._escape(notificationMobileSelect.entity_id)}">
+                ${notificationMobileOptions.map((option) => `<option value="${this._escape(option)}" ${option === selectedNotificationMobile ? "selected" : ""}>${this._escape(this._mobileDeviceLabel(option))}</option>`).join("")}
+              </select>
+              <small class="setting-hint">Entitate: ${this._escape(notificationMobileSelect.entity_id)}</small>
+            ` : `<div class="empty">Nu am găsit entitatea pentru selectarea telefonului de notificări. Verifică intrarea „Administrare integrare”.</div>`}
+          </div>
+        </div>
+        <div class="settings-list notification-toggles">
           ${toggle("facturi_noi", "Facturi noi", "Primești notificare când integrarea detectează o factură nouă neplătită.")}
           ${toggle("scadente", "Scadențe apropiate", "Primești notificări înainte de scadență, după pragurile configurate în integrare.")}
           ${toggle("indexuri", "Perioade de transmitere index", "Primești notificare când începe perioada de transmitere index pentru furnizorii suportați.")}
@@ -2537,13 +2560,16 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .card-head { display:flex; justify-content:space-between; gap:16px; align-items:center; margin-bottom:16px; }
       .due,.location-compact,.invoice-row,.reading-row { display:flex; align-items:center; gap:14px; padding:14px; border-radius:18px; background:#f7f9fc; margin-top:10px; }
       .due { justify-content:space-between; border-left:5px solid #d8e2ef; }
+      .due > div:first-child { min-width:0; }
       .due.soon { border-left-color:#ff914d; }
       .due.late { border-left-color:#e5484d; }
       .due span,.location-compact span,.invoice-main span,.invoice-meta span,.reading-main span,.reading-period span,.reading-current span { display:block; color:#6b7b90; font-size:13px; margin-top:3px; }
       .invoice-main .invoice-utility { color:#4f6f94; font-size:12px; font-weight:800; letter-spacing:.02em; }
       .invoice-main .invoice-location { color:#8aa7cf; font-size:12px; font-weight:900; letter-spacing:.02em; }
-      .due-right { text-align:right; }
+      .due-right { text-align:right; display:flex; align-items:baseline; justify-content:flex-end; gap:8px; flex-wrap:wrap; min-width:max-content; }
+      .due-right b,.due-right small { display:inline-block; white-space:nowrap; }
       .due-right small { color:#6b7b90; font-weight:800; }
+      .notification-toggles { margin-top:12px; }
       .location-compact { display:grid; grid-template-columns:42px minmax(0,1fr) auto; align-items:center; justify-content:initial; }
       .location-compact > b { margin-left:0; text-align:right; flex:0 0 auto; justify-self:end; }
       .location-icon,.provider-badge { width:42px; height:42px; border-radius:14px; display:grid; place-items:center; background:#e8f2ff; color:#2369bb; font-weight:900; flex:0 0 auto; }
@@ -2627,6 +2653,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .contact-action ha-icon { color:#4ea1ff; }
 
       .settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+      .settings-grid.compact { grid-template-columns:minmax(0,1fr); margin-bottom:12px; }
       .setting-block { display:grid; gap:14px; align-content:start; padding:18px; border-radius:20px; background:#f7f9fc; border:1px solid rgba(17,32,51,.06); }
       .setting-block h3 { margin:0 0 6px; font-size:18px; }
       .setting-block p,.setting-hint { color:#6b7b90; margin:0; line-height:1.45; }
@@ -2950,6 +2977,25 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           this._actions.set("settings", { status: "ok", message: "Dispozitivul mobil a fost salvat." });
         } catch (err) {
           this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva dispozitivul mobil." });
+        }
+        this._interactiveUntil = 0;
+        this._render();
+      });
+    }
+    const mobileNotificationSelect = this.shadowRoot.querySelector("[data-mobile-notification-select]");
+    if (mobileNotificationSelect) {
+      ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => mobileNotificationSelect.addEventListener(eventName, () => this._holdRenderBriefly(4500)));
+      mobileNotificationSelect.addEventListener("change", async (event) => {
+        const entityId = mobileNotificationSelect.getAttribute("data-entity-id");
+        const option = event.target.value;
+        this._actions.set("settings", { status: "busy", message: "Se salvează telefonul pentru notificări..." });
+        this._holdRenderBriefly(1200);
+        this._render();
+        try {
+          await this._hass.callService("select", "select_option", { entity_id: entityId, option });
+          this._actions.set("settings", { status: "ok", message: "Telefonul pentru notificări a fost salvat." });
+        } catch (err) {
+          this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva telefonul pentru notificări." });
         }
         this._interactiveUntil = 0;
         this._render();

@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b11";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.7b13";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {

@@ -10,6 +10,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import (
     CONF_FURNIZOR,
+    CONF_MOBILE_NOTIFICATION_SERVICE,
     CONF_MOBILE_NOTIFY_SERVICE,
     DOMENIU,
     FURNIZOR_ADMIN_GLOBAL,
@@ -40,8 +41,6 @@ def _mobile_notify_service_names(
         if str(service_name).startswith("mobile_app_")
     )
 
-    # Unele servicii mobile_app sunt înregistrate mai târziu decât platforma select.
-    # Păstrăm opțiunea salvată în listă ca selecția să nu pară pierdută după restart.
     stored = str(stored_value or "").strip()
     if stored and stored != _NOTIFY_OPTION_NONE and stored.startswith("mobile_app_") and stored not in options:
         options.append(stored)
@@ -58,18 +57,47 @@ async def async_setup_entry(
     if entry.data.get(CONF_FURNIZOR) != FURNIZOR_ADMIN_GLOBAL:
         return
 
-    async_add_entities([SelectorDispozitivMobilOpenProvider(hass, entry)])
+    async_add_entities(
+        [
+            SelectorDispozitivMobil(
+                hass,
+                entry,
+                option_key=CONF_MOBILE_NOTIFY_SERVICE,
+                unique_suffix="admin_dispozitiv_mobil_open_provider",
+                name="Dispozitiv mobil pentru deschidere furnizori",
+                icon="mdi:cellphone-link",
+            ),
+            SelectorDispozitivMobil(
+                hass,
+                entry,
+                option_key=CONF_MOBILE_NOTIFICATION_SERVICE,
+                unique_suffix="admin_dispozitiv_mobil_notificari",
+                name="Dispozitiv mobil pentru notificari",
+                icon="mdi:cellphone-message",
+            ),
+        ]
+    )
 
 
-class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
-    _attr_icon = "mdi:cellphone-link"
+class SelectorDispozitivMobil(RestoreEntity, SelectEntity):
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        *,
+        option_key: str,
+        unique_suffix: str,
+        name: str,
+        icon: str,
+    ) -> None:
         self.hass = hass
         self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_admin_dispozitiv_mobil_open_provider"
-        self._attr_name = "Dispozitiv mobil pentru deschidere furnizori"
+        self._option_key = option_key
+        self._attr_unique_id = f"{entry.entry_id}_{unique_suffix}"
+        self._attr_name = name
+        self._attr_icon = icon
         self._attr_device_info = _admin_device_info(entry)
         stored_value = self._option_from_config_entry()
         self._attr_options = _mobile_notify_service_names(hass, stored_value)
@@ -77,7 +105,7 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
         self._remove_service_listener = None
 
     def _option_from_config_entry(self) -> str:
-        value = str(self._entry.options.get(CONF_MOBILE_NOTIFY_SERVICE) or "").strip()
+        value = str(self._entry.options.get(self._option_key) or "").strip()
         return value or _NOTIFY_OPTION_NONE
 
     async def async_added_to_hass(self) -> None:
@@ -145,7 +173,7 @@ class SelectorDispozitivMobilOpenProvider(RestoreEntity, SelectEntity):
 
     async def _async_save_selected_option(self, option: str) -> None:
         current_options = dict(self._entry.options)
-        current_options[CONF_MOBILE_NOTIFY_SERVICE] = option
+        current_options[self._option_key] = option
         self.hass.config_entries.async_update_entry(
             self._entry,
             options=current_options,

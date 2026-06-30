@@ -220,9 +220,18 @@ def _citeste_sold_factura(invoice_balance: dict | None) -> float:
     if not isinstance(invoice_balance, dict):
         return 0.0
 
+    balance_obj = invoice_balance.get("balance")
+    if isinstance(balance_obj, dict):
+        for cheie in ("balance", "total", "totalBalance", "balancePay", "balanceValue"):
+            if balance_obj.get(cheie) not in (None, "", "None"):
+                return _to_float(balance_obj.get(cheie), 0.0)
+
     for cheie in ("balance", "total", "totalBalance", "balancePay", "balanceValue"):
-        if cheie in invoice_balance and invoice_balance.get(cheie) is not None:
-            return _to_float(invoice_balance.get(cheie), 0.0)
+        value = invoice_balance.get(cheie)
+        if isinstance(value, dict):
+            continue
+        if value not in (None, "", "None"):
+            return _to_float(value, 0.0)
 
     return 0.0
 
@@ -394,6 +403,24 @@ def _ultima_plata(payments: list[dict] | None) -> dict | None:
 
     plati_sortate = sorted(payments, key=_cheie_sortare, reverse=True)
     return plati_sortate[0] if plati_sortate else None
+
+
+def _plati_din_dashboard(invoice_balance: dict | None) -> list[dict]:
+    if not isinstance(invoice_balance, dict):
+        return []
+
+    last_payment = invoice_balance.get("lastPayment")
+    if not isinstance(last_payment, dict):
+        return []
+
+    return [
+        {
+            "paymentDate": last_payment.get("paymentDate"),
+            "value": last_payment.get("value"),
+            "paymentChannel": last_payment.get("paymentChannel"),
+            "bank": last_payment.get("bank"),
+        }
+    ]
 
 
 def _istoric_index(meter_history: dict | None) -> list[dict]:
@@ -595,10 +622,17 @@ class ClientFurnizorEon(ClientFurnizor):
         if not isinstance(contracte, list):
             contracte = []
 
+        _LOGGER.warning("[EON DIAG] colectare contracte=%s", len(contracte))
+
         locuri_consum: list[dict[str, Any]] = []
         toate_intrari: list[dict[str, Any]] = []
 
         for contract in contracte:
+            if isinstance(contract, dict) and isinstance(contract.get("contractDetails"), dict):
+                contract = contract["contractDetails"]
+            if not isinstance(contract, dict):
+                continue
+
             utility_type = _safe_str(contract.get("utilityType"))
             is_collective = utility_type == "00" or str(contract.get("type", "")).strip() == "98"
 
@@ -673,6 +707,9 @@ class ClientFurnizorEon(ClientFurnizor):
             alias = _alias_din_adresa(adresa, cod_contract)
 
             ultima_factura = _factura_relevanta(invoices_unpaid, invoices_paid, invoice_balance)
+
+            if not isinstance(payments, list) or not payments:
+                payments = _plati_din_dashboard(invoice_balance)
 
             istoric_plati = _istoric_plati(payments)
             ultima_plata = _ultima_plata(payments)
