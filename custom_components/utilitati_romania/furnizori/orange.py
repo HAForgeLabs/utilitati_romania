@@ -22,6 +22,16 @@ ENDPOINT_SUBSCRIBERS = "/myaccount/api/v5/subscribers"
 ENDPOINT_INVOICE_INFO = "/myaccount/api/v5/invoice/{profile_id}/{msisdn}/invoiceInfo"
 ENDPOINT_INVOICE_HISTORY = "/myaccount/api/v5/invoice/history"
 
+TIPURI_ABONAMENT_ORANGE = {
+    "POSTPAY",
+    "BROADBAND",
+    "FIXED_TV_LINE",
+    "FIXED_LINE",
+    "FIXED_INTERNET",
+    "FIXED_VOICE",
+}
+TIPURI_PREPAY_ORANGE = {"PREPAY", "PREPAID", "MOBILE_PREPAY"}
+
 CLIENT_ID_MOBIL = "07f501ee-3d7f-4eed-848c-658be314219c"
 CLIENT_SECRET_MOBIL = "cDlicFa9aaRETjgU9tDk6azeyUaBMAheQTfS"
 SCOP_ORANGE = "oauth.userinfo.extended myaccountb2c.access asyncchat.read eshopb2c.place_order eshopb2c.read_offers openid"
@@ -64,9 +74,9 @@ def _mascheaza_msisdn(valoare: Any) -> str:
 
 def _orange_diag(etapa: str, date: dict[str, Any]) -> None:
     try:
-        _LOGGER.warning("[ORANGE DIAG] %s: %s", etapa, date)
+        _LOGGER.debug("[ORANGE DIAG] %s: %s", etapa, date)
     except Exception:  # pragma: no cover - diagnostic defensiv
-        _LOGGER.warning("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
+        _LOGGER.debug("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
 
 
 
@@ -563,6 +573,8 @@ class ClientFurnizorOrange(ClientFurnizor):
         invoice_infos = date_brute.get("invoice_infos", {}) or {}
         istoric_pe_customer = _istoric_facturi_dupa_msisdn(date_brute.get("invoice_history", {}) or {})
 
+        facturi_vazute: set[tuple[str, str, str]] = set()
+
         for msisdn, raspuns in invoice_infos.items():
             if not isinstance(raspuns, dict):
                 continue
@@ -592,6 +604,21 @@ class ClientFurnizorOrange(ClientFurnizor):
                 rest_plata = _float_sigur(balance.get("totalBalanceAmount"))
             if rest_plata is None and istoric_curent:
                 rest_plata = _float_sigur(istoric_curent.get("serviceBalanceAmount"))
+
+            cheie_factura = (reference, str(valoare), data_scadenta.isoformat() if data_scadenta else "")
+            if cheie_factura in facturi_vazute:
+                _orange_diag(
+                    "factura_sarita",
+                    {
+                        "msisdn": _mascheaza_msisdn(msisdn),
+                        "motiv": "duplicat_dupa_referinta",
+                        "reference": _diag_preview_value(reference),
+                        "valoare": valoare,
+                        "data_scadenta": data_scadenta.isoformat() if data_scadenta else None,
+                    },
+                )
+                continue
+            facturi_vazute.add(cheie_factura)
 
             stare = _stare_factura(rest_plata, data_scadenta, istoric_curent)
             cont = conturi_dupa_id.get(msisdn)
@@ -775,8 +802,33 @@ def _data_iso(valoare: Any) -> str | None:
 
 def _subscriber_facturabil(subscriber: dict[str, Any]) -> bool:
     status = _text(subscriber.get("status")).upper()
+    if status != "ACTIVE":
+        return False
+
     tip = _text(subscriber.get("subscriberType")).upper()
-    return status == "ACTIVE" and tip == "POSTPAY"
+    if tip in TIPURI_PREPAY_ORANGE or "PREPAY" in tip or "PREPAID" in tip:
+        return False
+    if tip in TIPURI_ABONAMENT_ORANGE:
+        return True
+
+    text_serviciu = " ".join(
+        _text(subscriber.get(key)).lower()
+        for key in (
+            "subscriberTypeDisplayName",
+            "subscriptionName",
+            "commercialName",
+            "offerName",
+            "serviceType",
+            "serviceCategory",
+        )
+    )
+    if "prepay" in text_serviciu or "prepaid" in text_serviciu:
+        return False
+
+    if any(termen in text_serviciu for termen in ("abonament", "internet fix", "fibra", "fiber", "orange tv", "tv premium")):
+        return True
+
+    return bool(_text(subscriber.get("profileId")) and _text(subscriber.get("subscriberId")))
 
 
 def _extrage_customer_number(raspuns_invoice: dict[str, Any] | None) -> str:

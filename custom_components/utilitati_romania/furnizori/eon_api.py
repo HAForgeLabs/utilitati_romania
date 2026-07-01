@@ -214,7 +214,7 @@ class EonApiClient:
             ) as resp:
                 response_text = await resp.text()
                 _LOGGER.debug("[LOGIN] Răspuns: Status=%s", resp.status)
-                _LOGGER.warning("[EON DIAG] login status=%s body_len=%s", resp.status, len(response_text or ""))
+                _LOGGER.debug("[EON DIAG] login status=%s body_len=%s", resp.status, len(response_text or ""))
 
                 data: dict[str, object] = {}
                 if response_text:
@@ -247,7 +247,7 @@ class EonApiClient:
                             "recipient": recipient,
                             "validity": data.get("secondFactorValidity", 60),
                         }
-                        _LOGGER.warning(
+                        _LOGGER.debug(
                             "[LOGIN] MFA necesar. Tip=%s, Destinatar=%s, Valabilitate=%ss.",
                             self._mfa_data["type"],
                             self._mfa_data["recipient"],
@@ -255,7 +255,7 @@ class EonApiClient:
                         )
                         return False
 
-                    _LOGGER.error("[LOGIN DEBUG] 400 RAW: %s", response_text[:1000])
+                    _LOGGER.debug("[LOGIN DEBUG] 400 RAW: %s", response_text[:1000])
 
                 _LOGGER.error(
                     "[LOGIN] Eroare autentificare. Cod HTTP=%s, Răspuns=%s",
@@ -290,7 +290,7 @@ class EonApiClient:
             ) as resp:
                 response_text = await resp.text()
                 _LOGGER.debug("[MFA] Răspuns: Status=%s", resp.status)
-                _LOGGER.warning("[EON DIAG] mfa_complete status=%s body_len=%s", resp.status, len(response_text or ""))
+                _LOGGER.debug("[EON DIAG] mfa_complete status=%s body_len=%s", resp.status, len(response_text or ""))
 
                 if resp.status == 200:
                     try:
@@ -307,7 +307,7 @@ class EonApiClient:
                     if token_present:
                         self._apply_token_data(data)
                         self._mfa_data = None
-                        _LOGGER.warning(
+                        _LOGGER.debug(
                             "[EON DIAG] mfa_complete success keys=%s access=%s web_token=%s refresh=%s",
                             sorted(data.keys()),
                             "yes" if self._access_token else "no",
@@ -470,7 +470,7 @@ class EonApiClient:
 
             if not result and self._mfa_data is not None:
                 self._mfa_blocked = True
-                _LOGGER.error("[AUTH] MFA necesar — reconfigurare necesară.")
+                _LOGGER.debug("[AUTH] MFA necesar — reconfigurare necesară.")
 
             return result
 
@@ -484,7 +484,7 @@ class EonApiClient:
         url = f"{URL_PARTNERS_LIST}?accountType=Individual&limit=-1&showOnlyActive=true"
         data = await self._request_with_token("GET", url, "partners_list")
         partners = _extract_list_payload(data)
-        _LOGGER.warning("[EON DIAG] partners_list count=%s raw_type=%s", len(partners), type(data).__name__)
+        _LOGGER.debug("[EON DIAG] partners_list count=%s raw_type=%s", len(partners), type(data).__name__)
         return partners
 
     async def async_fetch_contracts_list(
@@ -503,7 +503,7 @@ class EonApiClient:
                 f"contracts_list partner={partner_code}",
             )
             contracts = _extract_list_payload(data)
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "[EON DIAG] contracts_list partner=%s count=%s raw_type=%s",
                 partner_code,
                 len(contracts),
@@ -543,18 +543,18 @@ class EonApiClient:
                 all_contracts.extend(contracts)
 
         if all_contracts:
-            _LOGGER.warning("[EON DIAG] contracts_list total=%s via partners", len(all_contracts))
+            _LOGGER.debug("[EON DIAG] contracts_list total=%s via partners", len(all_contracts))
             return all_contracts
 
         self_service = await self.async_fetch_self_service_contracts()
         flattened_self_service = self._flatten_contract_items(self_service)
         if flattened_self_service:
-            _LOGGER.warning("[EON DIAG] contracts_list self_service_flattened=%s", len(flattened_self_service))
+            _LOGGER.debug("[EON DIAG] contracts_list self_service_flattened=%s", len(flattened_self_service))
             return flattened_self_service
 
         fallback = await self.async_fetch_contracts_with_subcontracts()
         flattened = self._flatten_contract_items(fallback)
-        _LOGGER.warning("[EON DIAG] contracts_list fallback_flattened=%s", len(flattened))
+        _LOGGER.debug("[EON DIAG] contracts_list fallback_flattened=%s", len(flattened))
         return flattened
 
     async def async_fetch_contract_details(self, account_contract: str, include_meter_reading: bool = True):
@@ -566,7 +566,7 @@ class EonApiClient:
 
     async def async_fetch_self_service_contracts(self):
         if not self._web_token:
-            _LOGGER.warning("[EON DIAG] self_service_contracts skipped: missing web_token")
+            _LOGGER.debug("[EON DIAG] self_service_contracts skipped: missing web_token")
             return []
 
         payload = {"token": self._web_token}
@@ -576,7 +576,7 @@ class EonApiClient:
             "self_service_contracts",
         )
         items = _extract_list_payload(data)
-        _LOGGER.warning(
+        _LOGGER.debug(
             "[EON DIAG] self_service_contracts count=%s raw_type=%s",
             len(items),
             type(data).__name__,
@@ -605,7 +605,7 @@ class EonApiClient:
         label = f"contracts_with_subcontracts ({account_contract or 'all'})"
         data = await self._request_with_token("GET", url, label)
         items = _extract_list_payload(data)
-        _LOGGER.warning("[EON DIAG] contracts_with_subcontracts count=%s raw_type=%s", len(items), type(data).__name__)
+        _LOGGER.debug("[EON DIAG] contracts_with_subcontracts count=%s raw_type=%s", len(items), type(data).__name__)
         return items
 
     async def async_fetch_contracts_details_list(self, account_contracts: list[str]):
@@ -658,7 +658,7 @@ class EonApiClient:
             f"invoice_dashboard_data ({account_contract})",
         )
         if isinstance(data, dict):
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "[EON DIAG] invoice_dashboard_data account=%s keys=%s",
                 account_contract,
                 sorted(data.keys()),
@@ -893,7 +893,7 @@ class EonApiClient:
                     return data, resp.status
 
                 _LOGGER.error("[%s] Eroare %s %s -> HTTP=%s, Body=%s", label, method, url, resp.status, response_text[:1000])
-                _LOGGER.warning("[EON DIAG] request_failed label=%s method=%s status=%s body_len=%s", label, method, resp.status, len(response_text or ""))
+                _LOGGER.debug("[EON DIAG] request_failed label=%s method=%s status=%s body_len=%s", label, method, resp.status, len(response_text or ""))
                 return None, resp.status
 
         except asyncio.TimeoutError:

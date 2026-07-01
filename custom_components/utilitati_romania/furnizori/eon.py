@@ -622,7 +622,7 @@ class ClientFurnizorEon(ClientFurnizor):
         if not isinstance(contracte, list):
             contracte = []
 
-        _LOGGER.warning("[EON DIAG] colectare contracte=%s", len(contracte))
+        _LOGGER.debug("[EON DIAG] colectare contracte=%s", len(contracte))
 
         locuri_consum: list[dict[str, Any]] = []
         toate_intrari: list[dict[str, Any]] = []
