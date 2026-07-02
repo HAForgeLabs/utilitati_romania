@@ -799,7 +799,7 @@ class ClientFurnizorApaGalati(ClientFurnizor):
                 continue
             vazute.add(id_cont)
             nume = str(locatie.get("den_locatie") or client.get("nume") or id_cont).strip()
-            adresa = _adresa_din_facturi(id_cont, date_brute.get("facturi") or [])
+            adresa = _adresa_din_facturi(id_cont, date_brute.get("facturi") or [], nume_locatie=nume)
             raw = {**contract_default, **client, **locatie, "adresa_factura": adresa}
             conturi.append(
                 ContUtilitate(
@@ -843,7 +843,9 @@ class ClientFurnizorApaGalati(ClientFurnizor):
             if cheie in vazute:
                 continue
             vazute.add(cheie)
-            id_cont = self._gaseste_id_cont(item, conturi) or (cont_default.id_cont if cont_default else None)
+            id_cont = self._gaseste_id_cont(item, conturi)
+            if not id_cont and cont_default and len(conturi) == 1:
+                id_cont = cont_default.id_cont
             valoare = _numar(item.get("total_factura") or item.get("total_de_plata"))
             rest = _numar(item.get("suma_sold"))
             total_de_plata = _numar(item.get("total_de_plata"))
@@ -878,7 +880,16 @@ class ClientFurnizorApaGalati(ClientFurnizor):
 
     def _gaseste_id_cont(self, item: dict[str, Any], conturi: list[ContUtilitate]) -> str | None:
         cod = _slug_simplu(str(item.get("cod_locatie") or ""))
-        denumire = _slug_simplu(str(item.get("den_locatie") or item.get("den_localitate") or item.get("adresa") or ""))
+        parti_item = [
+            item.get("den_locatie"),
+            item.get("den_localitate"),
+            item.get("adresa"),
+            item.get("loc_consum"),
+            item.get("punct_consum"),
+        ]
+        text_item = _slug_simplu(" ".join(str(parte or "") for parte in parti_item))
+        adresa_item = _slug_simplu(str(item.get("adresa") or ""))
+
         for cont in conturi:
             raw = cont.date_brute or {}
             candidati = {
@@ -886,11 +897,19 @@ class ClientFurnizorApaGalati(ClientFurnizor):
                 _slug_simplu(cont.nume),
                 _slug_simplu(cont.adresa or ""),
                 _slug_simplu(str(raw.get("den_locatie") or "")),
+                _slug_simplu(str(raw.get("adresa_factura") or "")),
+                _slug_simplu(str(raw.get("adresa") or "")),
             }
+            candidati = {c for c in candidati if c}
             if cod and cod in candidati:
                 return cont.id_cont
-            if denumire and any(denumire in c or c in denumire for c in candidati if c):
-                return cont.id_cont
+            for candidat in candidati:
+                if not candidat:
+                    continue
+                if text_item and (text_item in candidat or candidat in text_item):
+                    return cont.id_cont
+                if adresa_item and (adresa_item in candidat or candidat in adresa_item):
+                    return cont.id_cont
         return None
 
     def _mapeaza_consumuri(self, date_brute: dict[str, Any], conturi: list[ContUtilitate], facturi: list[FacturaUtilitate]) -> list[ConsumUtilitate]:
@@ -899,7 +918,9 @@ class ClientFurnizorApaGalati(ClientFurnizor):
         citiri = [c for c in (date_brute.get("consumuri") or []) if isinstance(c, dict)]
         for cont in conturi:
             facturi_cont = [f for f in facturi if f.id_cont == cont.id_cont]
-            plati_cont = [p for p in plati if self._gaseste_id_cont(p, [cont]) == cont.id_cont] or plati
+            plati_cont = [p for p in plati if self._gaseste_id_cont(p, [cont]) == cont.id_cont]
+            if not plati_cont and len(conturi) == 1:
+                plati_cont = plati
             citiri_cont = [c for c in citiri if self._gaseste_id_cont(c, [cont]) == cont.id_cont]
             neachitate = [f for f in facturi_cont if f.stare in {"neplatita", "scadenta"}]
             sold = round(sum(float(f.date_brute.get("rest_plata") or 0.0) for f in neachitate), 2)
@@ -1195,14 +1216,18 @@ def _extrage_plati(html_text: str) -> list[dict[str, Any]]:
     ]
 
 
-def _adresa_din_facturi(id_cont: str, facturi: list[dict[str, Any]]) -> str | None:
+def _adresa_din_facturi(id_cont: str, facturi: list[dict[str, Any]], *, nume_locatie: str | None = None) -> str | None:
+    tinta = _slug_simplu(nume_locatie or "")
     for factura in facturi:
-        if str(factura.get("cod_locatie") or "").strip() == str(id_cont).strip():
-            return _curata_text(f"{factura.get('den_localitate') or ''}, {factura.get('adresa') or ''}").strip(", ")
-    if facturi:
-        return _curata_text(f"{facturi[0].get('den_localitate') or ''}, {facturi[0].get('adresa') or ''}").strip(", ")
+        cod_factura = str(factura.get("cod_locatie") or "").strip()
+        adresa = _curata_text(f"{factura.get('den_localitate') or ''}, {factura.get('adresa') or ''}").strip(", ")
+        if cod_factura and cod_factura == str(id_cont).strip():
+            return adresa or None
+        if tinta:
+            adresa_norm = _slug_simplu(adresa)
+            if adresa_norm and (adresa_norm in tinta or tinta in adresa_norm):
+                return adresa or None
     return None
-
 
 def _stare_factura(item: dict[str, Any], rest: float | None) -> str:
     stare = str(item.get("stare_factura") or "").strip().lower()

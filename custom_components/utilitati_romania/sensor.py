@@ -1629,6 +1629,11 @@ SENZORI_CONT_APA_ORADEA: tuple[DescriereSenzorCont, ...] = (
 
 
 SENZORI_CONT_APA_GALATI: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA
+SENZORI_CONT_APAREGIO: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA + (
+    DescriereSenzorCont(key="citire_index_permisa", name="Citire index permisă", icon="mdi:clock-check-outline", functie_valoare=lambda i, c: _valoare_consum(i, "citire_index_permisa", c.id_cont)),
+    DescriereSenzorCont(key="perioada_citire", name="Perioadă citire index", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "perioada_citire", c.id_cont)),
+    DescriereSenzorCont(key="zile_pana_citire_index", name="Zile până la citire index", icon="mdi:calendar-arrow-right", native_unit_of_measurement="zile", functie_valoare=lambda i, c: _valoare_consum(i, "zile_pana_citire_index", c.id_cont)),
+)
 SENZORI_CONT_HIDRO_PRAHOVA: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA + (
     DescriereSenzorCont(key="citire_index_permisa", name="Citire index permisă", icon="mdi:clock-check-outline", functie_valoare=lambda i, c: _valoare_consum(i, "citire_index_permisa", c.id_cont)),
     DescriereSenzorCont(key="perioada_citire", name="Perioadă citire index", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "perioada_citire", c.id_cont)),
@@ -1863,6 +1868,12 @@ async def async_setup_entry(
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_APA_GALATI:
                 entitati.append(SenzorContApaGalati(coordonator, cont, descriere))
+
+    elif instantaneu and instantaneu.furnizor == "aparegio":
+        entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
+        for cont in instantaneu.conturi:
+            for descriere in SENZORI_CONT_APAREGIO:
+                entitati.append(SenzorContAparegio(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "hidro_prahova":
         entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
@@ -2937,6 +2948,48 @@ class SenzorContApaGalati(SenzorContApaOradea):
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
         self._attr_device_info = info_device_apa_galati(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
+
+
+def _nume_loc_aparegio(cont) -> str:
+    raw = getattr(cont, "date_brute", None) or {}
+    nr_contract = _raw_get_suffix(raw, "id_contract", "contract", "numar_contract")
+    cod_client = _raw_get_suffix(raw, "id_client", "client")
+    adresa = getattr(cont, "adresa", None) or _raw_get_suffix(raw, "adresa", "punct_consum", "loc_consum")
+    baza = adresa or getattr(cont, "nume", None) or "Loc consum"
+    detalii = nr_contract or cod_client or getattr(cont, "id_cont", None)
+    text = f"{baza} ({detalii})" if detalii and str(detalii) not in str(baza) else str(baza)
+    return re.sub(r"\s+", " ", text).strip() or str(getattr(cont, "id_cont", None) or "loc_consum")
+
+
+def _slug_loc_aparegio(cont) -> str:
+    raw = getattr(cont, "date_brute", None) or {}
+    baza = getattr(cont, "adresa", None) or _raw_get_suffix(raw, "adresa", "punct_consum", "loc_consum") or getattr(cont, "nume", None)
+    return build_provider_slug("aparegio", baza, getattr(cont, "id_cont", None))
+
+
+def info_device_aparegio(entry_id: str, cont) -> DeviceInfo:
+    ident = getattr(cont, "id_cont", "aparegio")
+    nume = _nume_loc_aparegio(cont)
+    return DeviceInfo(
+        identifiers={(DOMENIU, f"{entry_id}_aparegio_{ident}")},
+        name=f"ApaRegio Gorj - {nume}",
+        manufacturer="ApaRegio Gorj",
+        model="Apă / canal",
+    )
+
+
+class SenzorContAparegio(SenzorContApaOradea):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: DescriereSenzorCont) -> None:
+        EntitateUtilitatiRomania.__init__(self, coordonator)
+        self.cont = cont
+        self.entity_description = descriere
+        slug = _slug_loc_aparegio(cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_aparegio_{cont.id_cont}_{descriere.key}"
+        self._attr_name = descriere.name
+        self._attr_suggested_object_id = f"{slug}_{descriere.key}"
+        self.entity_id = f"sensor.{slug}_{descriere.key}"
+        self._attr_device_info = info_device_aparegio(coordonator.intrare.entry_id, cont)
         _aplica_unitate_cost_mediu(self, cont)
 
 
