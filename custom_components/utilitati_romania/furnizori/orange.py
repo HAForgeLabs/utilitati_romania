@@ -74,9 +74,9 @@ def _mascheaza_msisdn(valoare: Any) -> str:
 
 def _orange_diag(etapa: str, date: dict[str, Any]) -> None:
     try:
-        _LOGGER.debug("[ORANGE DIAG] %s: %s", etapa, date)
+        _LOGGER.warning("[ORANGE DIAG] %s: %s", etapa, date)
     except Exception:  # pragma: no cover - diagnostic defensiv
-        _LOGGER.debug("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
+        _LOGGER.warning("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
 
 
 
@@ -377,11 +377,16 @@ class ClientApiOrange:
                             "customerNumber",
                             "profileId",
                             "subscriberId",
+                            "address",
+                            "serviceAddress",
+                            "installationAddress",
+                            "location",
+                            "siteAddress",
                         ),
                     ),
                     "campuri_relevante": _diag_gaseste_chei(
                         subscriber,
-                        ("invoice", "bill", "balance", "customer", "service", "subscription", "fiber", "fibra", "tv"),
+                        ("invoice", "bill", "balance", "customer", "service", "subscription", "fiber", "fibra", "tv", "address", "adresa", "street", "city", "location", "site"),
                     ),
                 },
             )
@@ -429,7 +434,7 @@ class ClientApiOrange:
                         "lastBill": _diag_structura_dict(data.get("lastBill") if isinstance(data, dict) else None),
                         "campuri_relevante": _diag_gaseste_chei(
                             data,
-                            ("invoice", "bill", "balance", "amount", "due", "customer", "service"),
+                            ("invoice", "bill", "balance", "amount", "due", "customer", "service", "address", "adresa", "street", "city", "location", "site"),
                         ),
                         "customerNumber_present": bool(_extrage_customer_number(raspuns)),
                     },
@@ -470,7 +475,7 @@ class ClientApiOrange:
                         "primul_item": _diag_structura_dict(items[0] if isinstance(items, list) and items else None),
                         "campuri_relevante_primul_item": _diag_gaseste_chei(
                             items[0] if isinstance(items, list) and items else None,
-                            ("invoice", "bill", "balance", "amount", "due", "status", "service"),
+                            ("invoice", "bill", "balance", "amount", "due", "status", "service", "address", "adresa", "street", "city", "location", "site"),
                         ),
                     },
                 )
@@ -528,6 +533,26 @@ class ClientFurnizorOrange(ClientFurnizor):
             raise EroareParsare(str(err)) from err
 
         conturi = self._mapeaza_conturi(date_brute)
+        _orange_diag(
+            "conturi_mapate",
+            {
+                "count": len(conturi),
+                "items": [
+                    {
+                        "id_cont": _mascheaza_msisdn(cont.id_cont),
+                        "nume": cont.nume,
+                        "tip_cont": cont.tip_cont,
+                        "id_contract_present": bool(cont.id_contract),
+                        "adresa": cont.adresa,
+                        "date_brute_address_fields": _diag_gaseste_chei(
+                            cont.date_brute if isinstance(cont.date_brute, dict) else {},
+                            ("address", "adresa", "street", "city", "location", "site", "alias"),
+                        ),
+                    }
+                    for cont in conturi
+                ],
+            },
+        )
         facturi = self._mapeaza_facturi(date_brute, conturi)
         consumuri = self._mapeaza_consumuri(date_brute, conturi, facturi)
         extra = self._construieste_extra(date_brute, conturi, facturi)
