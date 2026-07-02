@@ -39,6 +39,151 @@ from .licentiere import async_obtine_licenta_globala, mascheaza_cheia_licenta
 from .facturi_agregate import colecteaza_facturi_agregate, colecteaza_locuri_consum, sumar_facturi
 from .storage_citiri import async_incarca_cache_citiri, obtine_citire_cache
 
+
+def _cheie_provider_sumar(provider: dict[str, Any] | None) -> tuple[str, str, str, str, str]:
+    if not isinstance(provider, dict):
+        return ("", "", "", "", "")
+    return (
+        str(provider.get("entry_id") or ""),
+        normalize_text(provider.get("furnizor") or provider.get("furnizor_label") or "").lower(),
+        str(provider.get("loc_consum_key") or ""),
+        str(provider.get("id_cont") or ""),
+        str(provider.get("id_contract") or ""),
+    )
+
+
+def _cheie_loc_consum_sumar(loc: dict[str, Any] | None) -> tuple[str, str, str, str, str]:
+    if not isinstance(loc, dict):
+        return ("", "", "", "", "")
+    return (
+        str(loc.get("entry_id") or ""),
+        normalize_text(loc.get("furnizor") or loc.get("furnizor_label") or "").lower(),
+        str(loc.get("cheie") or ""),
+        str(loc.get("id_cont") or ""),
+        str(loc.get("id_contract") or ""),
+    )
+
+
+def _provider_placeholder_din_loc_consum(loc: dict[str, Any]) -> dict[str, Any]:
+    furnizor = loc.get("furnizor")
+    furnizor_label = loc.get("furnizor_label") or str(furnizor or "Furnizor").replace("_", " ").title()
+    return {
+        "entry_id": loc.get("entry_id"),
+        "entry_title": loc.get("entry_title"),
+        "furnizor": furnizor,
+        "furnizor_label": furnizor_label,
+        "locatie_cheie": loc.get("locatie_cheie"),
+        "eticheta_locatie": loc.get("eticheta_locatie") or loc.get("locatie_cheie") or furnizor_label,
+        "eticheta_grupare_manuala": loc.get("eticheta_grupare_manuala"),
+        "loc_consum_key": loc.get("cheie"),
+        "id_cont": loc.get("id_cont"),
+        "id_contract": loc.get("id_contract"),
+        "id_punct_consum": loc.get("id_punct_consum"),
+        "cod_punct_consum": loc.get("cod_punct_consum"),
+        "numar_punct_consum": loc.get("numar_punct_consum"),
+        "nume_cont": loc.get("nume_cont"),
+        "adresa_originala": loc.get("adresa_originala"),
+        "tip_utilitate": loc.get("tip_utilitate"),
+        "tip_serviciu": loc.get("tip_serviciu"),
+        "invoice_id": None,
+        "invoice_title": "Fără factură curentă",
+        "issue_date": None,
+        "due_date": None,
+        "amount": 0.0,
+        "currency": "RON",
+        "status_raw": "fara_factura_curenta",
+        "status": "paid",
+        "payment_status": "paid",
+        "is_paid": True,
+        "unpaid_amount": 0.0,
+        "unpaid_count": 0,
+        "unpaid_total": 0.0,
+        "dashboard_only": True,
+        "fara_factura_curenta": True,
+    }
+
+
+def _completeaza_sumar_cu_locuri_fara_facturi(sumar: dict[str, Any], locuri_consum: list[dict[str, Any]]) -> dict[str, Any]:
+    """Adaugă în sumar locurile active care nu au momentan o factură curentă.
+
+    Dashboardul folosește atributul ``locatii`` din senzorul agregat. Dacă un
+    furnizor, cum este e-bloc, are senzori și loc de consum activ, dar portalul
+    nu întoarce o listă de plată curentă utilizabilă, locul dispărea complet din
+    sumar. Îl adăugăm ca provider informativ doar pentru dashboard, fără să îl
+    transformăm într-o factură afișată în tabul Facturi.
+    """
+
+    if not isinstance(sumar, dict):
+        return sumar
+
+    locatii = list(sumar.get("locatii") or [])
+    provider_keys: set[tuple[str, str, str, str, str]] = set()
+
+    for locatie in locatii:
+        for provider in locatie.get("furnizori") or []:
+            key = _cheie_provider_sumar(provider)
+            provider_keys.add(key)
+
+    locatii_by_key: dict[str, dict[str, Any]] = {
+        str(loc.get("locatie_cheie") or "locatie"): loc
+        for loc in locatii
+        if isinstance(loc, dict)
+    }
+
+    changed = False
+    for loc in locuri_consum or []:
+        if not isinstance(loc, dict) or loc.get("ignored"):
+            continue
+        if loc.get("sursa") == "ignorat":
+            continue
+
+        loc_key = _cheie_loc_consum_sumar(loc)
+        if loc_key in provider_keys:
+            continue
+
+        locatie_cheie = str(loc.get("locatie_cheie") or loc.get("cheie") or "locatie")
+        locatie = locatii_by_key.get(locatie_cheie)
+        if locatie is None:
+            locatie = {
+                "locatie_cheie": locatie_cheie,
+                "eticheta_locatie": loc.get("eticheta_grupare_manuala") or loc.get("eticheta_locatie") or locatie_cheie,
+                "furnizori": [],
+                "total_neplatit": 0.0,
+                "total_neplatit_formatat": "0.00 RON",
+            }
+            locatii_by_key[locatie_cheie] = locatie
+            locatii.append(locatie)
+
+        placeholder = _provider_placeholder_din_loc_consum(loc)
+        locatie.setdefault("furnizori", []).append(placeholder)
+        provider_keys.add(loc_key)
+        changed = True
+
+    if not changed:
+        return sumar
+
+    for locatie in locatii:
+        locatie.setdefault("furnizori", [])
+        locatie["furnizori"].sort(
+            key=lambda item: (
+                1 if item.get("dashboard_only") else 0,
+                normalize_text(item.get("furnizor_label")).lower(),
+            )
+        )
+        total = 0.0
+        for provider in locatie["furnizori"]:
+            if provider.get("status") == "unpaid":
+                try:
+                    total += float(provider.get("unpaid_amount") or provider.get("amount") or 0)
+                except (TypeError, ValueError):
+                    pass
+        locatie["total_neplatit"] = round(total, 2)
+        locatie["total_neplatit_formatat"] = f"{round(total, 2):.2f} RON"
+
+    locatii.sort(key=lambda loc: normalize_text(loc.get("eticheta_locatie")).lower())
+    sumar["locatii"] = locatii
+    return sumar
+
 def _cont_curent_dupa_id(coordonator: CoordonatorUtilitatiRomania, id_cont: str | None):
     data = getattr(coordonator, "data", None)
     conturi = getattr(data, "conturi", None) or []
@@ -164,8 +309,10 @@ class SenzorAdminFacturiAgregate(SenzorAdminBaza):
     async def _async_refresh_value(self) -> None:
         try:
             facturi = colecteaza_facturi_agregate(self.hass)
+            locuri_consum = colecteaza_locuri_consum(self.hass)
             self._sumar = sumar_facturi(facturi)
-            self._sumar["locuri_consum"] = colecteaza_locuri_consum(self.hass)
+            self._sumar["locuri_consum"] = locuri_consum
+            self._sumar = _completeaza_sumar_cu_locuri_fara_facturi(self._sumar, locuri_consum)
             self._attr_native_value = self._sumar.get("numar_facturi", 0)
             self._ultima_eroare = None
             self._attr_available = True

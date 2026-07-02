@@ -559,4 +559,4 @@ def _log_debug_apa_ilfov(label: str, payload: Any) -> None:
         text = json.dumps(payload, ensure_ascii=False, default=str)
     except TypeError:
         text = str(payload)
-    _LOGGER.warning("Diagnostic Apa Ilfov: %s: %s", label, text[:12000])
+    _LOGGER.debug("Diagnostic Apa Ilfov: %s: %s", label, text[:12000])

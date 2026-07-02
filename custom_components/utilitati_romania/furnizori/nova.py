@@ -70,6 +70,7 @@ class ClientApiNova:
         self.conturi_asociate: list[dict[str, Any]] = []
         self._portal_token: str | None = None
         self._portal_token_expira_la: int | None = None
+        self._mod_autentificare: str = "backend"
 
     def _url(self, endpoint: str, *, baza: str = URL_BAZA) -> str:
         return f"{baza}{endpoint}"
@@ -95,6 +96,7 @@ class ClientApiNova:
         json_data: dict[str, Any] | None = None,
         account_id: str | None = None,
         baza_url: str = URL_BAZA,
+        diagnostic_label: str | None = None,
     ) -> dict[str, Any]:
         if autentificat and not self._token_valid():
             await self.async_login()
@@ -119,14 +121,36 @@ class ClientApiNova:
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as raspuns:
                 text = await raspuns.text()
+                data: Any = {}
+                json_invalid = False
+                if text:
+                    try:
+                        parsed = json.loads(text)
+                        data = parsed if isinstance(parsed, dict) else {}
+                    except (json.JSONDecodeError, ValueError):
+                        data = {}
+                        json_invalid = True
+
+                if diagnostic_label:
+                    _LOGGER.debug(
+                        "[NOVA DIAG] %s: %s",
+                        diagnostic_label,
+                        json.dumps(
+                            _nova_safe_response_debug(
+                                status=raspuns.status,
+                                text=text,
+                                data=data,
+                            ),
+                            ensure_ascii=False,
+                        ),
+                    )
+
                 if raspuns.status in (401, 403):
                     raise EroareAutentificareNova(f"Autentificare eșuată pentru {endpoint}: HTTP {raspuns.status}")
                 if raspuns.status >= 400:
-                    raise EroareApiNova(f"Nova API a returnat HTTP {raspuns.status} pentru {endpoint}: {text}")
-                try:
-                    data = await raspuns.json()
-                except aiohttp.ContentTypeError as err:
-                    raise EroareRaspunsNova(f"Răspuns JSON invalid pentru {endpoint}: {text}") from err
+                    raise EroareApiNova(f"Nova API a returnat HTTP {raspuns.status} pentru {endpoint}: {_nova_sanitize_text(text)}")
+                if json_invalid or not isinstance(data, dict):
+                    raise EroareRaspunsNova(f"Răspuns JSON invalid pentru {endpoint}: {_nova_sanitize_text(text)}")
         except EroareApiNova:
             raise
         except aiohttp.ClientError as err:
@@ -147,6 +171,7 @@ class ClientApiNova:
         json_data: dict[str, Any] | None = None,
         authorization: str | None = None,
         autentificat: bool = True,
+        diagnostic_label: str | None = None,
     ) -> dict[str, Any]:
         """Trimite cereri către API-ul de portal Nova.
 
@@ -180,14 +205,36 @@ class ClientApiNova:
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as raspuns:
                 text = await raspuns.text()
+                data: Any = {}
+                json_invalid = False
+                if text:
+                    try:
+                        parsed = json.loads(text)
+                        data = parsed if isinstance(parsed, dict) else {}
+                    except (json.JSONDecodeError, ValueError):
+                        data = {}
+                        json_invalid = True
+
+                if diagnostic_label:
+                    _LOGGER.debug(
+                        "[NOVA DIAG] %s: %s",
+                        diagnostic_label,
+                        json.dumps(
+                            _nova_safe_response_debug(
+                                status=raspuns.status,
+                                text=text,
+                                data=data,
+                            ),
+                            ensure_ascii=False,
+                        ),
+                    )
+
                 if raspuns.status in (401, 403):
                     raise EroareAutentificareNova(f"Autentificare eșuată pentru portal {endpoint}: HTTP {raspuns.status}")
                 if raspuns.status >= 400:
-                    raise EroareApiNova(f"Nova portal a returnat HTTP {raspuns.status} pentru {endpoint}: {text}")
-                try:
-                    data = await raspuns.json()
-                except aiohttp.ContentTypeError as err:
-                    raise EroareRaspunsNova(f"Răspuns JSON invalid pentru portal {endpoint}: {text}") from err
+                    raise EroareApiNova(f"Nova portal a returnat HTTP {raspuns.status} pentru {endpoint}: {_nova_sanitize_text(text)}")
+                if json_invalid or not isinstance(data, dict):
+                    raise EroareRaspunsNova(f"Răspuns JSON invalid pentru portal {endpoint}: {_nova_sanitize_text(text)}")
         except EroareApiNova:
             raise
         except aiohttp.ClientError as err:
@@ -272,6 +319,7 @@ class ClientApiNova:
             ENDPOINT_PORTAL_LOGIN,
             json_data={"email": self._email, "password": self._parola},
             autentificat=False,
+            diagnostic_label="portal_login",
         )
         data = raspuns.get("data", {}) if isinstance(raspuns, dict) else {}
         sesiune = data.get("session") if isinstance(data, dict) else None
@@ -285,25 +333,118 @@ class ClientApiNova:
 
         self._portal_token = str(token)
         self._portal_token_expira_la = int(expira_la)
+        self._aplica_date_conturi_portal(data)
         return DateSesiuneNova(token=self._portal_token, expira_la=self._portal_token_expira_la)
 
+    def _aplica_date_conturi_portal(self, data: dict[str, Any]) -> None:
+        """Actualizeaza conturile locale din raspunsul portalului Nova."""
+
+        if not isinstance(data, dict):
+            return
+
+        cont_logat = data.get("loggedInAccount")
+        if isinstance(cont_logat, dict):
+            self.cont = cont_logat
+            asociate = self.cont.get("associatedAccounts")
+            self.conturi_asociate = [item for item in asociate if isinstance(item, dict)] if isinstance(asociate, list) else []
+
+        cont_vizualizat = data.get("viewedAccount")
+        if isinstance(cont_vizualizat, dict):
+            self.cont_vizualizat = cont_vizualizat
+
+        if not self.cont_vizualizat and self.cont:
+            self.cont_vizualizat = self.cont
+
     async def async_login(self) -> DateSesiuneNova:
-        raspuns = await self._request("POST", ENDPOINT_LOGIN, autentificat=False, json_data={"email": self._email, "password": self._parola})
+        try:
+            raspuns = await self._request(
+                "POST",
+                ENDPOINT_LOGIN,
+                autentificat=False,
+                json_data={"email": self._email, "password": self._parola},
+                diagnostic_label="backend_login",
+            )
+        except EroareApiNova as err:
+            portal = await self._diagnosticheaza_login_portal_dupa_esec_backend(err)
+            if portal is not None:
+                self._mod_autentificare = "portal"
+                return portal
+            raise
+
         data = raspuns.get("data", {})
         sesiune = data.get("session")
         if not raspuns.get("success") or not isinstance(sesiune, dict):
+            portal = await self._diagnosticheaza_login_portal_dupa_esec_backend(
+                EroareAutentificareNova("Login backend Nova invalid")
+            )
+            if portal is not None:
+                self._mod_autentificare = "portal"
+                return portal
             raise EroareAutentificareNova("Login Nova eșuat: răspuns invalid")
         token = sesiune.get("token")
         expira_la = sesiune.get("expireAt")
         if not token or not expira_la:
+            portal = await self._diagnosticheaza_login_portal_dupa_esec_backend(
+                EroareAutentificareNova("Login backend Nova fără token")
+            )
+            if portal is not None:
+                self._mod_autentificare = "portal"
+                return portal
             raise EroareAutentificareNova("Login Nova eșuat: lipsă token sau expirare")
+        self._mod_autentificare = "backend"
         self._token = str(token)
         self._token_expira_la = int(expira_la)
         self.cont = data.get("loggedInAccount", {}) or {}
         self.cont_vizualizat = data.get("viewedAccount", {}) or {}
         asociate = self.cont.get("associatedAccounts") if isinstance(self.cont, dict) else []
         self.conturi_asociate = [cont for cont in asociate if isinstance(cont, dict)] if isinstance(asociate, list) else []
+        _LOGGER.debug(
+            "[NOVA DIAG] backend_login_success: %s",
+            json.dumps(
+                {
+                    "logged_account": _nova_safe_account_debug(self.cont),
+                    "viewed_account": _nova_safe_account_debug(self.cont_vizualizat),
+                    "associated_accounts_count": len(self.conturi_asociate),
+                    "token_present": bool(self._token),
+                    "expires_at_present": bool(self._token_expira_la),
+                },
+                ensure_ascii=False,
+            ),
+        )
         return DateSesiuneNova(token=self._token, expira_la=self._token_expira_la)
+
+    async def _diagnosticheaza_login_portal_dupa_esec_backend(self, eroare: Exception) -> DateSesiuneNova | None:
+        try:
+            portal = await self.async_login_portal()
+        except Exception as portal_err:  # noqa: BLE001
+            _LOGGER.debug(
+                "[NOVA DIAG] backend_login_failed_portal_failed: %s",
+                json.dumps(
+                    {
+                        "backend_error": _nova_sanitize_text(str(eroare)),
+                        "portal_error": _nova_sanitize_text(str(portal_err)),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            return None
+
+        _LOGGER.debug(
+            "[NOVA DIAG] backend_login_failed_portal_success: %s",
+            json.dumps(
+                {
+                    "backend_error": _nova_sanitize_text(str(eroare)),
+                    "portal_token_present": bool(portal.token),
+                    "portal_expires_at_present": bool(portal.expira_la),
+                    "fallback_mode": "portal",
+                    "logged_account": _nova_safe_account_debug(self.cont),
+                    "viewed_account": _nova_safe_account_debug(self.cont_vizualizat),
+                    "associated_accounts_count": len(self.conturi_asociate),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        return portal
 
     async def async_comuta_cont(self, cont: dict[str, Any]) -> dict[str, Any]:
         """Comută contextul Nova pe contul primit și actualizează datele sesiunii locale."""
@@ -364,10 +505,18 @@ class ClientApiNova:
 
     async def async_validate_credentials(self) -> dict[str, Any]:
         await self.async_login()
+        if self._mod_autentificare == "portal":
+            return {
+                "account": self.cont,
+                "viewed_account": self.cont_vizualizat,
+                "metering_points": [],
+                "auth_mode": "portal",
+            }
         return {
             "account": self.cont,
             "viewed_account": self.cont_vizualizat,
             "metering_points": await self.async_get_metering_points(),
+            "auth_mode": "backend",
         }
 
     async def async_get_metering_points(self, account_id: str | None = None) -> list[dict[str, Any]]:
@@ -508,10 +657,45 @@ class ClientApiNova:
     def _facturi_din_sumar_portal(sumar: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(sumar, dict):
             return []
-        facturi = sumar.get("invoices")
-        if isinstance(facturi, list):
-            return [f for f in facturi if isinstance(f, dict)]
-        return []
+
+        rezultate: list[dict[str, Any]] = []
+        for cheie in ("invoices", "invoiceList", "latestInvoices", "unpaidInvoices", "documents"):
+            valoare = sumar.get(cheie)
+            if isinstance(valoare, list):
+                rezultate.extend([item for item in valoare if isinstance(item, dict)])
+
+        for cheie in ("invoice", "currentInvoice", "lastInvoice", "activeInvoice"):
+            valoare = sumar.get(cheie)
+            if isinstance(valoare, dict):
+                rezultate.append(valoare)
+
+        vazute: set[str] = set()
+        unice: list[dict[str, Any]] = []
+        for factura in rezultate:
+            ident = str(
+                factura.get("invoiceId")
+                or factura.get("id")
+                or factura.get("number")
+                or factura.get("invoiceNumber")
+                or factura.get("series")
+                or json.dumps(factura, sort_keys=True, default=str)[:200]
+            )
+            if ident in vazute:
+                continue
+            vazute.add(ident)
+            unice.append(factura)
+        return unice
+
+    @staticmethod
+    def _puncte_din_sumar_portal(sumar: dict[str, Any]) -> list[dict[str, Any]]:
+        if not isinstance(sumar, dict):
+            return []
+        rezultate: list[dict[str, Any]] = []
+        for cheie in ("meteringPoints", "metering_points", "consumptionPoints", "places", "contracts"):
+            valoare = sumar.get(cheie)
+            if isinstance(valoare, list):
+                rezultate.extend([item for item in valoare if isinstance(item, dict)])
+        return rezultate
 
     async def async_get_docs(self, endpoint: str, account_id: str | None = None) -> list[dict[str, Any]]:
         raspuns = await self._request("GET", endpoint, account_id=account_id)
@@ -553,9 +737,144 @@ class ClientApiNova:
 
         return conturi
 
+    async def _async_get_all_data_portal_only(self) -> dict[str, Any]:
+        """Citește datele Nova folosind doar portalul, când backend-ul refuză loginul."""
+
+        if not self._portal_token_valid():
+            await self.async_login_portal()
+
+        cont_initial = self.cont_vizualizat if isinstance(self.cont_vizualizat, dict) else {}
+        id_cont_initial = self._account_id(cont_initial)
+        conturi_disponibile = self._lista_conturi_disponibile()
+        conturi_date: list[dict[str, Any]] = []
+        conturi_citite: set[str] = set()
+
+        for cont in conturi_disponibile:
+            id_cont_nova = self._account_id(cont)
+            if not id_cont_nova or id_cont_nova in conturi_citite:
+                continue
+            conturi_citite.add(id_cont_nova)
+
+            portal_comutat = await self.async_comuta_cont_portal(id_cont_nova)
+
+            balanta_portal: dict[str, Any] = {}
+            try:
+                raspuns_balanta = await self._request_portal(
+                    "GET",
+                    ENDPOINT_DASHBOARD_BALANTA,
+                    diagnostic_label="portal_fallback_balance",
+                )
+                data_balanta = raspuns_balanta.get("data") if isinstance(raspuns_balanta, dict) else {}
+                balanta_portal = data_balanta if isinstance(data_balanta, dict) else {}
+            except EroareApiNova as err:
+                _LOGGER.debug(
+                    "[NOVA DIAG] portal_fallback_balance_failed: %s",
+                    json.dumps(
+                        {
+                            "account_id": _nova_mask_identifier(id_cont_nova, "cont_anonimizat"),
+                            "error": _nova_sanitize_text(str(err)),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+
+            sumar_portal: dict[str, Any] = {}
+            try:
+                raspuns_sumar = await self._request_portal(
+                    "GET",
+                    ENDPOINT_DASHBOARD_SUMAR,
+                    diagnostic_label="portal_fallback_summary",
+                )
+                data_sumar = raspuns_sumar.get("data") if isinstance(raspuns_sumar, dict) else {}
+                sumar_portal = data_sumar if isinstance(data_sumar, dict) else {}
+            except EroareApiNova as err:
+                _LOGGER.debug(
+                    "[NOVA DIAG] portal_fallback_summary_failed: %s",
+                    json.dumps(
+                        {
+                            "account_id": _nova_mask_identifier(id_cont_nova, "cont_anonimizat"),
+                            "error": _nova_sanitize_text(str(err)),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+
+            facturi_cont = self._facturi_din_sumar_portal(sumar_portal)
+            puncte = self._puncte_din_sumar_portal(sumar_portal)
+
+            if not _nova_pastreaza_cont_portal(
+                cont=cont,
+                id_cont=id_cont_nova,
+                id_cont_initial=id_cont_initial,
+                puncte=puncte,
+                facturi=facturi_cont,
+                balanta=balanta_portal,
+            ):
+                _LOGGER.debug(
+                    "[NOVA DIAG] portal_fallback_account_skipped: %s",
+                    json.dumps(
+                        {
+                            "account_id": _nova_mask_identifier(id_cont_nova, "cont_anonimizat"),
+                            "reason": "cont_asociat_fara_datorii_active",
+                            "invoices_count": len(facturi_cont),
+                            "active_invoices_count": sum(1 for factura in facturi_cont if _este_factura_activa_nova(factura)),
+                            "metering_points_count": len(puncte),
+                            "balance": _nova_safe_balance_debug(balanta_portal),
+                            "account": _nova_safe_account_debug(cont),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                continue
+
+            for punct in puncte:
+                if isinstance(punct, dict):
+                    punct["_nova_account"] = cont
+                    punct["_nova_account_id"] = id_cont_nova
+
+            for factura in facturi_cont:
+                if isinstance(factura, dict):
+                    factura["_nova_account"] = cont
+                    factura["_nova_account_id"] = id_cont_nova
+
+            conturi_date.append(
+                {
+                    "account": cont,
+                    "account_id": id_cont_nova,
+                    "is_viewed_account": id_cont_nova == id_cont_initial,
+                    "metering_points": puncte,
+                    "invoices": facturi_cont,
+                    "invoice_balance": balanta_portal,
+                    "portal_summary": sumar_portal,
+                    "payments": [],
+                    "self_readings": [],
+                    "metering_points_self_readings": [],
+                    "legal_notifications": [],
+                    "incidents": [],
+                    "auth_mode": "portal",
+                    "portal_switched": portal_comutat,
+                }
+            )
+
+        rezultat = _combina_date_conturi_nova(
+            account=self.cont,
+            viewed_account=cont_initial or self.cont_vizualizat,
+            associated_accounts=self.conturi_asociate,
+            accounts_data=conturi_date,
+        )
+        rezultat["auth_mode"] = "portal"
+        _logheaza_diagnostic_nova(rezultat)
+        return rezultat
+
     async def async_get_all_data(self) -> dict[str, Any]:
+        if self._mod_autentificare == "portal" and self._portal_token_valid():
+            return await self._async_get_all_data_portal_only()
+
         if not self._token_valid():
             await self.async_login()
+
+        if self._mod_autentificare == "portal":
+            return await self._async_get_all_data_portal_only()
 
         cont_initial = self.cont_vizualizat if isinstance(self.cont_vizualizat, dict) else {}
         id_cont_initial = self._account_id(cont_initial)
@@ -666,6 +985,89 @@ class ClientApiNova:
             associated_accounts=self.conturi_asociate,
             accounts_data=conturi_date,
         )
+
+
+def _nova_pastreaza_cont_portal(
+    *,
+    cont: dict[str, Any],
+    id_cont: str,
+    id_cont_initial: str | None,
+    puncte: list[dict[str, Any]],
+    facturi: list[dict[str, Any]],
+    balanta: dict[str, Any],
+) -> bool:
+    """Decide daca un cont asociat Nova merita expus in modul portal-only.
+
+    Unele conturi Nova vechi raman in lista de conturi asociate si portalul poate
+    intoarce doar facturi istorice achitate pentru ele. Fara filtrare, acestea
+    apar in dashboard ca locuri ``neatribuit_nova_*`` si utilizatorul nu le poate
+    ascunde din pagina de vizibilitate. Pastram mereu contul vizualizat si
+    pastram conturile asociate doar daca au indicii de activitate curenta.
+    """
+
+    if id_cont_initial and str(id_cont) == str(id_cont_initial):
+        return True
+
+    if _nova_balanta_de_plata_pozitiva(balanta):
+        return True
+
+    if any(_este_factura_activa_nova(factura) for factura in facturi if isinstance(factura, dict)):
+        return True
+
+    if _nova_are_puncte_active(puncte):
+        return True
+
+    status = str(
+        cont.get("status")
+        or cont.get("accountStatus")
+        or cont.get("contractStatus")
+        or ""
+    ).strip().lower()
+    if status and any(text in status for text in ("active", "activ", "enabled", "valid")):
+        return True
+
+    return False
+
+
+def _nova_balanta_de_plata_pozitiva(balanta: dict[str, Any] | None) -> bool:
+    if not isinstance(balanta, dict):
+        return False
+    for cheie in (
+        "total",
+        "amountToPay",
+        "restToPay",
+        "remainingValue",
+        "remaining",
+        "amountRemaining",
+        "debt",
+        "unpaid",
+        "currentBalance",
+        "balance",
+    ):
+        valoare = _float_sigur(balanta.get(cheie))
+        if valoare is not None and valoare > 0:
+            return True
+    return False
+
+
+def _nova_are_puncte_active(puncte: list[dict[str, Any]] | None) -> bool:
+    if not isinstance(puncte, list) or not puncte:
+        return False
+    for punct in puncte:
+        if not isinstance(punct, dict):
+            continue
+        status = str(
+            punct.get("status")
+            or punct.get("contractStatus")
+            or punct.get("meteringPointStatus")
+            or punct.get("state")
+            or ""
+        ).strip().lower()
+        if not status:
+            return True
+        if not any(text in status for text in ("inactive", "inactiv", "closed", "inchis", "cancel", "terminated", "rezili")):
+            return True
+    return False
 
 
 def _combina_date_conturi_nova(
@@ -1077,8 +1479,8 @@ def _valoare_adevarata_nova(valoare: Any) -> bool:
 def _logheaza_diagnostic_nova(date_brute: dict[str, Any]) -> None:
     """Scrie in log un diagnostic anonimizat pentru investigarea conturilor Nova.
 
-    Folosim warning intentionat in beta, ca mesajele sa apara direct in
-    Settings -> System -> Logs, fara configurare manuala de logger.
+    Folosim nivel debug in release, ca diagnosticul sa fie disponibil doar
+    cand loggerul este activat explicit.
     """
 
     try:
@@ -1087,7 +1489,7 @@ def _logheaza_diagnostic_nova(date_brute: dict[str, Any]) -> None:
         balanta = date_brute.get("invoice_balance", {}) or {}
         accounts_data = date_brute.get("accounts_data", []) or []
 
-        _LOGGER.warning(
+        _LOGGER.debug(
             "[NOVA DEBUG] Sumar global: %s",
             json.dumps(
                 {
@@ -1116,7 +1518,7 @@ def _logheaza_diagnostic_nova(date_brute: dict[str, Any]) -> None:
             cont_balanta = cont_date.get("invoice_balance", {}) if isinstance(cont_date.get("invoice_balance"), dict) else {}
             portal_summary = cont_date.get("portal_summary", {}) if isinstance(cont_date.get("portal_summary"), dict) else {}
 
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "[NOVA DEBUG] Cont[%s]: %s",
                 index,
                 json.dumps(
@@ -1137,7 +1539,7 @@ def _logheaza_diagnostic_nova(date_brute: dict[str, Any]) -> None:
                 ),
             )
 
-        _LOGGER.warning(
+        _LOGGER.debug(
             "[NOVA DEBUG] Facturi agregate: %s",
             json.dumps(
                 {
@@ -1150,7 +1552,7 @@ def _logheaza_diagnostic_nova(date_brute: dict[str, Any]) -> None:
             ),
         )
     except Exception as err:  # noqa: BLE001
-        _LOGGER.warning("[NOVA DEBUG] Nu s-a putut genera diagnosticul anonimizat: %s", err)
+        _LOGGER.debug("[NOVA DEBUG] Nu s-a putut genera diagnosticul anonimizat: %s", err)
 
 def _nova_safe_account_debug(cont: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(cont, dict):
@@ -1336,6 +1738,46 @@ def _extrage_balanta_nova(raspuns: dict[str, Any]) -> dict[str, Any]:
             return rezultat
 
     return {}
+
+
+def _nova_sanitize_text(text: Any, *, limita: int = 900) -> str:
+    continut = str(text or "")
+    continut = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "<email>", continut)
+    continut = re.sub(r'("(?:token|accessToken|refreshToken|password|parola)"\s*:\s*")[^"]+', r'\1<masked>', continut, flags=re.IGNORECASE)
+    continut = " ".join(continut.split())
+    if len(continut) > limita:
+        return f"{continut[:limita]}…"
+    return continut
+
+
+def _nova_safe_response_debug(*, status: int, text: str, data: dict[str, Any]) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "status": status,
+        "body_len": len(text or ""),
+    }
+    if isinstance(data, dict) and data:
+        info["success"] = data.get("success")
+        info["keys"] = sorted(str(key) for key in data.keys())[:40]
+        payload = data.get("data")
+        if isinstance(payload, dict):
+            info["data_keys"] = sorted(str(key) for key in payload.keys())[:50]
+            sesiune = payload.get("session")
+            if isinstance(sesiune, dict):
+                info["session_keys"] = sorted(str(key) for key in sesiune.keys())[:30]
+                info["token_present"] = bool(sesiune.get("token"))
+                info["expire_at_present"] = bool(sesiune.get("expireAt"))
+            logged = payload.get("loggedInAccount")
+            viewed = payload.get("viewedAccount")
+            if isinstance(logged, dict):
+                info["logged_account"] = _nova_safe_account_debug(logged)
+            if isinstance(viewed, dict):
+                info["viewed_account"] = _nova_safe_account_debug(viewed)
+        for cheie in ("message", "error", "errors", "code", "description"):
+            if cheie in data:
+                info[cheie] = _nova_sanitize_text(data.get(cheie), limita=250)
+    elif text:
+        info["body_preview"] = _nova_sanitize_text(text, limita=500)
+    return info
 
 
 def _nova_safe_balance_debug(balanta: dict[str, Any]) -> dict[str, Any]:

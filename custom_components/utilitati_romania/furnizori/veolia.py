@@ -64,7 +64,7 @@ def _debug(etapa: str, **date: Any) -> None:
             sigur[cheie] = f"{valoare[:180]}..."
         else:
             sigur[cheie] = valoare
-    _LOGGER.error("[VEOLIA DEBUG] %s: %s", etapa, json.dumps(sigur, ensure_ascii=False, default=str))
+    _LOGGER.debug("[VEOLIA DEBUG] %s: %s", etapa, json.dumps(sigur, ensure_ascii=False, default=str))
 
 
 def _primul(*valori: Any) -> Any:

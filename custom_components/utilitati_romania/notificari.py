@@ -88,6 +88,17 @@ class ManagerNotificari:
         self._initializat = bool(data.get("initializat", False))
 
     async def _salveaza(self) -> None:
+        data = await self._store.async_load() or {}
+        notificate_existente = set(data.get("notificate", [])) if isinstance(data, dict) else set()
+        surse_existente = (
+            set(data.get("surse_facturi_initializate", []))
+            if isinstance(data, dict)
+            else set()
+        )
+
+        self._date_notificate.update(notificate_existente)
+        self._surse_facturi_initializate.update(surse_existente)
+
         await self._store.async_save(
             {
                 "notificate": sorted(self._date_notificate),
@@ -183,6 +194,7 @@ class ManagerNotificari:
             moneda = self._safe_text(factura.get("moneda"), "lei")
             scadenta = factura.get("scadenta")
             platita = bool(factura.get("platita", False))
+            datorie_sigura = bool(factura.get("datorie_sigura", False))
             adresa = self._safe_text(factura.get("adresa"))
             nume_cont = self._safe_text(factura.get("nume_cont"))
 
@@ -197,18 +209,33 @@ class ManagerNotificari:
 
             locatie = self._format_locatie(adresa, nume_cont, furnizor)
 
-            if not platita and self._preferinte.get("facturi_noi", True):
-                key_emitere = f"{factura_id}_emisa"
+            if platita:
+                self._marcheaza_factura_platita_cunoscuta(factura)
+                changed = True
+                continue
+
+            if not datorie_sigura:
+                _LOGGER.debug(
+                    "Factura %s de la %s nu este notificată: nu există semnal clar că este neachitată.",
+                    factura_id,
+                    furnizor,
+                )
+                continue
+
+            key_emitere = self._cheie_notificare_factura(factura, "emisa")
+            notificare_emitere_trimisa = False
+
+            if self._preferinte.get("facturi_noi", True):
                 sursa_factura = self._cheie_sursa_factura(factura)
-                if sursa_factura in surse_initializate and key_emitere not in self._date_notificate:
-                    self._date_notificate.add(key_emitere)
+                if sursa_factura in surse_initializate and not self._factura_notificata(factura, key_emitere, "emisa"):
+                    self._adauga_chei_factura(factura, key_emitere, "emisa")
                     changed = True
                     _LOGGER.debug(
                         "Factura existentă %s pentru sursa nouă %s a fost marcată ca deja cunoscută, fără notificare.",
                         factura_id,
                         sursa_factura,
                     )
-                elif key_emitere not in self._date_notificate:
+                elif not self._factura_notificata(factura, key_emitere, "emisa"):
                     await self._trimite(
                         cheie=key_emitere,
                         tip="factura_emisa",
@@ -219,10 +246,18 @@ class ManagerNotificari:
                         ),
                         extra=factura,
                     )
-                    self._date_notificate.add(key_emitere)
+                    self._adauga_chei_factura(factura, key_emitere, "emisa")
+                    notificare_emitere_trimisa = True
                     changed = True
 
-            if platita or not scadenta or not self._preferinte.get("scadente", True):
+            if not scadenta or not self._preferinte.get("scadente", True):
+                continue
+
+            if notificare_emitere_trimisa:
+                _LOGGER.debug(
+                    "Notificarea de scadență pentru factura %s este amânată; factura nouă a fost notificată în aceeași rulare.",
+                    factura_id,
+                )
                 continue
 
             try:
@@ -233,8 +268,8 @@ class ManagerNotificari:
             zile_ramase = (data_scadenta - azi).days
 
             for prag in self._preferinte.get("praguri_scadenta", [5, 3, 1]):
-                key_due = f"{factura_id}_due_{prag}"
-                if zile_ramase == prag and key_due not in self._date_notificate:
+                key_due = self._cheie_notificare_factura(factura, f"due_{prag}")
+                if zile_ramase == prag and not self._factura_notificata(factura, key_due, f"due_{prag}"):
                     await self._trimite(
                         cheie=key_due,
                         tip="factura_scadenta",
@@ -246,10 +281,54 @@ class ManagerNotificari:
                         ),
                         extra=factura,
                     )
-                    self._date_notificate.add(key_due)
+                    self._adauga_chei_factura(factura, key_due, f"due_{prag}")
                     changed = True
 
         return changed
+
+    def _marcheaza_factura_platita_cunoscuta(self, factura: dict[str, Any]) -> None:
+        for sufix in ("emisa", "due_5", "due_3", "due_1", "due_0"):
+            cheie = self._cheie_notificare_factura(factura, sufix)
+            self._adauga_chei_factura(factura, cheie, sufix)
+
+    def _factura_notificata(self, factura: dict[str, Any], cheie: str, sufix: str) -> bool:
+        return any(key in self._date_notificate for key in self._chei_factura_compatibile(factura, cheie, sufix))
+
+    def _adauga_chei_factura(self, factura: dict[str, Any], cheie: str, sufix: str) -> None:
+        self._date_notificate.update(self._chei_factura_compatibile(factura, cheie, sufix))
+
+    def _chei_factura_compatibile(self, factura: dict[str, Any], cheie: str, sufix: str) -> set[str]:
+        keys = {cheie}
+        factura_id = str(factura.get("id") or "").strip()
+        if factura_id:
+            keys.add(f"{factura_id}_{sufix}")
+        return keys
+
+    def _cheie_notificare_factura(self, factura: dict[str, Any], sufix: str) -> str:
+        furnizor = str(factura.get("furnizor") or "furnizor").strip().lower()
+        entry_id = str(factura.get("entry_id") or "entry").strip().lower()
+        cont = str(factura.get("id_cont") or factura.get("id_contract") or "cont").strip().lower()
+        loc_consum = str(factura.get("loc_consum_key") or "").strip().lower()
+        factura_id = str(factura.get("id") or factura.get("titlu") or "factura").strip().lower()
+
+        parti = [furnizor, entry_id, cont, loc_consum, factura_id, sufix]
+        cheie = "|".join(part for part in parti if part)
+        return self._sanitize_key(cheie)
+
+    @staticmethod
+    def _sanitize_key(value: str) -> str:
+        text = str(value or "").strip().lower()
+        for old, new in (
+            (" ", "_"),
+            ("/", "_"),
+            ("\\", "_"),
+            (":", "_"),
+            ("|", "_"),
+            (",", "_"),
+            (";", "_"),
+        ):
+            text = text.replace(old, new)
+        return "_".join(part for part in text.split("_") if part)[:220]
 
     async def _proceseaza_index(
         self,
@@ -279,7 +358,7 @@ class ManagerNotificari:
             except Exception:
                 continue
 
-            key_index = f"{furnizor}_{cont}_index_start_{start}"
+            key_index = self._sanitize_key(f"{furnizor}_{cont}_{fereastra.get('loc_consum_key') or ''}_index_start_{start}")
             locatie = self._format_locatie(adresa, nume_cont, furnizor)
 
             if start_d <= azi <= end_d and (fortat or key_index not in self._date_notificate):

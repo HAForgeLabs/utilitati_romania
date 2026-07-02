@@ -939,7 +939,7 @@ def _float_sigur(valoare: Any) -> float | None:
         return None
 
 
-def _bani_sigur(valoare: Any) -> float | None:
+def _bani_sigur(valoare: Any, *, int_in_bani: bool = False) -> float | None:
     numeric = _float_sigur(valoare)
     if numeric is None:
         return None
@@ -947,8 +947,11 @@ def _bani_sigur(valoare: Any) -> float | None:
     text = str(valoare or "")
     are_separator_zecimal = "," in text or "." in text
 
-    if abs(numeric) >= 10000 and float(numeric).is_integer() and not are_separator_zecimal:
-        return round(numeric / 100, 2)
+    if float(numeric).is_integer() and not are_separator_zecimal:
+        if int_in_bani and abs(numeric) >= 100:
+            return round(numeric / 100, 2)
+        if abs(numeric) >= 10000:
+            return round(numeric / 100, 2)
 
     return round(numeric, 2)
 
@@ -1081,13 +1084,14 @@ def _permite_editare_persoane(pachet: dict[str, Any]) -> bool:
 
 
 def _extrage_sold_curent(pachet: dict[str, Any]) -> float | None:
-    for sursa in (
-        _prima_intrare_dict(pachet.get("home_info_web") or {}),
-        _prima_intrare_dict(pachet.get("datorii_web") or {}),
-        _prima_intrare_dict(pachet.get("datorii_toti_web") or {}),
-        _prima_intrare_dict(pachet.get("plati_ap_web") or {}),
-        pachet.get("apartament") or {},
-    ):
+    surse = (
+        (_prima_intrare_dict(pachet.get("home_info_web") or {}), True),
+        (_prima_intrare_dict(pachet.get("datorii_web") or {}), True),
+        (_prima_intrare_dict(pachet.get("datorii_toti_web") or {}), True),
+        (_prima_intrare_dict(pachet.get("plati_ap_web") or {}), True),
+        (pachet.get("apartament") or {}, False),
+    )
+    for sursa, int_in_bani in surse:
         for cheie in (
             "suma_de_plata",
             "suma_plata",
@@ -1099,7 +1103,7 @@ def _extrage_sold_curent(pachet: dict[str, Any]) -> float | None:
             "sold",
             "datorie",
         ):
-            valoare = _bani_sigur(_dict(sursa).get(cheie))
+            valoare = _bani_sigur(_dict(sursa).get(cheie), int_in_bani=int_in_bani)
             if valoare is not None:
                 return valoare
     return None
@@ -1152,7 +1156,8 @@ def _extrage_plati(istoric_plati: dict[str, Any]) -> list[PlataEbloc]:
             or item.get("valoare")
             or item.get("total")
             or item.get("total_plata")
-            or item.get("suma_platita")
+            or item.get("suma_platita"),
+            int_in_bani=True,
         )
 
         if not id_plata:
@@ -1213,7 +1218,8 @@ def _extrage_plati_web(data: dict[str, Any]) -> list[PlataEbloc]:
             or item.get("total_plata")
             or item.get("suma_platita")
             or item.get("amount")
-            or item.get("val")
+            or item.get("val"),
+            int_in_bani=True,
         )
 
         if data_plata is None and valoare is None and not id_plata:
@@ -1275,7 +1281,7 @@ def _extrage_valoare_lista_din_structura(data: Any) -> float | None:
     )
 
     for cheie in chei_directe:
-        valoare = _bani_sigur(data.get(cheie))
+        valoare = _bani_sigur(data.get(cheie), int_in_bani=True)
         if valoare is not None and 0 <= valoare < 10000:
             return valoare
 
@@ -1300,7 +1306,7 @@ def _extrage_valoare_lista_din_structura(data: Any) -> float | None:
 
             valoare = None
             for cheie in chei_directe + ("valoare", "suma", "total"):
-                valoare = _bani_sigur(item.get(cheie))
+                valoare = _bani_sigur(item.get(cheie), int_in_bani=True)
                 if valoare is not None:
                     break
 

@@ -66,9 +66,9 @@ URL_FORM_LOGIN_SCRIPTCASE = (
 def _debug_login(etapa: str, **date: Any) -> None:
     """Diagnostic temporar pentru fluxul Apă Canal Galați."""
     try:
-        _LOGGER.warning("[APA GALATI DIAG LOGIN] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
+        _LOGGER.debug("[APA GALATI DIAG LOGIN] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
     except Exception:
-        _LOGGER.warning("[APA GALATI DIAG LOGIN] %s: %s", etapa, date)
+        _LOGGER.debug("[APA GALATI DIAG LOGIN] %s: %s", etapa, date)
 
 
 
@@ -132,9 +132,9 @@ async def _citeste_text_raspuns(raspuns: aiohttp.ClientResponse) -> str:
 def _debug_date(etapa: str, **date: Any) -> None:
     """Diagnostic temporar pentru datele Apă Canal Galați."""
     try:
-        _LOGGER.warning("[APA GALATI DIAG DATA] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
+        _LOGGER.debug("[APA GALATI DIAG DATA] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
     except Exception:
-        _LOGGER.warning("[APA GALATI DIAG DATA] %s: %s", etapa, date)
+        _LOGGER.debug("[APA GALATI DIAG DATA] %s: %s", etapa, date)
 
 
 
@@ -744,7 +744,7 @@ class ClientFurnizorApaGalati(ClientFurnizor):
         facturi = self._mapeaza_facturi(date_brute, conturi)
         consumuri = self._mapeaza_consumuri(date_brute, conturi, facturi)
         try:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "[APA GALATI DIAG MAP] rezultat: %s",
                 json.dumps(
                     {

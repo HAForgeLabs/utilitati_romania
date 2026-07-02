@@ -20,7 +20,7 @@ from .locuri_ignorate import (
     obtine_locuri_ignorate,
 )
 from .modele import ContUtilitate, FacturaUtilitate, InstantaneuFurnizor
-from .naming import normalize_text
+from .naming import normalize_text, slugify_text
 
 
 _PROVIDER_LABELS = {
@@ -982,6 +982,122 @@ def _ajusteaza_facturi_hidroelectrica(facturi: list[FacturaUtilitate]) -> list[F
     return rezultat
 
 
+
+def _build_ebloc_fallback_item(
+    coordonator: CoordonatorUtilitatiRomania,
+    instantaneu: InstantaneuFurnizor,
+    cont: ContUtilitate,
+) -> dict[str, Any] | None:
+    """Construieste un rand de factura e-bloc din senzorii de cont.
+
+    e-bloc nu expune intotdeauna lista curenta de intretinere intr-un format din
+    care putem construi o factura reala. In aceste cazuri avem totusi date utile
+    la nivel de cont: sold curent, valoare lista plata sau ultima plata. Pentru
+    dashboard afisam un rand informativ, astfel incat locul de consum sa ramana
+    vizibil in tabul Facturi si in sumar, fara sa cream entitati suplimentare.
+    """
+    id_cont = getattr(cont, "id_cont", None)
+    if not id_cont:
+        return None
+
+    location_key, location_label, manual_group_label = _location_fields(
+        coordonator,
+        instantaneu,
+        cont,
+        cont,
+    )
+
+    luna = _consum_value(instantaneu, "luna_lista_plata", id_cont)
+    scadenta = _format_date(_consum_value(instantaneu, "urmatoarea_scadenta", id_cont))
+    data_ultima_plata = _format_date(_consum_value(instantaneu, "data_ultima_plata", id_cont))
+
+    valori_restante = [
+        _to_float(_consum_value(instantaneu, "de_plata", id_cont)),
+        _to_float(_consum_value(instantaneu, "sold_curent", id_cont)),
+        _to_float(_consum_value(instantaneu, "total_neachitat", id_cont)),
+    ]
+    rest_de_plata = next((valoare for valoare in valori_restante if valoare is not None and valoare > 0), None)
+
+    valoare_lista = _to_float(_consum_value(instantaneu, "valoare_lista_plata", id_cont))
+    valoare_ultima_factura = _to_float(_consum_value(instantaneu, "valoare_ultima_factura", id_cont))
+    valoare_ultima_plata = _to_float(_consum_value(instantaneu, "valoare_ultima_plata", id_cont))
+
+    if rest_de_plata is not None and rest_de_plata > 0:
+        amount = round(rest_de_plata, 2)
+        status = "unpaid"
+        is_paid = False
+        unpaid_amount = amount
+        invoice_title = f"Intretinere {luna}" if luna else "Intretinere"
+        issue_date = None
+        invoice_suffix = luna or scadenta or "curenta"
+    elif valoare_lista is not None and valoare_lista > 0:
+        amount = round(valoare_lista, 2)
+        status = "paid"
+        is_paid = True
+        unpaid_amount = 0.0
+        invoice_title = f"Intretinere {luna}" if luna else "Intretinere"
+        issue_date = None
+        invoice_suffix = luna or scadenta or "achitata"
+    elif valoare_ultima_factura is not None and valoare_ultima_factura > 0:
+        amount = round(valoare_ultima_factura, 2)
+        status = "paid"
+        is_paid = True
+        unpaid_amount = 0.0
+        invoice_title = f"Intretinere {luna}" if luna else "Intretinere achitata"
+        issue_date = None
+        invoice_suffix = luna or data_ultima_plata or "ultima_factura"
+    elif valoare_ultima_plata is not None and valoare_ultima_plata > 0:
+        amount = round(valoare_ultima_plata, 2)
+        status = "paid"
+        is_paid = True
+        unpaid_amount = 0.0
+        invoice_title = "Ultima plata"
+        issue_date = data_ultima_plata
+        invoice_suffix = data_ultima_plata or "ultima_plata"
+    else:
+        return None
+
+    invoice_id = f"ebloc_{id_cont}_{slugify_text(str(invoice_suffix))}"
+
+    item = {
+        "entry_id": coordonator.intrare.entry_id,
+        "entry_title": coordonator.intrare.title,
+        "furnizor": instantaneu.furnizor,
+        "furnizor_label": _provider_label(instantaneu.furnizor),
+        "locatie_cheie": location_key,
+        "eticheta_locatie": location_label,
+        "adresa_originala": getattr(cont, "adresa", None),
+        "eticheta_grupare_manuala": manual_group_label,
+        "id_cont": id_cont,
+        "id_contract": getattr(cont, "id_contract", None),
+        "nume_cont": getattr(cont, "nume", None),
+        "tip_utilitate": "administrare_bloc",
+        "tip_serviciu": "Intretinere",
+        "invoice_id": invoice_id,
+        "invoice_number": None,
+        "numar_factura": None,
+        "document_number": None,
+        "invoice_title": invoice_title,
+        "issue_date": issue_date,
+        "due_date": scadenta,
+        "amount": amount,
+        "currency": "RON",
+        "status_raw": status,
+        "status": status,
+        "payment_status": status,
+        "is_paid": is_paid,
+        "unpaid_amount": unpaid_amount,
+        "pdf_url": None,
+        "refresh_button_entity_id": _refresh_button_entity_id(coordonator),
+        "can_refresh": _refresh_button_entity_id(coordonator) is not None,
+        "sursa": "fallback_consum",
+        "reading_available": True,
+        "reading_is_open": normalize_text(_consum_value(instantaneu, "citire_index_permisa", id_cont)).lower() in {"da", "yes", "true", "1", "on"},
+        "reading_period": _consum_value(instantaneu, "perioada_citire", id_cont),
+        "reading_days_until": _consum_value(instantaneu, "zile_pana_citire_index", id_cont),
+    }
+    return item
+
 def _exista_restanta_hidroelectrica_pentru_cont(grouped: dict[tuple[str, ...], dict[str, Any]], item: dict[str, Any]) -> bool:
     id_cont = str(item.get("id_cont") or "").strip()
     id_contract = str(item.get("id_contract") or "").strip()
@@ -1210,9 +1326,37 @@ def _latest_invoice_ids_by_group(facturi: list[FacturaUtilitate]) -> set[str]:
 
 
 def _loc_consum_key_for_item(item: dict[str, Any]) -> str | None:
+    entry_id = item.get("entry_id")
+    furnizor = item.get("furnizor")
+    furnizor_key = normalize_text(furnizor).lower()
+
+    if furnizor_key == "nova":
+        # Nova poate intoarce mai multe puncte de consum sau conturi vechi sub
+        # acelasi cont client. Daca folosim prioritar id_cont, toate facturile
+        # Nova ajung sub aceeasi cheie si utilizatorul nu poate ascunde separat
+        # punctele vechi aparute in dashboard. Pentru Nova aliniem cheia de
+        # vizibilitate cu gruparea facturii din dashboard: locatie + punct/cont.
+        locatie = str(item.get("locatie_cheie") or "").strip()
+        identificator = (
+            item.get("id_punct_consum")
+            or item.get("numar_punct_consum")
+            or item.get("cod_punct_consum")
+            or item.get("id_contract")
+            or item.get("id_cont")
+            or item.get("invoice_id")
+            or item.get("invoice_title")
+        )
+        identificator_text = normalize_text(str(identificator or "")).lower()
+        locatie_text = normalize_text(locatie).lower()
+        if locatie_text or identificator_text:
+            entry = str(entry_id or "").strip()
+            provider = normalize_text(str(furnizor or "")).lower()
+            if entry and provider:
+                return f"{entry}:{provider}:locatie_factura:{locatie_text}:{identificator_text}"
+
     return construieste_cheie_loc_consum(
-        item.get("entry_id"),
-        item.get("furnizor"),
+        entry_id,
+        furnizor,
         id_cont=item.get("id_cont"),
         id_contract=item.get("id_contract"),
         locatie_cheie=item.get("locatie_cheie"),
@@ -1274,6 +1418,54 @@ def _loc_consum_din_cont(coordonator: CoordonatorUtilitatiRomania, instantaneu: 
         "adresa_originala": getattr(cont, "adresa", None),
         "tip_utilitate": getattr(cont, "tip_utilitate", None),
         "tip_serviciu": getattr(cont, "tip_serviciu", None),
+        "sursa": "cont",
+    }
+
+
+def _loc_consum_din_factura_item(
+    coordonator: CoordonatorUtilitatiRomania,
+    instantaneu: InstantaneuFurnizor,
+    item: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Construiește un loc de consum dintr-un item de factură.
+
+    Unele platforme, în special Nova, pot returna facturi pentru conturi sau
+    puncte de consum care nu mai sunt expuse ca obiecte de cont active. Dacă
+    locurile sunt colectate doar din ``instantaneu.conturi``, utilizatorul nu le
+    poate ascunde din Setări, deși facturile lor ajung în dashboard. De aceea
+    expunem și locațiile rezultate din facturi, folosind aceeași cheie de
+    ignorare folosită ulterior la agregare.
+    """
+
+    if not isinstance(item, dict):
+        return None
+
+    cheie = _loc_consum_key_for_item(item)
+    if not cheie:
+        return None
+
+    furnizor = item.get("furnizor") or getattr(instantaneu, "furnizor", None)
+    hass = getattr(coordonator, "hass", None)
+    return {
+        "cheie": cheie,
+        "ignored": este_loc_consum_ignorat(hass, cheie) if hass is not None else False,
+        "entry_id": item.get("entry_id") or getattr(getattr(coordonator, "intrare", None), "entry_id", None),
+        "entry_title": item.get("entry_title") or getattr(getattr(coordonator, "intrare", None), "title", None),
+        "furnizor": furnizor,
+        "furnizor_label": item.get("furnizor_label") or _provider_label(furnizor),
+        "locatie_cheie": item.get("locatie_cheie"),
+        "eticheta_locatie": item.get("eticheta_locatie") or item.get("locatie_cheie") or cheie,
+        "eticheta_grupare_manuala": item.get("eticheta_grupare_manuala"),
+        "id_cont": item.get("id_cont"),
+        "id_contract": item.get("id_contract"),
+        "id_punct_consum": item.get("id_punct_consum"),
+        "cod_punct_consum": item.get("cod_punct_consum"),
+        "numar_punct_consum": item.get("numar_punct_consum"),
+        "nume_cont": item.get("nume_cont"),
+        "adresa_originala": item.get("adresa_originala"),
+        "tip_utilitate": item.get("tip_utilitate"),
+        "tip_serviciu": item.get("tip_serviciu"),
+        "sursa": item.get("sursa") or "factura",
     }
 
 
@@ -1293,6 +1485,29 @@ def colecteaza_locuri_consum(hass) -> list[dict[str, Any]]:
             item = _loc_consum_din_cont(maybe_coord, instantaneu, cont)
             if item is not None:
                 locuri[item["cheie"]] = item
+
+        for factura in instantaneu.facturi or []:
+            try:
+                item_factura = _build_invoice_item(maybe_coord, instantaneu, factura)
+            except Exception:  # noqa: BLE001
+                continue
+            item_loc = _loc_consum_din_factura_item(maybe_coord, instantaneu, item_factura)
+            if item_loc is not None and item_loc["cheie"] not in locuri:
+                locuri[item_loc["cheie"]] = item_loc
+
+    # Ca masura de siguranta, sincronizam lista de vizibilitate si cu randurile
+    # deja agregate pentru dashboard. Asa apar in Setari inclusiv locatiile
+    # construite doar in agregator, cum sunt unele conturi Nova vechi.
+    for item_agregat in colecteaza_facturi_agregate(hass):
+        if not isinstance(item_agregat, dict):
+            continue
+        item_loc = _loc_consum_din_factura_item(
+            None,
+            None,
+            {**item_agregat, "sursa": "factura_agregata"},
+        )
+        if item_loc is not None and item_loc["cheie"] not in locuri:
+            locuri[item_loc["cheie"]] = item_loc
 
     # Păstrăm și locurile ignorate care nu mai sunt returnate temporar de furnizor,
     # ca utilizatorul să le poată reactiva fără să editeze manual storage-ul.
@@ -1314,7 +1529,23 @@ def colecteaza_locuri_consum(hass) -> list[dict[str, Any]]:
             "id_contract": value.get("id_contract"),
             "nume_cont": None,
             "adresa_originala": None,
+            "sursa": "ignorat",
         }
+
+    nova_entries_cu_locatii_din_facturi = {
+        str(item.get("entry_id") or "")
+        for item in locuri.values()
+        if normalize_text(item.get("furnizor")).lower() == "nova"
+        and item.get("sursa") in {"factura", "factura_agregata"}
+    }
+    if nova_entries_cu_locatii_din_facturi:
+        for cheie, item in list(locuri.items()):
+            if (
+                normalize_text(item.get("furnizor")).lower() == "nova"
+                and item.get("sursa") == "cont"
+                and str(item.get("entry_id") or "") in nova_entries_cu_locatii_din_facturi
+            ):
+                locuri.pop(cheie, None)
 
     rezultat = list(locuri.values())
     rezultat.sort(key=lambda item: (
@@ -1376,7 +1607,26 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             else:
                 grouped[group_key] = _combina_itemuri_grupate(current, item)
 
-        # 2. Fallback specific E.ON din consumuri, doar pentru corectarea statusului curent
+        # 2. Fallback e-bloc din consumuri/plati, pentru cazurile in care
+        # portalul nu expune lista curenta ca factura reala, dar avem sold,
+        # valoare lista sau ultima plata la nivel de apartament.
+        if instantaneu.furnizor == "ebloc":
+            for cont in instantaneu.conturi or []:
+                fallback_item = _apply_manual_invoice_status(
+                    hass,
+                    _build_ebloc_fallback_item(maybe_coord, instantaneu, cont),
+                )
+                fallback_item = _aplica_metadate_loc_consum(hass, fallback_item)
+                if _item_este_ignorat(hass, fallback_item):
+                    continue
+                if fallback_item is None:
+                    continue
+
+                group_key = _cheie_grupare_factura(fallback_item)
+                if group_key not in grouped:
+                    grouped[group_key] = _initializeaza_agregare_item(fallback_item)
+
+        # 3. Fallback specific E.ON din consumuri, doar pentru corectarea statusului curent
         if instantaneu.furnizor == "eon":
             for cont in instantaneu.conturi or []:
                 fallback_item = _apply_manual_invoice_status(hass, _build_eon_fallback_item(maybe_coord, instantaneu, cont))
@@ -1417,7 +1667,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                     if fallback_item.get("invoice_title"):
                         current["invoice_title"] = fallback_item.get("invoice_title")
 
-        # 3. Fallback Hidroelectrica din senzorii de cont.
+        # 4. Fallback Hidroelectrica din senzorii de cont.
         # Uneori istoricul de facturi nu mai întoarce o factură utilizabilă,
         # dar coordonatorul are în continuare ultima valoare, scadența și statusul.
         if instantaneu.furnizor == "hidroelectrica":

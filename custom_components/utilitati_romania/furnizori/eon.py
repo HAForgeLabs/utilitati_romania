@@ -619,6 +619,8 @@ class ClientFurnizorEon(ClientFurnizor):
                 raise EroareAutentificare("Nu s-a putut autentifica la E.ON")
 
         contracte = await self._api.async_fetch_contracts_list()
+        if getattr(self._api, "reauth_required", False):
+            raise EroareAutentificare("Reautentificare E.ON necesara")
         if not isinstance(contracte, list):
             contracte = []
 
@@ -696,6 +698,9 @@ class ClientFurnizorEon(ClientFurnizor):
                 invoices_prosum,
                 rescheduling_plans,
             ) = taskuri
+
+            if getattr(self._api, "reauth_required", False):
+                raise EroareAutentificare("Reautentificare E.ON necesara")
 
             address_obj = None
             if isinstance(contract_details, dict):

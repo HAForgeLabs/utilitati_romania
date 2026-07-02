@@ -52,9 +52,9 @@ class EroareRaspunsHidroPrahova(EroareApiHidroPrahova):
 
 def _debug_hph(etapa: str, **date: Any) -> None:
     try:
-        _LOGGER.warning("[HIDRO PRAHOVA DIAG] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
+        _LOGGER.debug("[HIDRO PRAHOVA DIAG] %s: %s", etapa, json.dumps(date, ensure_ascii=False, default=str))
     except Exception:
-        _LOGGER.warning("[HIDRO PRAHOVA DIAG] %s: %s", etapa, date)
+        _LOGGER.debug("[HIDRO PRAHOVA DIAG] %s: %s", etapa, date)
 
 
 def _curata_text(valoare: Any) -> str:

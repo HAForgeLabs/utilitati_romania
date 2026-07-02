@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.9b1";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.9";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -1171,6 +1171,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     for (const location of locations || []) {
       const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
       providers.forEach((provider, index) => {
+        if (provider?.dashboard_only || provider?.fara_factura_curenta) return;
         entries.push({
           location,
           provider,

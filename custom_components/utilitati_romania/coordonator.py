@@ -16,6 +16,7 @@ from .const import (
     CONF_DIGI_COOKIES,
     CONF_FURNIZOR,
     CONF_INTERVAL_ACTUALIZARE,
+    CONF_DATE_TOKEN_EON,
     CONF_PAROLA,
     CONF_UTILIZATOR,
     DOMENIU,
@@ -27,7 +28,10 @@ from .licentiere import (
     async_verifica_licenta,
     valideaza_rezultat_licenta,
 )
+from .facturi_status_manual import construieste_cheie_status_factura
+from .locuri_ignorate import construieste_cheie_loc_consum, este_loc_consum_ignorat
 from .modele import InstantaneuFurnizor
+from .naming import normalize_text
 from .notificari import ManagerNotificari
 from .storage_citiri import async_salveaza_citire, obtine_citire_cache
 
@@ -213,6 +217,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                 )
 
             await self._sincronizeaza_citiri_din_portal(instantaneu)
+            self._salveaza_token_runtime_furnizor(instantaneu)
 
             return instantaneu
 
@@ -223,6 +228,36 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         except Exception as err:
             raise UpdateFailed(f"Eroare neașteptată la {self.cheie_furnizor}: {err}") from err
 
+
+
+    def _salveaza_token_runtime_furnizor(self, instantaneu: InstantaneuFurnizor) -> None:
+        """Persistă datele de sesiune obținute în timpul actualizării.
+
+        Pentru E.ON, tokenul primit după 2FA trebuie păstrat în config entry ca să
+        poată fi reinjectat după restart. Fără această sincronizare, un token nou
+        obținut în runtime poate rămâne doar în memorie și la următorul restart
+        integrarea ajunge din nou în reautentificare.
+        """
+        if self.cheie_furnizor != "eon":
+            return
+
+        extra = getattr(instantaneu, "extra", None)
+        if not isinstance(extra, dict):
+            return
+
+        token_data = extra.get("token_data")
+        if not isinstance(token_data, dict) or not token_data:
+            return
+
+        token_curent = self.intrare.data.get(CONF_DATE_TOKEN_EON)
+        if token_curent == token_data:
+            return
+
+        self.hass.config_entries.async_update_entry(
+            self.intrare,
+            data={**self.intrare.data, CONF_DATE_TOKEN_EON: token_data},
+        )
+        _LOGGER.debug("Tokenul E.ON a fost salvat pentru reutilizare după restart.")
 
     async def _sincronizeaza_citiri_din_portal(self, instantaneu: InstantaneuFurnizor) -> None:
         if getattr(instantaneu, "furnizor", self.cheie_furnizor) != "apa_canal":
@@ -294,6 +329,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                 "nume_cont": getattr(cont, "nume", None),
                 "tip_utilitate": getattr(cont, "tip_utilitate", None),
                 "tip_serviciu": getattr(cont, "tip_serviciu", None),
+                "id_contract": getattr(cont, "id_contract", None),
             }
 
         for factura in facturi:
@@ -302,9 +338,41 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                 continue
 
             id_cont = getattr(factura, "id_cont", None)
+            id_contract = getattr(factura, "id_contract", None)
             info_cont = conturi_map.get(str(id_cont), {}) if id_cont is not None else {}
+            id_contract = id_contract or info_cont.get("id_contract")
+            adresa = info_cont.get("adresa")
+            nume_cont = info_cont.get("nume_cont")
 
-            este_platita = self._factura_este_platita(factura)
+            loc_consum_key = self._cheie_loc_consum_notificare(
+                furnizor=furnizor,
+                id_cont=id_cont,
+                id_contract=id_contract,
+                adresa=adresa,
+                nume_cont=nume_cont,
+                factura_id=factura_id,
+                factura=factura,
+            )
+            if este_loc_consum_ignorat(self.hass, loc_consum_key):
+                _LOGGER.debug(
+                    "Factura %s pentru %s a fost exclusă din notificări: loc de consum ignorat.",
+                    factura_id,
+                    furnizor,
+                )
+                continue
+
+            marcata_manual_platita = self._factura_marcata_manual_platita(
+                factura=factura,
+                factura_id=factura_id,
+                furnizor=furnizor,
+                id_cont=id_cont,
+            )
+            este_platita = marcata_manual_platita or self._factura_este_platita(factura)
+            datorie_sigura = (
+                False
+                if marcata_manual_platita
+                else self._factura_are_datorie_sigura(factura)
+            )
 
             facturi_normalizate.append(
                 {
@@ -316,15 +384,19 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                     "scadenta": self._date_to_iso(getattr(factura, "data_scadenta", None)),
                     "data_emitere": self._date_to_iso(getattr(factura, "data_emitere", None)),
                     "platita": este_platita,
+                    "datorie_sigura": datorie_sigura,
+                    "manual_status_platita": marcata_manual_platita,
                     "stare": getattr(factura, "stare", None),
                     "categorie": getattr(factura, "categorie", None),
                     "id_cont": id_cont,
-                    "id_contract": getattr(factura, "id_contract", None),
+                    "id_contract": id_contract,
+                    "entry_id": self.intrare.entry_id,
+                    "loc_consum_key": loc_consum_key,
                     "tip_utilitate": getattr(factura, "tip_utilitate", None) or info_cont.get("tip_utilitate"),
                     "tip_serviciu": getattr(factura, "tip_serviciu", None) or info_cont.get("tip_serviciu"),
                     "este_prosumator": getattr(factura, "este_prosumator", None),
-                    "adresa": info_cont.get("adresa"),
-                    "nume_cont": info_cont.get("nume_cont"),
+                    "adresa": adresa,
+                    "nume_cont": nume_cont,
                     "date_brute": getattr(factura, "date_brute", None),
                 }
             )
@@ -355,6 +427,15 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         conturi = getattr(instantaneu, "conturi", None) or []
 
         for cont in conturi:
+            loc_consum_key = self._cheie_loc_consum_index(furnizor, cont)
+            if este_loc_consum_ignorat(self.hass, loc_consum_key):
+                _LOGGER.debug(
+                    "Fereastra de index pentru %s / %s a fost exclusă din notificări: loc de consum ignorat.",
+                    furnizor,
+                    getattr(cont, "id_cont", None),
+                )
+                continue
+
             if not self._citire_index_permisa_din_instantaneu(instantaneu, cont):
                 continue
 
@@ -383,6 +464,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                     "end": end,
                     "citire_permisa": True,
                     "date_brute": getattr(cont, "date_brute", None),
+                    "loc_consum_key": loc_consum_key,
                 }
             )
 
@@ -605,15 +687,93 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
 
         return None
 
+    def _cheie_loc_consum_notificare(
+        self,
+        *,
+        furnizor: Any,
+        id_cont: Any,
+        id_contract: Any,
+        adresa: Any,
+        nume_cont: Any,
+        factura_id: Any,
+        factura: Any,
+    ) -> str | None:
+        furnizor_text = str(furnizor or "").strip()
+        furnizor_key = normalize_text(furnizor_text).lower()
+        entry_id = self.intrare.entry_id
+
+        if furnizor_key == "nova":
+            locatie = str(adresa or nume_cont or "").strip()
+            raw = getattr(factura, "date_brute", None) or {}
+            identificator = None
+            if isinstance(raw, dict):
+                identificator = (
+                    raw.get("meteringPointId")
+                    or raw.get("meteringPointCode")
+                    or raw.get("consumptionPointId")
+                    or raw.get("placeId")
+                    or raw.get("contractId")
+                )
+            identificator = identificator or id_contract or id_cont or factura_id
+            locatie_text = normalize_text(locatie).lower()
+            identificator_text = normalize_text(str(identificator or "")).lower()
+            if entry_id and furnizor_key and (locatie_text or identificator_text):
+                return f"{entry_id}:{furnizor_key}:locatie_factura:{locatie_text}:{identificator_text}"
+
+        return construieste_cheie_loc_consum(
+            entry_id,
+            furnizor_text,
+            id_cont=str(id_cont or "") or None,
+            id_contract=str(id_contract or "") or None,
+            locatie_cheie=str(adresa or nume_cont or "") or None,
+            eticheta=str(nume_cont or adresa or "") or None,
+        )
+
+    def _cheie_loc_consum_index(self, furnizor: Any, cont: Any) -> str | None:
+        return construieste_cheie_loc_consum(
+            self.intrare.entry_id,
+            str(furnizor or ""),
+            id_cont=str(getattr(cont, "id_cont", None) or "") or None,
+            id_contract=str(getattr(cont, "id_contract", None) or "") or None,
+            locatie_cheie=str(getattr(cont, "adresa", None) or getattr(cont, "nume", None) or "") or None,
+            eticheta=str(getattr(cont, "nume", None) or getattr(cont, "adresa", None) or "") or None,
+        )
+
+    def _factura_marcata_manual_platita(
+        self,
+        *,
+        factura: Any,
+        factura_id: str,
+        furnizor: Any,
+        id_cont: Any,
+    ) -> bool:
+        domain_data = self.hass.data.get(DOMENIU, {}) if hasattr(self.hass, "data") else {}
+        cache = domain_data.get("_status_facturi_manual")
+        if not isinstance(cache, dict) or not cache:
+            return False
+
+        cheie = construieste_cheie_status_factura(
+            self.intrare.entry_id,
+            str(furnizor or ""),
+            str(id_cont or "") or None,
+            factura_id,
+            getattr(factura, "titlu", None),
+            self._date_to_iso(getattr(factura, "data_emitere", None)),
+            getattr(factura, "valoare", None),
+            getattr(factura, "moneda", None),
+        )
+        if not cheie:
+            return False
+
+        value = cache.get(cheie)
+        return bool(isinstance(value, dict) and str(value.get("status") or "").lower() == "paid")
+
     def _factura_este_platita(self, factura: Any) -> bool:
         stare = str(getattr(factura, "stare", None) or "").strip().lower()
         raw = getattr(factura, "date_brute", None) or {}
 
         if isinstance(raw, list):
-            if raw:
-                return False
-            raw = {}
-
+            raw = {"items": raw}
         if not isinstance(raw, dict):
             raw = {}
 
@@ -623,26 +783,118 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             "platit",
             "plătit",
             "achitat",
+            "achitata",
             "paid",
             "closed",
             "settled",
+            "stins",
+            "stinsa",
         }:
             return True
+
+        restante_candidates = self._valori_restante_factura(raw)
+        for valoare in restante_candidates:
+            numar = self._float_or_none(valoare)
+            if numar is None:
+                continue
+            if numar > 0:
+                return False
+            if numar == 0:
+                return True
+
+        status_text = self._status_text_factura(raw)
+        if status_text in {
+            "paid",
+            "platita",
+            "plătită",
+            "achitat",
+            "achitata",
+            "settled",
+            "closed",
+            "stins",
+            "stinsa",
+        }:
+            return True
+
+        return False
+
+    def _factura_are_datorie_sigura(self, factura: Any) -> bool:
+        stare = str(getattr(factura, "stare", None) or "").strip().lower()
+        raw = getattr(factura, "date_brute", None) or {}
+
+        if isinstance(raw, list):
+            raw = {"items": raw}
+        if not isinstance(raw, dict):
+            raw = {}
 
         if stare in {
             "neplatita",
             "neplătită",
             "neachitat",
+            "neachitata",
             "unpaid",
             "remaining",
             "restant",
+            "restanta",
             "open",
             "due",
+            "de plata",
+            "de_plata",
+            "scadent",
+            "scadenta",
+            "overdue",
+        }:
+            return True
+
+        if stare in {
+            "platita",
+            "plătită",
+            "platit",
+            "plătit",
+            "achitat",
+            "achitata",
+            "paid",
+            "closed",
+            "settled",
+            "stins",
+            "stinsa",
         }:
             return False
 
-        restante_candidates = [
+        for valoare in self._valori_restante_factura(raw):
+            numar = self._float_or_none(valoare)
+            if numar is None:
+                continue
+            return numar > 0
+
+        status_text = self._status_text_factura(raw)
+        if status_text in {
+            "unpaid",
+            "neplatita",
+            "neplătită",
+            "neachitat",
+            "neachitata",
+            "restant",
+            "restanta",
+            "remaining",
+            "open",
+            "due",
+            "de plata",
+            "de_plata",
+            "scadent",
+            "scadenta",
+            "overdue",
+        }:
+            return True
+
+        return False
+
+    @staticmethod
+    def _valori_restante_factura(raw: dict[str, Any]) -> list[Any]:
+        return [
             raw.get("rest_plata"),
+            raw.get("sold"),
+            raw.get("sold_curent"),
             raw.get("amount_remaining"),
             raw.get("AmountRemaining"),
             raw.get("remainingAmount"),
@@ -653,48 +905,22 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             raw.get("amountToPay"),
             raw.get("UnpaidValue"),
             raw.get("AmountDue"),
+            raw.get("balance"),
+            raw.get("Balance"),
         ]
-        for valoare in restante_candidates:
-            numar = self._float_or_none(valoare)
-            if numar is None:
-                continue
-            if numar > 0:
-                return False
-            if numar == 0:
-                return True
 
-        status_text = str(
+    @staticmethod
+    def _status_text_factura(raw: dict[str, Any]) -> str:
+        return str(
             raw.get("invoice_status")
             or raw.get("InvoiceStatus")
+            or raw.get("payment_status")
+            or raw.get("PaymentStatus")
             or raw.get("status")
             or raw.get("Status")
+            or raw.get("stare")
             or ""
         ).strip().lower()
-
-        if status_text in {
-            "paid",
-            "platita",
-            "plătită",
-            "achitat",
-            "settled",
-            "closed",
-        }:
-            return True
-
-        if status_text in {
-            "unpaid",
-            "neplatita",
-            "neplătită",
-            "restant",
-            "remaining",
-            "open",
-            "due",
-        }:
-            return False
-
-        # fallback corect:
-        # dacă nu știm sigur că e plătită → o considerăm NEPLĂTITĂ
-        return False
 
     def _construieste_id_factura(self, factura: Any, instantaneu: InstantaneuFurnizor) -> str | None:
         id_factura = getattr(factura, "id_factura", None)
