@@ -592,6 +592,24 @@ class ClientFurnizorEon(ClientFurnizor):
             except Exception:
                 _LOGGER.exception("Nu am putut injecta tokenul E.ON existent.")
 
+
+    async def async_reimprospateaza_sesiunea_fundal(self) -> dict[str, Any] | None:
+        """Reimprospateaza sesiunea E.ON fara a porni login/2FA in fundal.
+
+        Web-ul E.ON isi pastreaza sesiunea prin apel periodic la refresh-token,
+        folosind accessToken-ul curent. Aceasta metoda este folosita de
+        coordonator doar pentru mentinerea tokenului viu intre doua actualizari
+        complete ale furnizorului.
+        """
+        if not self._api.has_token:
+            return None
+
+        ok = await self._api.async_refresh_token()
+        if not ok:
+            return None
+
+        return self._api.export_token_data()
+
     async def async_testeaza_conexiunea(self) -> str:
         try:
             ok = await self._api.async_login()

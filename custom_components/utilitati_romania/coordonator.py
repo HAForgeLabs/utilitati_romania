@@ -76,6 +76,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         self._manager_notificari = ManagerNotificari(hass)
         self._notificari_incarcate = False
         self._task_refresh_initial_deer: asyncio.Task[None] | None = None
+        self._task_refresh_eon: asyncio.Task[None] | None = None
 
         interval_ore = intrare.options.get(
             CONF_INTERVAL_ACTUALIZARE,
@@ -106,6 +107,9 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             config_entry=intrare,
         )
 
+        if self.cheie_furnizor == "eon":
+            self._porneste_refresh_eon_in_fundal()
+
     async def async_inchide(self) -> None:
         if self._task_refresh_initial_deer is not None:
             self._task_refresh_initial_deer.cancel()
@@ -116,9 +120,63 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             finally:
                 self._task_refresh_initial_deer = None
 
+        if self._task_refresh_eon is not None:
+            self._task_refresh_eon.cancel()
+            try:
+                await self._task_refresh_eon
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._task_refresh_eon = None
+
         inchidere = getattr(self.client, "async_inchide", None)
         if callable(inchidere):
             await inchidere()
+
+    def _porneste_refresh_eon_in_fundal(self) -> None:
+        if self._task_refresh_eon is not None and not self._task_refresh_eon.done():
+            return
+
+        self._task_refresh_eon = self.hass.async_create_task(
+            self._async_refresh_eon_in_fundal()
+        )
+
+    async def _async_refresh_eon_in_fundal(self) -> None:
+        # HAR-ul E.ON arata refresh periodic la aproximativ 28 de minute.
+        # Rulam putin mai devreme, separat de actualizarea completa a datelor,
+        # pentru ca intervalul normal al furnizorului poate fi de cateva ore.
+        interval = 20 * 60
+
+        try:
+            await asyncio.sleep(interval)
+            while True:
+                try:
+                    reimprospatare = getattr(
+                        self.client, "async_reimprospateaza_sesiunea_fundal", None
+                    )
+                    if callable(reimprospatare):
+                        token_data = await reimprospatare()
+                        if isinstance(token_data, dict) and token_data:
+                            token_curent = self.intrare.data.get(CONF_DATE_TOKEN_EON)
+                            if token_curent != token_data:
+                                self.hass.config_entries.async_update_entry(
+                                    self.intrare,
+                                    data={**self.intrare.data, CONF_DATE_TOKEN_EON: token_data},
+                                )
+                                _LOGGER.debug("Tokenul E.ON a fost reimprospatat si salvat in fundal.")
+                        else:
+                            _LOGGER.debug(
+                                "Refresh-ul E.ON in fundal nu a returnat token nou. "
+                                "Reauth va fi cerut la urmatoarea actualizare daca sesiunea este invalida."
+                            )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Refresh-ul E.ON in fundal a esuat: %s", err)
+
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
 
     def _porneste_refresh_initial_deer_in_fundal(self) -> None:
         if self._task_refresh_initial_deer is not None and not self._task_refresh_initial_deer.done():

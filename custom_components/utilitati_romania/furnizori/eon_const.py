@@ -57,7 +57,7 @@ API_BASE = "https://api2.eon.ro"
 # URL-uri API — Autentificare
 # ──────────────────────────────────────────────
 URL_LOGIN = f"{API_BASE}/users/{API_VERSION_USERS}/userauth/login"
-URL_REFRESH_TOKEN = f"{API_BASE}/users/{API_VERSION_USERS}/userauth/mobile-refresh-token"
+URL_REFRESH_TOKEN = f"{API_BASE}/users/{API_VERSION_USERS}/userauth/refresh-token"
 
 # ──────────────────────────────────────────────
 # URL-uri API — MFA (Two-Factor Authentication)

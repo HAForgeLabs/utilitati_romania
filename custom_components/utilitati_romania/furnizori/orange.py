@@ -74,9 +74,9 @@ def _mascheaza_msisdn(valoare: Any) -> str:
 
 def _orange_diag(etapa: str, date: dict[str, Any]) -> None:
     try:
-        _LOGGER.warning("[ORANGE DIAG] %s: %s", etapa, date)
+        _LOGGER.debug("[ORANGE DIAG] %s: %s", etapa, date)
     except Exception:  # pragma: no cover - diagnostic defensiv
-        _LOGGER.warning("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
+        _LOGGER.debug("[ORANGE DIAG] %s: diagnostic indisponibil", etapa)
 
 
 
@@ -583,7 +583,7 @@ class ClientFurnizorOrange(ClientFurnizor):
                     nume=nume,
                     tip_cont=tip_afisat or _text(subscriber.get("subscriberType")) or None,
                     id_contract=_text(subscriber.get("profileId")) or None,
-                    adresa=_text(subscriber.get("address")) or None,
+                    adresa=_formateaza_adresa_orange(subscriber) or None,
                     stare=_text(subscriber.get("status")) or None,
                     tip_utilitate="telecom",
                     tip_serviciu="abonament" if _subscriber_facturabil(subscriber) else "prepay",
@@ -775,6 +775,59 @@ class ClientFurnizorOrange(ClientFurnizor):
                 "invoice_history_customers": list((date_brute.get("invoice_history", {}) or {}).keys()),
             },
         }
+
+
+def _formateaza_adresa_orange(subscriber: dict[str, Any]) -> str:
+    for key in ("address", "serviceAddress", "installationAddress", "location", "siteAddress"):
+        valoare = subscriber.get(key)
+        if not valoare:
+            continue
+
+        if isinstance(valoare, dict):
+            alias = _text(valoare.get("alias") or valoare.get("name") or valoare.get("description"))
+            street = _text(
+                valoare.get("streetName")
+                or valoare.get("street")
+                or valoare.get("street_name")
+                or valoare.get("addressLine1")
+                or valoare.get("line1")
+            )
+            number = _text(
+                valoare.get("streetNo")
+                or valoare.get("streetNumber")
+                or valoare.get("street_no")
+                or valoare.get("number")
+            )
+            city = _text(valoare.get("city") or valoare.get("locality") or valoare.get("town"))
+            county = _text(valoare.get("county") or valoare.get("region"))
+
+            parti: list[str] = []
+            if alias:
+                parti.append(alias)
+
+            adresa_strada = street
+            if number:
+                if adresa_strada:
+                    adresa_strada = f"{adresa_strada}, nr. {number}"
+                else:
+                    adresa_strada = f"nr. {number}"
+            if adresa_strada:
+                parti.append(adresa_strada)
+
+            if city:
+                parti.append(city)
+            if county and county.lower() != city.lower():
+                parti.append(county)
+
+            if parti:
+                return ", ".join(parti)
+            continue
+
+        text = _text(valoare)
+        if text and not (text.startswith("{") and text.endswith("}")):
+            return text
+
+    return ""
 
 
 def _text(valoare: Any) -> str:
