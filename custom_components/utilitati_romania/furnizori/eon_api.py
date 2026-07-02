@@ -48,7 +48,8 @@ from .eon_helper import generate_verify_hmac
 _LOGGER = logging.getLogger(__name__)
 
 URL_INVOICES_PAID = "https://api2.eon.ro/invoices/v1/invoices/list-paid"
-TOKEN_WITHOUT_REFRESH_MAX_AGE = 30 * 24 * 60 * 60
+EON_WEB_REFRESH_INTERVAL = 20 * 60
+EON_WEB_TOKEN_MAX_AGE = 20 * 60
 
 
 def _mask_email(value: str) -> str:
@@ -154,16 +155,12 @@ class EonApiClient:
 
         age = time.monotonic() - self._token_obtained_at
 
-        # Fluxul web E.ON nu mai returneaza refreshToken separat. In HAR, web-ul
-        # face refresh periodic cu accessToken-ul curent pe endpointul
-        # /userauth/refresh-token, deci tratam accessToken-ul ca token refresh-uibil
-        # si nu il tinem artificial 30 de zile.
-        effective_max = (
-            self._expires_in - TOKEN_REFRESH_THRESHOLD
-            if self._expires_in and self._expires_in > TOKEN_REFRESH_THRESHOLD
-            else TOKEN_MAX_AGE
-        )
-        return age < effective_max
+        # E.ON web isi reimprospateaza tokenul la ~28 de minute, desi unele
+        # raspunsuri pot raporta expiresIn mai mare. Daca folosim expiresIn-ul
+        # brut, dupa restart putem considera valid un token care nu mai poate fi
+        # folosit/refresh-uit si ajungem direct in reauth. De aceea fortam
+        # refresh inainte de folosirea tokenului dupa ~20 minute.
+        return age < EON_WEB_TOKEN_MAX_AGE
 
     def export_token_data(self) -> dict | None:
         if self._access_token is None and self._web_token is None:
@@ -172,7 +169,9 @@ class EonApiClient:
             "access_token": self._access_token,
             "token_type": self._token_type,
             "expires_in": self._expires_in,
-            "refresh_token": self._refresh_token,
+            # Nu persistam refresh_token separat. Fluxul web E.ON foloseste
+            # accessToken-ul curent pentru refresh.
+            "refresh_token": None,
             "id_token": self._id_token,
             "web_token": self._web_token,
             "uuid": self._uuid,
@@ -183,7 +182,10 @@ class EonApiClient:
         self._access_token = token_data.get("access_token")
         self._token_type = token_data.get("token_type", "Bearer")
         self._expires_in = token_data.get("expires_in", 3600)
-        self._refresh_token = token_data.get("refresh_token")
+        # E.ON web nu mai foloseste refresh_token separat. Tokenurile vechi
+        # salvate de versiunile anterioare pot cauza 6047 / Invalid refresh token,
+        # deci nu le mai injectam in runtime.
+        self._refresh_token = None
         self._id_token = token_data.get("id_token")
         self._web_token = token_data.get("web_token")
         self._uuid = token_data.get("uuid")
@@ -450,9 +452,12 @@ class EonApiClient:
             return False
 
     async def async_refresh_token(self) -> bool:
-        refresh_token = self._access_token or self._web_token or self._refresh_token
+        refresh_token = self._access_token
         if not refresh_token:
-            _LOGGER.debug("[REFRESH] Nu exista token disponibil pentru refresh E.ON.")
+            _LOGGER.debug(
+                "[REFRESH] Nu exista accessToken disponibil pentru refresh E.ON. "
+                "Nu folosim refresh_token vechi salvat."
+            )
             return False
 
         # HAR-ul web E.ON arata refresh periodic la aproximativ 28 de minute:
@@ -518,7 +523,7 @@ class EonApiClient:
         # Fluxul web E.ON foloseste accessToken-ul curent ca token de refresh.
         # Nu pastram un refreshToken vechi daca raspunsul curent nu returneaza unul,
         # pentru ca endpointul web il respinge cu 6047 / Invalid refresh token.
-        self._refresh_token = data.get("refresh_token") or data.get("refreshToken")
+        self._refresh_token = None
         self._id_token = data.get("idToken") or data.get("id_token") or self._id_token
         self._web_token = data.get("token") or data.get("web_token") or self._web_token
         self._uuid = data.get("uuid") or self._uuid
@@ -557,13 +562,13 @@ class EonApiClient:
             if self._mfa_blocked or self._reauth_required:
                 return False
 
-            if self._access_token or self._web_token or self._refresh_token:
+            if self._access_token:
                 if await self.async_refresh_token():
                     return True
                 self._reauth_required = True
                 self._mfa_blocked = False
                 _LOGGER.debug(
-                    "[AUTH] Refresh E.ON esuat. Se cere reautentificare prin Home Assistant, "
+                    "[AUTH] Refresh E.ON esuat cu accessToken. Se cere reautentificare prin Home Assistant, "
                     "fara login 2FA in fundal."
                 )
                 return False

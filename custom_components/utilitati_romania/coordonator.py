@@ -148,7 +148,10 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         interval = 20 * 60
 
         try:
-            await asyncio.sleep(interval)
+            # Nu asteptam 20 de minute la prima rulare: dupa restart tokenul
+            # salvat poate fi deja aproape de limita de refresh E.ON. Prima
+            # incercare rapida mentine sesiunea vie, apoi intram in ritmul normal.
+            await asyncio.sleep(60)
             while True:
                 try:
                     reimprospatare = getattr(

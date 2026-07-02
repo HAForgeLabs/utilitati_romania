@@ -1112,6 +1112,13 @@ def _scadenta_urmatoare(instantaneu: InstantaneuFurnizor):
     if instantaneu.furnizor == "digi":
         return _valoare_consum_global(instantaneu, "urmatoarea_scadenta")
 
+    if instantaneu.furnizor == "polaris":
+        scadenta = _valoare_consum(instantaneu, "urmatoarea_scadenta")
+        if scadenta not in (None, "", "unknown", "Unknown", "Necunoscut"):
+            return scadenta
+        ultima = _ultima_factura(instantaneu)
+        return ultima.data_scadenta.isoformat() if ultima and getattr(ultima, "data_scadenta", None) else None
+
     facturi_active = [
         f
         for f in list(instantaneu.facturi or [])
