@@ -9,7 +9,7 @@ from aiohttp import ClientSession
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -72,7 +72,16 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         self.hass = hass
         self.intrare = intrare
         self.cheie_furnizor: str = intrare.data[CONF_FURNIZOR]
-        self.sesiune: ClientSession = async_get_clientsession(hass)
+        # Unele portaluri Scriptcase/ADF tin autentificarea strict in cookie-uri.
+        # Pentru acestea nu folosim sesiunea globala Home Assistant, deoarece doua
+        # config entry-uri ale aceluiasi furnizor pot ajunge sa imparta acelasi
+        # cookie jar si sa citeasca datele altui cont.
+        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati"}
+        self.sesiune: ClientSession = (
+            async_create_clientsession(hass)
+            if self._sesiune_dedicata
+            else async_get_clientsession(hass)
+        )
         self._manager_notificari = ManagerNotificari(hass)
         self._notificari_incarcate = False
         self._task_refresh_initial_deer: asyncio.Task[None] | None = None
@@ -132,6 +141,9 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         inchidere = getattr(self.client, "async_inchide", None)
         if callable(inchidere):
             await inchidere()
+
+        if getattr(self, "_sesiune_dedicata", False) and not self.sesiune.closed:
+            await self.sesiune.close()
 
     def _porneste_refresh_eon_in_fundal(self) -> None:
         if self._task_refresh_eon is not None and not self._task_refresh_eon.done():
