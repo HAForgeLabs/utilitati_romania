@@ -831,6 +831,7 @@ class ClientFurnizorApaGalati(ClientFurnizor):
 
     def _mapeaza_facturi(self, date_brute: dict[str, Any], conturi: list[ContUtilitate]) -> list[FacturaUtilitate]:
         cont_default = conturi[0] if conturi else None
+        plati = [p for p in (date_brute.get("plati") or []) if isinstance(p, dict)]
         facturi: list[FacturaUtilitate] = []
         vazute: set[str] = set()
         for item in date_brute.get("facturi", []) or []:
@@ -849,15 +850,22 @@ class ClientFurnizorApaGalati(ClientFurnizor):
             valoare = _numar(item.get("total_factura") or item.get("total_de_plata"))
             rest = _numar(item.get("suma_sold"))
             total_de_plata = _numar(item.get("total_de_plata"))
-            stare = _stare_factura(item, rest)
+            stare = _stare_factura(item, rest, plati)
             raw = dict(item)
+            plata_potrivita = _plata_potrivita_factura(item, plati) if plati else None
             if stare == "platita":
                 raw["rest_plata"] = 0.0
-            elif rest is not None:
+            elif rest is not None and rest > 0:
                 raw["rest_plata"] = rest
+            elif total_de_plata is not None and total_de_plata > 0:
+                raw["rest_plata"] = total_de_plata
             else:
-                raw["rest_plata"] = total_de_plata or 0.0
+                raw["rest_plata"] = valoare or 0.0
             raw["numar_factura"] = id_factura
+            raw["plata_potrivita"] = bool(plata_potrivita)
+            if plata_potrivita:
+                raw["data_plata_potrivita"] = plata_potrivita.get("data")
+                raw["valoare_plata_potrivita"] = plata_potrivita.get("suma")
             facturi.append(
                 FacturaUtilitate(
                     id_factura=id_factura,
@@ -1229,16 +1237,58 @@ def _adresa_din_facturi(id_cont: str, facturi: list[dict[str, Any]], *, nume_loc
                 return adresa or None
     return None
 
-def _stare_factura(item: dict[str, Any], rest: float | None) -> str:
+def _plata_potrivita_factura(item: dict[str, Any], plati: list[dict[str, Any]]) -> dict[str, Any] | None:
+    valoare_factura = _numar(item.get("total_factura") or item.get("total_de_plata"))
+    data_emitere = _data(item.get("data_doc_iso") or item.get("data_doc"))
+    if valoare_factura is None or valoare_factura <= 0:
+        return None
+
+    potriviri: list[tuple[date, dict[str, Any]]] = []
+    for plata in plati:
+        if not isinstance(plata, dict):
+            continue
+        valoare_plata = _numar(plata.get("suma"))
+        data_plata = _data(plata.get("data"))
+        if valoare_plata is None or data_plata is None:
+            continue
+        if abs(float(valoare_plata) - float(valoare_factura)) > 0.02:
+            continue
+        if data_emitere and data_plata < data_emitere:
+            continue
+        potriviri.append((data_plata, plata))
+
+    if not potriviri:
+        return None
+    potriviri.sort(key=lambda item_plata: item_plata[0])
+    return potriviri[0][1]
+
+
+def _stare_factura(item: dict[str, Any], rest: float | None, plati: list[dict[str, Any]] | None = None) -> str:
     stare = str(item.get("stare_factura") or "").strip().lower()
+    scadenta = _data(item.get("data_scadenta"))
+
+    # In portalul Apa Canal Galati, coloana de stare contine explicit bifa
+    # pentru facturile platite. Campul suma_sold poate fi 0 si pentru facturi
+    # nou emise, inca neachitate, deci nu este suficient pentru a decide plata.
     if "✔" in stare or "✓" in stare:
         return "platita"
-    if rest is not None and rest <= 0:
+
+    if rest is not None and rest > 0:
+        return "scadenta" if scadenta and scadenta < date.today() else "neplatita"
+
+    total_de_plata = _numar(item.get("total_de_plata"))
+    valoare_factura = _numar(item.get("total_factura"))
+    if total_de_plata is not None and total_de_plata > 0:
+        return "scadenta" if scadenta and scadenta < date.today() else "neplatita"
+
+    if plati is not None and _plata_potrivita_factura(item, plati):
         return "platita"
-    scadenta = _data(item.get("data_scadenta"))
-    if scadenta and scadenta < date.today():
-        return "scadenta"
-    return "neplatita"
+
+    # Fallback pentru facturi istorice fara coloana de stare clara.
+    if rest is not None and rest <= 0 and (valoare_factura is None or valoare_factura <= 0):
+        return "platita"
+
+    return "scadenta" if scadenta and scadenta < date.today() else "neplatita"
 
 
 def _ultima_dupa_data(items: list[dict[str, Any]], camp_data: str) -> dict[str, Any] | None:
