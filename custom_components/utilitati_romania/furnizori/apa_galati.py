@@ -1266,29 +1266,21 @@ def _plata_potrivita_factura(item: dict[str, Any], plati: list[dict[str, Any]]) 
 def _stare_factura(item: dict[str, Any], rest: float | None, plati: list[dict[str, Any]] | None = None) -> str:
     stare = str(item.get("stare_factura") or "").strip().lower()
     scadenta = _data(item.get("data_scadenta"))
+    azi = date.today()
 
-    # In portalul Apa Canal Galati, coloana de stare contine explicit bifa
-    # pentru facturile platite. Campul suma_sold poate fi 0 si pentru facturi
-    # nou emise, inca neachitate, deci nu este suficient pentru a decide plata.
-    if "✔" in stare or "✓" in stare:
+    # Regula principala din portalul Apa Canal Galati:
+    # coloana „Stare factura” / suma_platita contine bifa pentru facturile
+    # achitate. Coloanele suma_sold si total_de_plata nu sunt indicatori
+    # siguri de status, pentru ca pot ramane completate si in istoric.
+    if "✔" in stare or "✓" in stare or "platit" in stare or "achitat" in stare:
         return "platita"
 
-    if rest is not None and rest > 0:
-        return "scadenta" if scadenta and scadenta < date.today() else "neplatita"
-
-    total_de_plata = _numar(item.get("total_de_plata"))
-    valoare_factura = _numar(item.get("total_factura"))
-    if total_de_plata is not None and total_de_plata > 0:
-        return "scadenta" if scadenta and scadenta < date.today() else "neplatita"
-
-    if plati is not None and _plata_potrivita_factura(item, plati):
+    # Fallback doar daca portalul nu a returnat deloc coloana de stare.
+    # In cazul normal, lipsa bifei inseamna factura deschisa.
+    if not stare and plati is not None and _plata_potrivita_factura(item, plati):
         return "platita"
 
-    # Fallback pentru facturi istorice fara coloana de stare clara.
-    if rest is not None and rest <= 0 and (valoare_factura is None or valoare_factura <= 0):
-        return "platita"
-
-    return "scadenta" if scadenta and scadenta < date.today() else "neplatita"
+    return "scadenta" if scadenta and scadenta < azi else "neplatita"
 
 
 def _ultima_dupa_data(items: list[dict[str, Any]], camp_data: str) -> dict[str, Any] | None:

@@ -53,7 +53,7 @@ from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licent
 
 _LOGGER = logging.getLogger(__name__)
 
-_FRONTEND_VERSION = "1.10.13b3"
+_FRONTEND_VERSION = "1.10.13b5"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
