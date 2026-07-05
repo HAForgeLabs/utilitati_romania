@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.13b5";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.13";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -662,6 +662,21 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return String(provider?.furnizor || provider?.provider || this._providerName(provider)).trim().toLowerCase();
   }
 
+  _uniqueProviderCount(providers) {
+    const keys = new Set();
+    for (const provider of providers || []) {
+      const key = this._normalizeText(this._providerKey(provider) || this._providerName(provider));
+      if (key) keys.add(key);
+    }
+    return keys.size;
+  }
+
+  _locationCompactCountText(providers, unpaid) {
+    const providerCount = this._uniqueProviderCount(providers);
+    const providerLabel = providerCount === 1 ? "furnizor" : "furnizori";
+    const unpaidLabel = unpaid === 1 ? "neplătită" : "neplătite";
+    return `${providerCount} ${providerLabel} · ${unpaid} ${unpaidLabel}`;
+  }
 
   _providerIdentityTerms(provider) {
     return [
@@ -1074,7 +1089,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         <div class="location-icon">${index + 1}</div>
         <div class="location-compact-main">
           <strong>${this._escape(this._displayLocationName(location))}</strong>
-          <span>${providers.length} furnizori · ${unpaid} neplătite</span>
+          <span>${this._escape(this._locationCompactCountText(providers, unpaid))}</span>
           ${financialChips}
         </div>
         <b>${this._escape(location?.total_neplatit_formatat || this._money(location?.total_neplatit, "RON"))}</b>

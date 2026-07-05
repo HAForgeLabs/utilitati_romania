@@ -501,7 +501,7 @@ class EonApiClient:
                     _LOGGER.debug("[REFRESH] Token E.ON reimprospatat cu succes prin flux web.")
                     return True
 
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "[REFRESH] Eroare la reimprospatare E.ON web. Cod HTTP=%s, Raspuns=%s",
                     resp.status,
                     response_text[:1000],
@@ -509,10 +509,10 @@ class EonApiClient:
                 return False
 
         except asyncio.TimeoutError:
-            _LOGGER.error("[REFRESH] Depasire de timp.")
+            _LOGGER.debug("[REFRESH] Depasire de timp.")
             return False
         except Exception as e:
-            _LOGGER.error("[REFRESH] Eroare: %s", e)
+            _LOGGER.debug("[REFRESH] Eroare: %s", e)
             return False
 
     def _apply_token_data(self, data: dict) -> None:
@@ -929,7 +929,7 @@ class EonApiClient:
 
     async def _request_with_token(self, method: str, url: str, label: str = "request"):
         if not await self._ensure_token_valid():
-            _LOGGER.error("[%s] Nu s-a putut obține un token valid.", label)
+            _LOGGER.debug("[%s] Nu s-a putut obține un token valid.", label)
             return None
 
         gen_before = self._token_generation
@@ -943,19 +943,19 @@ class EonApiClient:
         else:
             if not await self.async_refresh_token():
                 self._reauth_required = True
-                _LOGGER.error("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
+                _LOGGER.debug("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
                 return None
 
         resp_data, status = await self._do_request(method, url, label)
         if status == 401:
-            _LOGGER.error("[%s] A doua încercare a eșuat cu 401.", label)
+            _LOGGER.debug("[%s] A doua încercare a eșuat cu 401.", label)
             return None
 
         return resp_data
 
     async def _request_with_token_post(self, url: str, payload, label: str = "request_post"):
         if not await self._ensure_token_valid():
-            _LOGGER.error("[%s] Nu s-a putut obține un token valid.", label)
+            _LOGGER.debug("[%s] Nu s-a putut obține un token valid.", label)
             return None
 
         gen_before = self._token_generation
@@ -969,12 +969,12 @@ class EonApiClient:
         else:
             if not await self.async_refresh_token():
                 self._reauth_required = True
-                _LOGGER.error("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
+                _LOGGER.debug("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
                 return None
 
         resp_data, status = await self._do_request("POST", url, label, json_payload=payload)
         if status == 401:
-            _LOGGER.error("[%s] A doua încercare a eșuat cu 401.", label)
+            _LOGGER.debug("[%s] A doua încercare a eșuat cu 401.", label)
             return None
 
         return resp_data
@@ -1020,7 +1020,7 @@ class EonApiClient:
         max_pages: int | None = None,
     ):
         if not await self._ensure_token_valid():
-            _LOGGER.error("[%s] Nu s-a putut obține un token valid.", label)
+            _LOGGER.debug("[%s] Nu s-a putut obține un token valid.", label)
             return None
 
         results: list = []

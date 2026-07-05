@@ -74,6 +74,9 @@ def _rezuma_instantaneu(instantaneu: Any | None) -> dict[str, Any] | None:
                 "data_scadenta": _valoare_serializabila(getattr(factura, "data_scadenta", None)),
                 "stare": getattr(factura, "stare", None),
                 "rest_plata": (getattr(factura, "date_brute", {}) or {}).get("rest_plata"),
+                "platita_portal": (getattr(factura, "date_brute", {}) or {}).get("platita_portal"),
+                "stare_factura": (getattr(factura, "date_brute", {}) or {}).get("stare_factura"),
+                "plata_potrivita": (getattr(factura, "date_brute", {}) or {}).get("plata_potrivita"),
             }
             for factura in facturi[:20]
         ],
