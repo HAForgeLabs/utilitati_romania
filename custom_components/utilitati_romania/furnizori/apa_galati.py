@@ -1172,61 +1172,7 @@ def _extrage_consumuri(html_text: str) -> list[dict[str, Any]]:
 
 
 def _extrage_facturi(html_text: str) -> list[dict[str, Any]]:
-    """Extrage facturile din grila Scriptcase.
-
-    Pentru Apa Canal Galati statusul real este in coloana suma_platita,
-    afisata ca bifa in HTML. Pastram si HTML-ul brut al celulei pentru ca
-    textul vizibil poate fi pierdut in unele variante de raspuns Scriptcase.
-    """
-    randuri_html = re.findall(
-        r'<tr\b[^>]*id=["\']SC_ancor\d+["\'][^>]*>(.*?)</tr>',
-        html_text or "",
-        re.I | re.S,
-    )
     rezultat: list[dict[str, Any]] = []
-    for rand_html in randuri_html:
-        if "id_sc_field_serie_doc_" not in rand_html or "id_sc_field_nr_doc_" not in rand_html:
-            continue
-
-        def camp(camp_name: str, *, prefera_vizibil: bool = True) -> str:
-            return _camp_scriptcase_din_rand(rand_html, camp_name, prefera_vizibil=prefera_vizibil)
-
-        serie = camp("serie_doc")
-        nr_doc_afisat = camp("nr_doc")
-        nr_doc_hidden = camp("nr_doc", prefera_vizibil=False)
-        nr_doc_curat = (nr_doc_hidden or nr_doc_afisat or "").replace(".", "").strip()
-        if not serie and not nr_doc_curat:
-            continue
-
-        stare_html = _camp_html_scriptcase_din_rand(rand_html, "suma_platita")
-        stare_text = camp("suma_platita")
-        platita_portal = _camp_plata_confirmata(stare_text, stare_html)
-
-        rezultat.append(
-            {
-                "den_localitate": camp("den_localitate"),
-                "adresa": camp("adresa"),
-                "serie_doc": serie,
-                "nr_doc": nr_doc_afisat or nr_doc_curat,
-                "nr_doc_raw": nr_doc_curat,
-                "data_doc": camp("data_doc"),
-                "data_doc_iso": camp("data_doc", prefera_vizibil=False) if _este_data_iso(camp("data_doc", prefera_vizibil=False)) else None,
-                "total_factura": camp("total_val_doc_b"),
-                "suma_sold": camp("suma_sold"),
-                "data_sold": camp("data_sold"),
-                "total_de_plata": camp("total_suma"),
-                "data_scadenta": camp("data_scad"),
-                "data_gratie": camp("data_gratie"),
-                "stare_factura": stare_text,
-                "stare_factura_html": stare_html[:240],
-                "platita_portal": platita_portal,
-            }
-        )
-
-    if rezultat:
-        return rezultat
-
-    # Fallback pentru raspunsuri Scriptcase care nu includ randuri TR clasice.
     for r in _randuri_din_spanuri(
         html_text,
         [
@@ -1245,7 +1191,6 @@ def _extrage_facturi(html_text: str) -> list[dict[str, Any]]:
         ],
         prefera_vizibil=True,
     ):
-        stare_text = r.get("suma_platita")
         rezultat.append(
             {
                 "den_localitate": r.get("den_localitate"),
@@ -1261,40 +1206,10 @@ def _extrage_facturi(html_text: str) -> list[dict[str, Any]]:
                 "total_de_plata": r.get("total_suma"),
                 "data_scadenta": r.get("data_scad"),
                 "data_gratie": r.get("data_gratie"),
-                "stare_factura": stare_text,
-                "stare_factura_html": stare_text or "",
-                "platita_portal": _camp_plata_confirmata(stare_text, stare_text),
+                "stare_factura": r.get("suma_platita"),
             }
         )
     return rezultat
-
-
-def _camp_html_scriptcase_din_rand(rand_html: str, camp: str) -> str:
-    match = re.search(
-        rf'<span[^>]+id=["\']id_sc_field_(?:Hidden_)?{re.escape(camp)}_\d+["\'][^>]*>(.*?)</span>',
-        rand_html or "",
-        re.I | re.S,
-    )
-    return match.group(1) if match else ""
-
-
-def _camp_scriptcase_din_rand(rand_html: str, camp: str, *, prefera_vizibil: bool = True) -> str:
-    valori: dict[str, str] = {"vizibil": "", "ascuns": ""}
-    pattern = re.compile(
-        rf'<span[^>]+id=["\']id_sc_field_(Hidden_)?{re.escape(camp)}_\d+["\'][^>]*>(.*?)</span>',
-        re.I | re.S,
-    )
-    for ascuns, continut in pattern.findall(rand_html or ""):
-        cheie = "ascuns" if ascuns else "vizibil"
-        valori[cheie] = _curata_text(_fara_taguri(continut))
-    if prefera_vizibil:
-        return valori["vizibil"] or valori["ascuns"] or ""
-    return valori["ascuns"] or valori["vizibil"] or ""
-
-
-def _camp_plata_confirmata(text: Any, html_text: Any = None) -> bool:
-    combinat = f"{text or ''} {html_text or ''}".lower()
-    return any(marcaj in combinat for marcaj in ("✔", "✓", "platit", "achitat", "#00c000", "color:#00c000", "color: #00c000"))
 
 
 def _extrage_plati(html_text: str) -> list[dict[str, Any]]:
@@ -1349,16 +1264,20 @@ def _plata_potrivita_factura(item: dict[str, Any], plati: list[dict[str, Any]]) 
 
 
 def _stare_factura(item: dict[str, Any], rest: float | None, plati: list[dict[str, Any]] | None = None) -> str:
+    stare = str(item.get("stare_factura") or "").strip().lower()
     scadenta = _data(item.get("data_scadenta"))
     azi = date.today()
 
-    if item.get("platita_portal") or _camp_plata_confirmata(item.get("stare_factura"), item.get("stare_factura_html")):
+    # Regula principala din portalul Apa Canal Galati:
+    # coloana „Stare factura” / suma_platita contine bifa pentru facturile
+    # achitate. Coloanele suma_sold si total_de_plata nu sunt indicatori
+    # siguri de status, pentru ca pot ramane completate si in istoric.
+    if "✔" in stare or "✓" in stare or "platit" in stare or "achitat" in stare:
         return "platita"
 
-    # Fallback de siguranta pentru raspunsuri in care Scriptcase nu returneaza
-    # bifa ca text. Folosim istoricul de plati doar ca supliment, nu ca sursa
-    # principala.
-    if plati is not None and _plata_potrivita_factura(item, plati):
+    # Fallback doar daca portalul nu a returnat deloc coloana de stare.
+    # In cazul normal, lipsa bifei inseamna factura deschisa.
+    if not stare and plati is not None and _plata_potrivita_factura(item, plati):
         return "platita"
 
     return "scadenta" if scadenta and scadenta < azi else "neplatita"

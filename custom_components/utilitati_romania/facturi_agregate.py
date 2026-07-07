@@ -595,6 +595,8 @@ def _build_invoice_item(
         if raw_id_text and real_text == raw_id_text:
             real_invoice_number = None
 
+    cont_raw = cont.date_brute if cont and isinstance(cont.date_brute, dict) else {}
+
     item = {
         "entry_id": coordonator.intrare.entry_id,
         "entry_title": coordonator.intrare.title,
@@ -605,6 +607,12 @@ def _build_invoice_item(
         "adresa_originala": getattr(cont, "adresa", None) if cont else None,
         "eticheta_grupare_manuala": manual_group_label,
         "id_cont": getattr(factura, "id_cont", None) or (getattr(cont, "id_cont", None) if cont else None),
+        "id_apartament": (
+            raw_factura.get("id_apartament")
+            or raw_factura.get("id_ap")
+            or cont_raw.get("id_apartament")
+            or cont_raw.get("id_ap")
+        ),
         "id_contract": getattr(factura, "id_contract", None) or (getattr(cont, "id_contract", None) if cont else None),
         "nume_cont": getattr(cont, "nume", None) if cont else None,
         "tip_utilitate": getattr(factura, "tip_utilitate", None) or (getattr(cont, "tip_utilitate", None) if cont else None),
@@ -1070,6 +1078,11 @@ def _build_ebloc_fallback_item(
         "adresa_originala": getattr(cont, "adresa", None),
         "eticheta_grupare_manuala": manual_group_label,
         "id_cont": id_cont,
+        "id_apartament": (
+            cont.date_brute.get("id_apartament")
+            if isinstance(cont.date_brute, dict)
+            else None
+        ),
         "id_contract": getattr(cont, "id_contract", None),
         "nume_cont": getattr(cont, "nume", None),
         "tip_utilitate": "administrare_bloc",
@@ -1167,6 +1180,19 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
         if item.get("status") == "unpaid" and factura_id:
             return (locatie, furnizor, normalize_text(identificator_cont).lower(), normalize_text(factura_id).lower())
         return (locatie, furnizor, normalize_text(identificator_cont).lower())
+
+    if furnizor == "ebloc":
+        # Doua apartamente din aceeasi asociatie au aceeasi locatie de grupare.
+        # Fara un discriminator stabil per apartament, al doilea rand il
+        # suprascrie pe primul in dictionarul de agregare al dashboard-ului.
+        identificator_apartament = (
+            item.get("id_cont")
+            or item.get("id_apartament")
+            or item.get("nume_cont")
+            or item.get("invoice_id")
+            or ""
+        )
+        return (locatie, furnizor, normalize_text(identificator_apartament).lower())
 
     if furnizor in {"apa_brasov", "apa_oradea", "apa_galati", "aparegio", "hidro_prahova"}:
         # Apă Brașov are câte o factură curentă pentru fiecare loc de consum.
@@ -1557,7 +1583,7 @@ def colecteaza_locuri_consum(hass) -> list[dict[str, Any]]:
     return rezultat
 
 def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    grouped: dict[tuple[str, ...], dict[str, Any]] = {}
     domain_data = hass.data.get(DOMENIU, {}) if hasattr(hass, "data") else {}
 
     for maybe_coord in domain_data.values():

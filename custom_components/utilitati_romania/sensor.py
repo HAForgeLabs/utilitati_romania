@@ -285,12 +285,6 @@ class SenzorAdminStatic(SenzorAdminBaza):
 
 
 class SenzorAdminFacturiAgregate(SenzorAdminBaza):
-    # Dashboardul foloseste aceste atribute mari direct din state-ul curent,
-    # dar ele nu trebuie persistate in recorder. In conturile cu multe locatii
-    # si facturi, `locatii` / `locuri_consum` depasesc limita Home Assistant
-    # de 16 KB pentru atributele salvate in baza de date.
-    _unrecorded_attributes = frozenset({"locatii", "locuri_consum", "locuri_consum_ignorate"})
-
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(entry, "facturi_agregate", "Facturi utilități")
         self.hass = hass
