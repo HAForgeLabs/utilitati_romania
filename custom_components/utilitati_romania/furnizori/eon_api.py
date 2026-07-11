@@ -7,16 +7,16 @@ import asyncio
 import json
 import logging
 import time
+from http.cookies import SimpleCookie
 
 from aiohttp import ClientSession, ClientTimeout
+from yarl import URL
 
 from .eon_const import (
     API_TIMEOUT,
     AUTH_VERIFY_SECRET,
     HEADERS,
     MFA_REQUIRED_CODE,
-    TOKEN_MAX_AGE,
-    TOKEN_REFRESH_THRESHOLD,
     URL_CONSUMPTION_CONVENTION,
     URL_CONTRACT_DETAILS,
     URL_CONTRACTS_DETAILS_LIST,
@@ -48,8 +48,34 @@ from .eon_helper import generate_verify_hmac
 _LOGGER = logging.getLogger(__name__)
 
 URL_INVOICES_PAID = "https://api2.eon.ro/invoices/v1/invoices/list-paid"
-EON_WEB_REFRESH_INTERVAL = 20 * 60
-EON_WEB_TOKEN_MAX_AGE = 20 * 60
+EON_WEB_TOKEN_LIFETIME_CAP = 30 * 60
+EON_WEB_REFRESH_MARGIN = 2 * 60
+EON_WEB_MIN_REFRESH_DELAY = 30
+EON_AUTH_SCHEME = "Bearer"
+
+
+
+
+
+
+
+
+
+def _raw_access_token(token: str | None, token_type: str | None) -> str | None:
+    if not token:
+        return None
+    value = str(token).strip()
+    prefix = f"{token_type or 'Bearer'} "
+    if value.lower().startswith(prefix.lower()):
+        return value[len(prefix):].strip()
+    return value
+
+
+def _authorization_value(token: str | None, token_type: str | None) -> str | None:
+    raw_token = _raw_access_token(token, token_type)
+    if not raw_token:
+        return None
+    return f"{EON_AUTH_SCHEME} {raw_token}"
 
 
 def _mask_email(value: str) -> str:
@@ -96,6 +122,7 @@ class EonApiClient:
 
         self._timeout = ClientTimeout(total=API_TIMEOUT)
         self._auth_lock = asyncio.Lock()
+        self._refresh_lock = asyncio.Lock()
         self._token_generation: int = 0
 
         self._mfa_data: dict | None = None
@@ -149,46 +176,119 @@ class EonApiClient:
         self._mfa_data = None
         _LOGGER.debug("[AUTH] Blocaj MFA resetat.")
 
+    def _effective_token_lifetime(self) -> int:
+        try:
+            expires_in = int(float(self._expires_in))
+        except (TypeError, ValueError):
+            expires_in = EON_WEB_TOKEN_LIFETIME_CAP
+
+        if expires_in <= 0:
+            expires_in = EON_WEB_TOKEN_LIFETIME_CAP
+
+        return min(expires_in, EON_WEB_TOKEN_LIFETIME_CAP)
+
+    def seconds_until_refresh(self) -> float:
+        if self._access_token is None:
+            return 0.0
+
+        age = max(0.0, time.monotonic() - self._token_obtained_at)
+        refresh_at = max(
+            EON_WEB_MIN_REFRESH_DELAY,
+            self._effective_token_lifetime() - EON_WEB_REFRESH_MARGIN,
+        )
+        return max(0.0, refresh_at - age)
+
     def is_token_likely_valid(self) -> bool:
         if self._access_token is None:
             return False
 
-        age = time.monotonic() - self._token_obtained_at
+        return self.seconds_until_refresh() > 0
 
-        # E.ON web isi reimprospateaza tokenul la ~28 de minute, desi unele
-        # raspunsuri pot raporta expiresIn mai mare. Daca folosim expiresIn-ul
-        # brut, dupa restart putem considera valid un token care nu mai poate fi
-        # folosit/refresh-uit si ajungem direct in reauth. De aceea fortam
-        # refresh inainte de folosirea tokenului dupa ~20 minute.
-        return age < EON_WEB_TOKEN_MAX_AGE
+    def _export_cookies(self) -> list[dict[str, object]]:
+        cookies: list[dict[str, object]] = []
+        try:
+            for morsel in self._session.cookie_jar:
+                cookies.append(
+                    {
+                        "name": morsel.key,
+                        "value": morsel.value,
+                        "domain": morsel["domain"] or "",
+                        "path": morsel["path"] or "/",
+                        "secure": bool(morsel["secure"]),
+                        "httponly": bool(morsel["httponly"]),
+                        "samesite": morsel["samesite"] or "",
+                    }
+                )
+        except Exception as err:
+            _LOGGER.warning("Nu s-au putut exporta cookie-urile sesiunii E.ON: %s", err)
+        return cookies
+
+    def _import_cookies(self, cookies: object) -> None:
+        if not isinstance(cookies, list):
+            return
+
+        restored = 0
+        for item in cookies:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            value = str(item.get("value") or "")
+            domain = str(item.get("domain") or "api2.eon.ro").strip().lstrip(".")
+            path = str(item.get("path") or "/").strip() or "/"
+            if not name or not domain:
+                continue
+
+            cookie = SimpleCookie()
+            cookie[name] = value
+            morsel = cookie[name]
+            morsel["domain"] = domain
+            morsel["path"] = path
+            if bool(item.get("secure")):
+                morsel["secure"] = True
+            if bool(item.get("httponly")):
+                morsel["httponly"] = True
+            samesite = str(item.get("samesite") or "").strip()
+            if samesite:
+                morsel["samesite"] = samesite
+
+            scheme = "https" if bool(item.get("secure", True)) else "http"
+            try:
+                self._session.cookie_jar.update_cookies(
+                    cookie, response_url=URL(f"{scheme}://{domain}{path}")
+                )
+                restored += 1
+            except Exception as err:
+                _LOGGER.warning(
+                    "Cookie E.ON nerefacut (%s, domeniu=%s): %s", name, domain, err
+                )
+
+
 
     def export_token_data(self) -> dict | None:
         if self._access_token is None and self._web_token is None:
             return None
-        return {
+        token_data = {
             "access_token": self._access_token,
             "token_type": self._token_type,
             "expires_in": self._expires_in,
-            # Nu persistam refresh_token separat. Fluxul web E.ON foloseste
-            # accessToken-ul curent pentru refresh.
-            "refresh_token": None,
+            "refresh_token": self._refresh_token,
             "id_token": self._id_token,
             "web_token": self._web_token,
             "uuid": self._uuid,
+            "cookies": self._export_cookies(),
             "obtained_at_wallclock": time.time() - (time.monotonic() - self._token_obtained_at),
         }
+        return token_data
 
     def inject_token(self, token_data: dict) -> None:
         self._access_token = token_data.get("access_token")
         self._token_type = token_data.get("token_type", "Bearer")
         self._expires_in = token_data.get("expires_in", 3600)
-        # E.ON web nu mai foloseste refresh_token separat. Tokenurile vechi
-        # salvate de versiunile anterioare pot cauza 6047 / Invalid refresh token,
-        # deci nu le mai injectam in runtime.
-        self._refresh_token = None
+        self._refresh_token = token_data.get("refresh_token")
         self._id_token = token_data.get("id_token")
         self._web_token = token_data.get("web_token")
         self._uuid = token_data.get("uuid")
+        self._import_cookies(token_data.get("cookies"))
 
         wallclock_obtained = token_data.get("obtained_at_wallclock")
         if wallclock_obtained:
@@ -354,6 +454,7 @@ class EonApiClient:
             "code": code,
         }
 
+
         try:
             async with self._session.post(
                 URL_MFA_LOGIN, json=payload, headers=HEADERS, timeout=self._timeout
@@ -451,79 +552,106 @@ class EonApiClient:
             _LOGGER.error("[MFA-RESEND] Eroare: %s", e)
             return False
 
-    async def async_refresh_token(self) -> bool:
-        refresh_token = self._access_token
-        if not refresh_token:
-            _LOGGER.debug(
-                "[REFRESH] Nu exista accessToken disponibil pentru refresh E.ON. "
-                "Nu folosim refresh_token vechi salvat."
-            )
-            return False
+    async def async_refresh_token(self, *, force: bool = False) -> bool:
+        async with self._refresh_lock:
+            if not force and self.seconds_until_refresh() > 0:
+                return True
 
-        # HAR-ul web E.ON arata refresh periodic la aproximativ 28 de minute:
-        # POST /users/v1/userauth/refresh-token cu payload {"token": accessToken}.
-        # Nu foloseste payload-ul vechi mobile-refresh-token / refreshToken.
-        payload = {"token": refresh_token}
-        headers = {**HEADERS, "Referer": "https://www.eon.ro/myline/dashboard"}
-
-        try:
-            async with self._session.post(
-                URL_REFRESH_TOKEN, json=payload, headers=headers, timeout=self._timeout
-            ) as resp:
-                response_text = await resp.text()
+            raw_token = _raw_access_token(self._access_token, self._token_type)
+            authorization = _authorization_value(self._access_token, self._token_type)
+            if not raw_token or not authorization:
                 _LOGGER.debug(
-                    "[REFRESH] E.ON web refresh status=%s body_len=%s",
-                    resp.status,
-                    len(response_text or ""),
-                )
-
-                if resp.status == 200:
-                    try:
-                        data = json.loads(response_text) if response_text else {}
-                    except (json.JSONDecodeError, ValueError):
-                        data = {}
-
-                    token_present = bool(
-                        data.get("access_token")
-                        or data.get("accessToken")
-                        or data.get("token")
-                        or data.get("refresh_token")
-                        or data.get("refreshToken")
-                    )
-                    if not token_present:
-                        _LOGGER.debug(
-                            "[REFRESH] Raspuns 200 fara token utilizabil. Chei=%s",
-                            sorted(data.keys()) if isinstance(data, dict) else [],
-                        )
-                        return False
-
-                    self._apply_token_data(data)
-                    _LOGGER.debug("[REFRESH] Token E.ON reimprospatat cu succes prin flux web.")
-                    return True
-
-                _LOGGER.warning(
-                    "[REFRESH] Eroare la reimprospatare E.ON web. Cod HTTP=%s, Raspuns=%s",
-                    resp.status,
-                    response_text[:1000],
+                    "[REFRESH] Nu exista accessToken disponibil pentru refresh E.ON."
                 )
                 return False
 
-        except asyncio.TimeoutError:
-            _LOGGER.error("[REFRESH] Depasire de timp.")
-            return False
-        except Exception as e:
-            _LOGGER.error("[REFRESH] Eroare: %s", e)
-            return False
+            payload = {"token": raw_token}
+            headers = {
+                **HEADERS,
+                "Origin": "https://www.eon.ro",
+                "Referer": "https://www.eon.ro/myline/dashboard",
+                "Authorization": authorization,
+            }
+            generation_before = self._token_generation
+            self._trace_cookies("refresh_before")
+
+
+            try:
+                async with self._session.post(
+                    URL_REFRESH_TOKEN,
+                    json=payload,
+                    headers=headers,
+                    timeout=self._timeout,
+                ) as resp:
+                    response_text = await resp.text()
+                    self._trace_cookies("refresh_after_response")
+                    _LOGGER.debug(
+                        "[REFRESH] E.ON status=%s body_len=%s gen=%s",
+                        resp.status,
+                        len(response_text or ""),
+                        generation_before,
+                    )
+
+                    if resp.status == 200:
+                        try:
+                            data = json.loads(response_text) if response_text else {}
+                        except (json.JSONDecodeError, ValueError):
+                            data = {}
+
+                        token_present = bool(
+                            isinstance(data, dict)
+                            and (
+                                data.get("access_token")
+                                or data.get("accessToken")
+                                or data.get("token")
+                            )
+                        )
+                        if not token_present:
+                            _LOGGER.warning(
+                                "[REFRESH] E.ON a raspuns 200 fara token utilizabil. Chei=%s",
+                                sorted(data.keys()) if isinstance(data, dict) else [],
+                            )
+                            return False
+
+                        self._apply_token_data(data)
+                        _LOGGER.debug(
+                            "[REFRESH] Token E.ON reinnoit: gen=%s expires_in=%s urmatorul_refresh=%.0fs",
+                            self._token_generation,
+                            self._expires_in,
+                            self.seconds_until_refresh(),
+                        )
+                        return True
+
+                    _LOGGER.warning(
+                        "[REFRESH] Eroare la reimprospatare E.ON. Cod HTTP=%s, Raspuns=%s",
+                        resp.status,
+                        response_text[:1000],
+                    )
+                    return False
+
+            except asyncio.TimeoutError:
+                _LOGGER.error("[REFRESH] Depasire de timp.")
+                return False
+            except Exception as err:
+                _LOGGER.error("[REFRESH] Eroare: %s", err)
+                return False
 
     def _apply_token_data(self, data: dict) -> None:
         access_token = data.get("access_token") or data.get("accessToken") or data.get("token")
         self._access_token = access_token or self._access_token
-        self._token_type = data.get("token_type") or data.get("tokenType") or self._token_type or "Bearer"
+        received_token_type = (
+            data.get("token_type")
+            or data.get("tokenType")
+            or self._token_type
+            or EON_AUTH_SCHEME
+        )
+        self._token_type = (
+            EON_AUTH_SCHEME
+            if str(received_token_type).strip().lower() == "bearer"
+            else str(received_token_type).strip()
+        )
         self._expires_in = data.get("expires_in") or data.get("expiresIn") or self._expires_in or 1800
-        # Fluxul web E.ON foloseste accessToken-ul curent ca token de refresh.
-        # Nu pastram un refreshToken vechi daca raspunsul curent nu returneaza unul,
-        # pentru ca endpointul web il respinge cu 6047 / Invalid refresh token.
-        self._refresh_token = None
+        self._refresh_token = data.get("refresh_token") or data.get("refreshToken") or self._refresh_token
         self._id_token = data.get("idToken") or data.get("id_token") or self._id_token
         self._web_token = data.get("token") or data.get("web_token") or self._web_token
         self._uuid = data.get("uuid") or self._uuid
@@ -563,7 +691,7 @@ class EonApiClient:
                 return False
 
             if self._access_token:
-                if await self.async_refresh_token():
+                if await self.async_refresh_token(force=True):
                     return True
                 self._reauth_required = True
                 self._mfa_blocked = False
@@ -863,7 +991,7 @@ class EonApiClient:
             return None
 
         gen_before = self._token_generation
-        headers = {**HEADERS, "Authorization": f"{self._token_type} {self._access_token}"}
+        headers = {**HEADERS, "Authorization": _authorization_value(self._access_token, self._token_type)}
 
         try:
             async with self._session.post(
@@ -895,7 +1023,7 @@ class EonApiClient:
                         if not await self._ensure_token_valid():
                             return None
 
-                    headers_retry = {**HEADERS, "Authorization": f"{self._token_type} {self._access_token}"}
+                    headers_retry = {**HEADERS, "Authorization": _authorization_value(self._access_token, self._token_type)}
                     async with self._session.post(
                         URL_METER_SUBMIT,
                         json=payload,
@@ -941,7 +1069,7 @@ class EonApiClient:
         if self._token_generation != gen_before:
             _LOGGER.debug("[%s] 401 dar tokenul a fost deja reînnoit. Retry.", label)
         else:
-            if not await self.async_refresh_token():
+            if not await self.async_refresh_token(force=True):
                 self._reauth_required = True
                 _LOGGER.error("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
                 return None
@@ -967,7 +1095,7 @@ class EonApiClient:
         if self._token_generation != gen_before:
             _LOGGER.debug("[%s] 401 dar tokenul a fost deja reînnoit. Retry.", label)
         else:
-            if not await self.async_refresh_token():
+            if not await self.async_refresh_token(force=True):
                 self._reauth_required = True
                 _LOGGER.error("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
                 return None
@@ -982,7 +1110,7 @@ class EonApiClient:
     async def _do_request(self, method: str, url: str, label: str = "request", json_payload=None):
         headers = {**HEADERS}
         if self._access_token:
-            headers["Authorization"] = f"{self._token_type} {self._access_token}"
+            headers["Authorization"] = _authorization_value(self._access_token, self._token_type)
 
         try:
             kwargs = {"headers": headers, "timeout": self._timeout}
@@ -1033,7 +1161,7 @@ class EonApiClient:
             url = f"{base_url}?{'&'.join(query_parts)}"
 
             gen_before = self._token_generation
-            headers = {**HEADERS, "Authorization": f"{self._token_type} {self._access_token}"}
+            headers = {**HEADERS, "Authorization": _authorization_value(self._access_token, self._token_type)}
 
             try:
                 async with self._session.get(
@@ -1059,7 +1187,7 @@ class EonApiClient:
                         if self._token_generation != gen_before:
                             _LOGGER.debug("[%s] Token reînnoit de alt apel. Retry pagină %s.", label, page)
                         else:
-                            if not await self.async_refresh_token():
+                            if not await self.async_refresh_token(force=True):
                                 self._reauth_required = True
                                 return results if results else None
                         retried = True

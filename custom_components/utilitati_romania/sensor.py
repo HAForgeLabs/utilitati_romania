@@ -30,6 +30,7 @@ from .eon_device import (
 )
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .deer_device import alias_loc_deer, info_device_deer, slug_loc_deer
+from .deo_device import alias_loc_deo, info_device_deo, slug_loc_deo
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
 from .orange_device import alias_loc_orange, info_device_orange, slug_loc_orange
 from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
@@ -1691,6 +1692,36 @@ SENZORI_REZUMAT_DEER: tuple[DescriereSenzorRezumat, ...] = (
 )
 
 
+
+SENZORI_REZUMAT_DEO: tuple[DescriereSenzorRezumat, ...] = (
+    DescriereSenzorRezumat(key="numar_conturi", name="Numar locuri de consum", icon="mdi:transmission-tower", functie_valoare=lambda i: len(i.conturi)),
+    DescriereSenzorRezumat(key="cod_client", name="Cod client DEO", icon="mdi:badge-account", functie_valoare=lambda i: _valoare_consum(i, "cod_client")),
+    DescriereSenzorRezumat(key="nume_client", name="Client", icon="mdi:account", functie_valoare=lambda i: _valoare_consum(i, "nume_client")),
+    DescriereSenzorRezumat(key="este_prosumator", name="Este prosumator", icon="mdi:solar-power-variant", functie_valoare=lambda i: "da" if _este_prosumator(i) else "nu"),
+)
+
+SENZORI_CONT_DEO: tuple[DescriereSenzorCont, ...] = (
+    DescriereSenzorCont(key="client", name="Client", icon="mdi:account", functie_valoare=lambda i, c: _valoare_consum(i, "client", c.id_cont)),
+    DescriereSenzorCont(key="pod", name="POD", icon="mdi:identifier", functie_valoare=lambda i, c: _valoare_consum(i, "pod", c.id_cont)),
+    DescriereSenzorCont(key="nlc", name="NLC DEO", icon="mdi:barcode", functie_valoare=lambda i, c: c.id_cont),
+    DescriereSenzorCont(key="furnizor", name="Furnizor", icon="mdi:store", functie_valoare=lambda i, c: _valoare_consum(i, "furnizor", c.id_cont)),
+    DescriereSenzorCont(key="stare_loc_consum", name="Stare loc de consum", icon="mdi:connection", functie_valoare=lambda i, c: _valoare_consum(i, "stare_loc_consum", c.id_cont)),
+    DescriereSenzorCont(key="tip_loc_consum", name="Tip loc de consum", icon="mdi:home-lightning-bolt", functie_valoare=lambda i, c: _valoare_consum(i, "tip_loc_consum", c.id_cont)),
+    DescriereSenzorCont(key="serie_contor", name="Serie contor", icon="mdi:counter", functie_valoare=lambda i, c: _valoare_consum(i, "serie_contor", c.id_cont)),
+    DescriereSenzorCont(key="tip_contor", name="Tip contor", icon="mdi:meter-electric", functie_valoare=lambda i, c: _valoare_consum(i, "tip_contor", c.id_cont)),
+    DescriereSenzorCont(key="clasa_precizie", name="Clasa de precizie", icon="mdi:target", functie_valoare=lambda i, c: _valoare_consum(i, "clasa_precizie", c.id_cont)),
+    DescriereSenzorCont(key="data_instalare_contor", name="Data instalare contor", icon="mdi:calendar-check", functie_valoare=lambda i, c: _valoare_consum(i, "data_instalare_contor", c.id_cont)),
+    DescriereSenzorCont(key="periodicitate_citire", name="Periodicitate citire", icon="mdi:calendar-sync", functie_valoare=lambda i, c: _valoare_consum(i, "periodicitate_citire", c.id_cont)),
+    DescriereSenzorCont(key="index_consum", name="Index consum", icon="mdi:transmission-tower-import", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_consum", c.id_cont)),
+    DescriereSenzorCont(key="consum_ultima_perioada", name="Consum ultima perioada", icon="mdi:chart-line", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "consum_ultima_perioada", c.id_cont)),
+    DescriereSenzorCont(key="consum_ultimele_12_luni", name="Consum ultimele 12 luni", icon="mdi:chart-bar", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "consum_ultimele_12_luni", c.id_cont)),
+    DescriereSenzorCont(key="data_ultima_citire_consum", name="Ultima citire consum", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "data_ultima_citire_consum", c.id_cont)),
+    DescriereSenzorCont(key="index_injectie", name="Index injectie", icon="mdi:transmission-tower-export", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_injectie", c.id_cont)),
+    DescriereSenzorCont(key="injectie_ultima_perioada", name="Injectie ultima perioada", icon="mdi:solar-power", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "injectie_ultima_perioada", c.id_cont)),
+    DescriereSenzorCont(key="injectie_ultimele_12_luni", name="Injectie ultimele 12 luni", icon="mdi:chart-bar-stacked", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "injectie_ultimele_12_luni", c.id_cont)),
+    DescriereSenzorCont(key="data_ultima_citire_injectie", name="Ultima citire injectie", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "data_ultima_citire_injectie", c.id_cont)),
+)
+
 SENZORI_CONT_ENGIE: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="date_client", name="Date client", icon="mdi:account-circle", functie_valoare=lambda i, c: c.nume),
     DescriereSenzorCont(key="date_contract", name="Date contract", icon="mdi:file-document-outline", functie_valoare=lambda i, c: c.stare),
@@ -1841,6 +1872,12 @@ async def async_setup_entry(
                 if descriere.key in {"sold_prosumator", "pret_mediu_energie_prosumator_ultima_factura"} and not _cont_este_prosumator(cont):
                     continue
                 entitati.append(SenzorContNova(coordonator, cont, descriere))
+
+    elif instantaneu and instantaneu.furnizor == "deo":
+        entitati.extend(SenzorRezumat(coordonator, d) for d in SENZORI_REZUMAT_DEO)
+        for cont in instantaneu.conturi:
+            for descriere in SENZORI_CONT_DEO:
+                entitati.append(SenzorContDeo(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "deer":
         entitati.extend(SenzorRezumat(coordonator, d) for d in SENZORI_REZUMAT_DEER)
@@ -2641,6 +2678,61 @@ class SenzorContNova(EntitateUtilitatiRomania, SensorEntity):
                 ):
                     if detalii.get(cheie) not in (None, ""):
                         attrs[cheie] = detalii.get(cheie)
+        return attrs
+
+
+
+class SenzorContDeo(EntitateUtilitatiRomania, SensorEntity):
+    entity_description: DescriereSenzorCont
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: DescriereSenzorCont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self.entity_description = descriere
+        alias = alias_loc_deo(cont.nume, cont.adresa, cont.id_cont)
+        slug = slug_loc_deo(cont.id_cont, alias, cont.adresa)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_deo_{cont.id_cont}_{descriere.key}"
+        self._attr_name = descriere.name
+        self._attr_suggested_object_id = f"deo_{cont.id_cont}_{slug}_{descriere.key}"
+        self.entity_id = f"sensor.deo_{cont.id_cont}_{slug}_{descriere.key}"
+        self._attr_device_info = info_device_deo(coordonator.intrare.entry_id, cont)
+
+    @property
+    def available(self):
+        return self.coordinator.data is not None and any(getattr(x, "id_cont", None) == self.cont.id_cont for x in self.coordinator.data.conturi)
+
+    @property
+    def native_value(self):
+        return None if self.coordinator.data is None else self.entity_description.functie_valoare(self.coordinator.data, self.cont)
+
+    @property
+    def extra_state_attributes(self):
+        raw = _date_brute_cont(self.cont)
+        attrs = {"nlc": self.cont.id_cont, "pod": raw.get("pod"), "adresa": self.cont.adresa}
+
+        if self.entity_description.key == "consum_ultimele_12_luni":
+            istoric = (raw.get("istoric_lunar_consum") or [])[:12]
+        elif self.entity_description.key == "injectie_ultimele_12_luni":
+            istoric = (raw.get("istoric_lunar_injectie") or [])[:12]
+        else:
+            istoric = None
+
+        if istoric is not None:
+            attrs["istoric_lunar"] = istoric
+            if istoric:
+                curenta = istoric[0]
+                attrs["luna_curenta"] = curenta.get("luna")
+                attrs["valoare_luna_curenta"] = curenta.get("valoare")
+            if len(istoric) > 1:
+                anterioara = istoric[1]
+                attrs["luna_anterioara"] = anterioara.get("luna")
+                attrs["valoare_luna_anterioara"] = anterioara.get("valoare")
+                curenta_val = curenta.get("valoare")
+                anterioara_val = anterioara.get("valoare")
+                if isinstance(curenta_val, (int, float)) and isinstance(anterioara_val, (int, float)):
+                    attrs["diferenta_fata_de_luna_anterioara"] = round(curenta_val - anterioara_val, 3)
+        elif self.entity_description.key in {"serie_contor", "tip_contor", "clasa_precizie"}:
+            attrs["grup_masura"] = raw.get("grup_masura") or {}
         return attrs
 
 

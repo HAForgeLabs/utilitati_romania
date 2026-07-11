@@ -38,6 +38,10 @@ from .storage_citiri import async_salveaza_citire, obtine_citire_cache
 _LOGGER = logging.getLogger(__name__)
 
 
+
+
+
+
 def _senzori_licenta_admin() -> list[str]:
     return [
         f"sensor.{DOMENIU}_status_licenta",
@@ -76,7 +80,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         # Pentru acestea nu folosim sesiunea globala Home Assistant, deoarece doua
         # config entry-uri ale aceluiasi furnizor pot ajunge sa imparta acelasi
         # cookie jar si sa citeasca datele altui cont.
-        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati"}
+        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati", "eon", "deo"}
         self.sesiune: ClientSession = (
             async_create_clientsession(hass)
             if self._sesiune_dedicata
@@ -154,42 +158,65 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         )
 
     async def _async_refresh_eon_in_fundal(self) -> None:
-        # HAR-ul E.ON arata refresh periodic la aproximativ 28 de minute.
-        # Rulam putin mai devreme, separat de actualizarea completa a datelor,
-        # pentru ca intervalul normal al furnizorului poate fi de cateva ore.
-        interval = 20 * 60
+        retry_dupa_eroare = 15 * 60
 
         try:
-            # Nu asteptam 20 de minute la prima rulare: dupa restart tokenul
-            # salvat poate fi deja aproape de limita de refresh E.ON. Prima
-            # incercare rapida mentine sesiunea vie, apoi intram in ritmul normal.
-            await asyncio.sleep(60)
             while True:
+                obtine_intarziere = getattr(
+                    self.client, "secunde_pana_la_refresh_sesiune", None
+                )
+                if callable(obtine_intarziere):
+                    try:
+                        intarziere = float(obtine_intarziere())
+                    except (TypeError, ValueError):
+                        intarziere = 0.0
+                else:
+                    intarziere = 0.0
+
+                if intarziere <= 0:
+                    intarziere = 30.0
+
+                _LOGGER.debug(
+                    "Refresh E.ON programat peste %.0f secunde.", intarziere
+                )
+                await asyncio.sleep(intarziere)
+
                 try:
                     reimprospatare = getattr(
                         self.client, "async_reimprospateaza_sesiunea_fundal", None
                     )
-                    if callable(reimprospatare):
-                        token_data = await reimprospatare()
-                        if isinstance(token_data, dict) and token_data:
-                            token_curent = self.intrare.data.get(CONF_DATE_TOKEN_EON)
-                            if token_curent != token_data:
-                                self.hass.config_entries.async_update_entry(
-                                    self.intrare,
-                                    data={**self.intrare.data, CONF_DATE_TOKEN_EON: token_data},
-                                )
-                                _LOGGER.debug("Tokenul E.ON a fost reimprospatat si salvat in fundal.")
-                        else:
-                            _LOGGER.debug(
-                                "Refresh-ul E.ON in fundal nu a returnat token nou. "
-                                "Reauth va fi cerut la urmatoarea actualizare daca sesiunea este invalida."
+                    token_data = (
+                        await reimprospatare() if callable(reimprospatare) else None
+                    )
+                    if isinstance(token_data, dict) and token_data:
+                        token_curent = self.intrare.data.get(CONF_DATE_TOKEN_EON)
+                        if token_curent != token_data:
+                            self.hass.config_entries.async_update_entry(
+                                self.intrare,
+                                data={
+                                    **self.intrare.data,
+                                    CONF_DATE_TOKEN_EON: token_data,
+                                },
                             )
+                        _LOGGER.debug(
+                            "Tokenul E.ON a fost reinnoit si persistat in config entry."
+                        )
+                        continue
+
+                    _LOGGER.warning(
+                        "Refresh-ul periodic E.ON a esuat. O noua incercare va fi facuta peste %s minute.",
+                        retry_dupa_eroare // 60,
+                    )
+                    await asyncio.sleep(retry_dupa_eroare)
                 except asyncio.CancelledError:
                     raise
                 except Exception as err:  # noqa: BLE001
-                    _LOGGER.debug("Refresh-ul E.ON in fundal a esuat: %s", err)
-
-                await asyncio.sleep(interval)
+                    _LOGGER.warning(
+                        "Refresh-ul periodic E.ON a esuat: %s. Retry peste %s minute.",
+                        err,
+                        retry_dupa_eroare // 60,
+                    )
+                    await asyncio.sleep(retry_dupa_eroare)
         except asyncio.CancelledError:
             raise
 

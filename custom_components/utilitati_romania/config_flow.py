@@ -9,7 +9,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
@@ -183,7 +183,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
 
                 if self._furnizor == "apa_canal":
                     client_apa_canal = ClientFurnizorApaCanal(
-                        sesiune=async_get_clientsession(self.hass),
+                        sesiune=(async_create_clientsession(self.hass) if self._furnizor == "deo" else async_get_clientsession(self.hass)),
                         utilizator=user_input[CONF_UTILIZATOR],
                         parola=user_input[CONF_PAROLA],
                         optiuni=user_input,
@@ -577,7 +577,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
             ),
         }
         self._api_eon = EonApiClient(
-            async_get_clientsession(self.hass),
+            async_create_clientsession(self.hass),
             user_input[CONF_UTILIZATOR],
             user_input[CONF_PAROLA],
         )
@@ -1024,7 +1024,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
 
             if self._furnizor == "eon":
                 self._api_eon = EonApiClient(
-                    async_get_clientsession(self.hass),
+                    async_create_clientsession(self.hass),
                     user_input[CONF_UTILIZATOR],
                     user_input[CONF_PAROLA],
                 )
