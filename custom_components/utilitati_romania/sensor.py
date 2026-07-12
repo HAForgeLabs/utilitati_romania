@@ -400,6 +400,35 @@ def _valoare_consum(instantaneu: InstantaneuFurnizor, cheie: str, id_cont: str |
     return valori[0]
 
 
+def _cont_curent_din_instantaneu(instantaneu: InstantaneuFurnizor, cont):
+    id_cont = getattr(cont, "id_cont", None)
+    for candidat in instantaneu.conturi or []:
+        if getattr(candidat, "id_cont", None) == id_cont:
+            return candidat
+    return cont
+
+
+def _valoare_istoric_deer(instantaneu: InstantaneuFurnizor, cont, cheie: str):
+    cont_curent = _cont_curent_din_instantaneu(instantaneu, cont)
+    raw = _date_brute_cont(cont_curent)
+
+    if cheie in {"consum_ultima_perioada", "consum_ultimele_12_luni", "data_ultima_citire_consum"}:
+        istoric = raw.get("istoric_lunar_consum") or []
+    elif cheie in {"injectie_ultima_perioada", "injectie_ultimele_12_luni", "data_ultima_citire_injectie"}:
+        istoric = raw.get("istoric_lunar_injectie") or []
+    else:
+        return _valoare_consum(instantaneu, cheie, getattr(cont, "id_cont", None))
+
+    if not istoric:
+        return None
+
+    if cheie.endswith("ultima_perioada"):
+        return istoric[0].get("valoare")
+    if cheie.startswith("data_ultima_citire"):
+        return istoric[0].get("data_citire")
+    return round(sum(float(item.get("valoare") or 0) for item in istoric[:12]), 3)
+
+
 def _valoare_consum_global(instantaneu: InstantaneuFurnizor, cheie: str):
     for c in instantaneu.consumuri:
         if c.cheie != cheie:
@@ -1763,6 +1792,12 @@ SENZORI_CONT_DEER: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="clasa_precizie", name="Clasa de precizie", icon="mdi:target", functie_valoare=lambda i, c: _valoare_consum(i, "clasa_precizie", c.id_cont)),
     DescriereSenzorCont(key="index_registru_001", name="Index registru 001", icon="mdi:numeric-1-box-outline", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_registru_001", c.id_cont)),
     DescriereSenzorCont(key="index_registru_002", name="Index registru 002", icon="mdi:numeric-2-box-outline", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_registru_002", c.id_cont)),
+    DescriereSenzorCont(key="consum_ultima_perioada", name="Consum ultima perioada", icon="mdi:chart-line", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_istoric_deer(i, c, "consum_ultima_perioada")),
+    DescriereSenzorCont(key="consum_ultimele_12_luni", name="Consum ultimele 12 luni", icon="mdi:chart-bar", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_istoric_deer(i, c, "consum_ultimele_12_luni")),
+    DescriereSenzorCont(key="injectie_ultima_perioada", name="Injectie ultima perioada", icon="mdi:solar-power", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_istoric_deer(i, c, "injectie_ultima_perioada")),
+    DescriereSenzorCont(key="injectie_ultimele_12_luni", name="Injectie ultimele 12 luni", icon="mdi:chart-bar-stacked", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_istoric_deer(i, c, "injectie_ultimele_12_luni")),
+    DescriereSenzorCont(key="data_ultima_citire_consum", name="Ultima citire consum", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_istoric_deer(i, c, "data_ultima_citire_consum")),
+    DescriereSenzorCont(key="data_ultima_citire_injectie", name="Ultima citire injectie", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_istoric_deer(i, c, "data_ultima_citire_injectie")),
     DescriereSenzorCont(key="istoric_registru_001", name="Ultimii 10 indici registru 001", icon="mdi:history", functie_valoare=lambda i, c: _valoare_consum(i, "index_registru_001", c.id_cont)),
     DescriereSenzorCont(key="istoric_registru_002", name="Ultimii 10 indici registru 002", icon="mdi:history", functie_valoare=lambda i, c: _valoare_consum(i, "index_registru_002", c.id_cont)),
 )
@@ -2763,18 +2798,32 @@ class SenzorContDeer(EntitateUtilitatiRomania, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        raw = _date_brute_cont(self.cont)
+        cont_curent = self.cont
+        if self.coordinator.data is not None:
+            cont_curent = next(
+                (
+                    cont
+                    for cont in self.coordinator.data.conturi
+                    if getattr(cont, "id_cont", None) == getattr(self.cont, "id_cont", None)
+                ),
+                self.cont,
+            )
+        raw = _date_brute_cont(cont_curent)
         attrs = {
-            "pod": self.cont.id_cont,
-            "adresa": self.cont.adresa,
-            "nume_cont": self.cont.nume,
-            "tip_serviciu": self.cont.tip_serviciu,
-            "tip_utilitate": self.cont.tip_utilitate,
+            "pod": cont_curent.id_cont,
+            "adresa": cont_curent.adresa,
+            "nume_cont": cont_curent.nume,
+            "tip_serviciu": cont_curent.tip_serviciu,
+            "tip_utilitate": cont_curent.tip_utilitate,
         }
         istoric_001 = raw.get("istoric_registru_001") or []
         istoric_002 = raw.get("istoric_registru_002") or []
         if self.entity_description.key == "validitate_contract":
             attrs["contract"] = raw.get("validitate_contract")
+        elif self.entity_description.key == "consum_ultimele_12_luni":
+            attrs["istoric_lunar"] = (raw.get("istoric_lunar_consum") or [])[:12]
+        elif self.entity_description.key == "injectie_ultimele_12_luni":
+            attrs["istoric_lunar"] = (raw.get("istoric_lunar_injectie") or [])[:12]
         elif self.entity_description.key in {"index_registru_001", "istoric_registru_001"}:
             attrs["ultimele_10_indici"] = istoric_001[-10:]
             attrs["numar_indici"] = len(istoric_001)

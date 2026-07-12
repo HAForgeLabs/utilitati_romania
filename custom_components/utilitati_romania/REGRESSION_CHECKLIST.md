@@ -247,3 +247,130 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [x] Refresh-ul periodic E.ON nu mai esueaza dupa eliminarea logurilor sensibile.
 - [x] Persistenta tokenului si a cookie jar-ului E.ON ramane activa.
 - [x] Nu sunt modificate fluxurile DEO sau ale altor furnizori.
+
+## v1.12.0b1 - Modul Distributie energie
+
+- [ ] Modulul `Distributie energie` este vizibil doar cand exista cel putin o intrare DEO sau DEER disponibila.
+- [ ] DEO este detectat prin entitatile `sensor.deo_*` si locurile sunt grupate dupa NLC.
+- [ ] DEER este detectat doar pentru entitatile `sensor.hidro_*` cu `tip_serviciu=distributie`, fara a include Hidro Prahova.
+- [ ] Sunt afisate consumul, injectia, balanta energetica, ultima citire si datele tehnice disponibile.
+- [ ] Istoricul lunar DEO este afisat ca grafic consum versus injectie.
+- [ ] Campurile lipsa la DEER sau DEO nu genereaza carduri goale ori erori JavaScript.
+- [ ] Modulele Facturi, Indexuri, Setari si Diagnostic raman neschimbate.
+- [ ] Afisarea este verificata pe desktop si mobil.
+
+
+## v1.12.0b2 - Grafic distributie si teme
+
+- [ ] Cardurile modulului folosesc variabilele de tema Home Assistant si au contrast corect in dark/light.
+- [ ] Graficul afiseaza cronologic maximum 12 luni disponibile, fara luni inventate.
+- [ ] Axa Y afiseaza scara si unitatea kWh, cu linii orizontale de ghidaj.
+- [ ] Tooltip-ul afiseaza luna, consumul, injectia si balanta la hover, focus si tap.
+- [ ] Selectorul Comparativ/Consum/Injectie actualizeaza scara graficului.
+- [ ] Sunt afisate totalurile perioadei si balanta totala.
+- [ ] Detaliile locului si ale contorului sunt grupate in sectiuni pliabile.
+- [ ] Pe mobil KPI-urile sunt 2x2, graficul poate derula orizontal si tooltip-ul ramane utilizabil.
+- [ ] Daca istoricul lipseste, se afiseaza mesaj explicit in locul unui grafic gol.
+
+## v1.12.0b3 - Tema dark, tooltip si stare sectiuni
+
+- [ ] Cardurile modulului Distributie energie folosesc aceeasi paleta dark ca restul dashboard-ului.
+- [ ] Tooltip-ul graficului este pozitionat in viewport si ramane complet vizibil pe desktop si mobil.
+- [ ] Tooltip-ul functioneaza la hover, focus si tap.
+- [ ] Starea sectiunilor Detalii loc de consum si Detalii contor si contract se pastreaza la actualizarile Home Assistant.
+- [ ] Actualizarile automate ale entitatilor nu mai inchid imediat sectiunile deschise de utilizator.
+- [ ] Graficul si restul modulelor dashboard-ului raman functionale in light si dark.
+
+## v1.12.0b5 - istoric DEER din pagina Informatii POD
+- [ ] Datele principale DEER raman disponibile dupa actualizare.
+- [ ] Parserul foloseste tabelul `table.infoCP` care contine antetele `Zi citire`, `Registri contor` si `Unitate masura`.
+- [ ] Nu se executa niciun request suplimentar pentru istoricul DEER.
+- [ ] Registrul 001 produce istoricul lunar de consum.
+- [ ] Registrul 002 produce istoricul lunar de injectie.
+- [ ] Constanta `1.00000` este interpretata ca 1.
+- [ ] Diferentele negative si schimbarile seriei contorului sunt ignorate.
+- [ ] Senzorii pentru ultima perioada si ultimele 12 luni primesc valori si atributul `istoric_lunar`.
+- [ ] Dashboard-ul DEER afiseaza graficul lunar, fara POD duplicat si cu eticheta `Profil`.
+
+
+## v1.12.0b6-debug - diagnostic istoric DEER
+- [ ] Datele DEER existente raman disponibile dupa actualizare.
+- [ ] Logul contine doua linii `[DEER HISTORY DEBUG]` pentru fiecare POD.
+- [ ] Se verifica lungimea HTML, numarul tabelelor `infoCP`, prezenta antetelor si numarul randurilor parsate.
+- [ ] Nu se efectueaza request suplimentar pentru istoricul DEER.
+
+
+## v1.12.0b8 - corectie entitati istoric DEER
+- [ ] Cele 6 entitati DEER pentru consum/injectie si datele ultimelor citiri sunt create de platforma sensor.
+- [ ] Entitatile existente din registry nu mai raman indisponibile dupa restart.
+- [ ] Atributele `ultimele_10_indici` se citesc din obiectul curent al coordinatorului, nu din copia initiala a contului.
+- [ ] Atributele `istoric_lunar` contin maximum 12 luni pentru consum si injectie.
+- [ ] Debugul DEER si profilerul de startup raman active pentru investigatia curenta.
+
+
+## v1.12.0b9 - task E.ON exclus din bootstrap
+
+- [ ] Home Assistant finalizeaza faza de startup fara sa astepte taskul periodic E.ON.
+- [ ] Nu mai apare avertizarea `Setup timed out for bootstrap` pentru `_async_refresh_eon_in_fundal`.
+- [ ] Refresh-ul periodic E.ON continua sa ruleze si sa persiste tokenul dupa pornire.
+- [ ] Taskul E.ON este anulat corect la descarcarea intrarii.
+- [ ] Functionalitatea DEER din v1.12.0b8 ramane neschimbata.
+- [ ] Profilerul `UR STARTUP DEBUG` ramane activ pentru investigatiile urmatoare.
+
+
+## v1.12.0b10 - valori DEER preluate din istoricul curent
+
+- [ ] `Consum ultima perioada` foloseste prima valoare din `istoric_lunar_consum` al contului curent din coordinator.
+- [ ] `Consum ultimele 12 luni` este suma istoricului lunar curent, maximum 12 perioade.
+- [ ] Datele ultimei citiri folosesc acelasi istoric ca graficul.
+- [ ] Pentru locurile fara prosumator, lipsa registrului 002 nu genereaza valori false de injectie.
+- [ ] Graficul si cardurile KPI afiseaza aceleasi valori pentru ultima perioada.
+- [ ] Fixul E.ON din v1.12.0b9 ramane activ.
+
+## v1.12.0b11 - Asociere distribuitor-furnizor
+- Verifica selectorul din Setari pentru fiecare POD/NLC DEO/DEER.
+- Verifica persistenta asocierii dupa refresh al paginii.
+- Verifica disclaimerul pentru locurile neasociate si butonul Deschide Setari.
+- Verifica blocul Furnizor asociat: ultima factura, valoare, scadenta si sold.
+- Verifica faptul ca datele distribuitorului raman separate de datele furnizorului.
+
+## v1.12.0b12 - furnizor asociat si estimari prosumator
+- [ ] Cardul furnizorului asociat foloseste acelasi fundal ca restul dashboard-ului in tema dark.
+- [ ] Pentru un loc prosumator apare separat sectiunea „Energie injectata”.
+- [ ] Daca exista factura de injectie asociata, sunt afisate numarul, valoarea si data/scadenta.
+- [ ] Pretul mediu de injectie este citit numai din senzorul dedicat prosumatorului.
+- [ ] Estimarea perioadei curente foloseste injectia distribuitorului × pretul mediu de injectie.
+- [ ] Estimarea istoricului afisat foloseste numai lunile disponibile in grafic.
+- [ ] Valorile estimate sunt marcate explicit ca estimari si au disclaimer.
+- [ ] Pentru locurile fara prosumator sectiunea de injectie nu apare.
+- [ ] Disclaimerul pentru locurile neasociate ramane neschimbat.
+
+
+## v1.12.0b13 - Asociere persistenta si tema light
+- [ ] Asocierile distribuitor-furnizor se salveaza in Home Assistant Store, nu doar in localStorage.
+- [ ] Asocierile reapar dupa refresh, restart si din alt browser/dispozitiv.
+- [ ] Salvarea nereusita afiseaza mesaj de eroare si nu confirma fals persistenta.
+- [ ] Cardul Furnizor asociat si disclaimerul folosesc fundaluri coerente cu tema light.
+- [ ] Tema dark ramane neschimbata si cu contrast corect.
+
+## v1.12.0b14 - Persistenta robusta si tema light distributie
+
+- [ ] Asocierile distribuitor-furnizor sunt salvate in optiunile intrarii globale de administrare.
+- [ ] Asocierile sunt pastrate si in Store ca fallback si migrare automata.
+- [ ] Dupa restart Home Assistant, asocierile sunt restaurate fara dependenta de localStorage.
+- [ ] Cardurile KPI, istoricul si detaliile distributiei folosesc paleta deschisa a dashboardului, nu `secondary-background-color` gri.
+- [ ] Tema dark pastreaza fundalurile dedicate existente.
+
+
+## v1.12.0 - Release public
+
+- [ ] Modulul Distributie energie este vizibil doar cand exista DEO sau DEER configurat.
+- [ ] Graficele DEO si DEER afiseaza maximum 12 luni, tooltip, scala si totaluri corecte.
+- [ ] Locurile fara injectie afiseaza doar consumul disponibil.
+- [ ] Asocierea distribuitor-furnizor persista dupa restart Home Assistant.
+- [ ] Facturile de consum si injectie apar separat pentru locurile prosumator asociate.
+- [ ] Estimarile de injectie sunt marcate explicit ca estimari.
+- [ ] Tema light si dark folosesc fundaluri coerente cu restul dashboard-ului.
+- [ ] Taskul periodic E.ON nu mai blocheaza finalizarea startup-ului Home Assistant.
+- [ ] Logurile de diagnostic `UR STARTUP DEBUG` si `DEER HISTORY DEBUG` nu mai sunt prezente.
+- [ ] Arhiva nu contine `__pycache__` sau fisiere `.pyc`.

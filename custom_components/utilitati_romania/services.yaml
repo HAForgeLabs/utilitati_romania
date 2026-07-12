@@ -104,3 +104,14 @@ set_consumption_point_visibility:
       description: true pentru ignorare, false pentru reactivare.
       required: true
       example: true
+
+set_distribution_supplier_links:
+  name: Salveaza asocieri distribuitor-furnizor
+  description: Salveaza persistent asocierile dintre locurile distribuitorilor si locurile furnizorilor.
+  fields:
+    links:
+      name: Asocieri
+      description: Obiect JSON cu asocierile dintre cheile locurilor de distributie si furnizori.
+      required: true
+      selector:
+        object:

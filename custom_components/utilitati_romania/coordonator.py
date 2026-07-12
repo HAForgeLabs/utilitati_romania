@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, timedelta
 import logging
+import time
 from typing import Any
 
 from aiohttp import ClientSession
@@ -153,8 +154,9 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         if self._task_refresh_eon is not None and not self._task_refresh_eon.done():
             return
 
-        self._task_refresh_eon = self.hass.async_create_task(
-            self._async_refresh_eon_in_fundal()
+        self._task_refresh_eon = self.hass.async_create_background_task(
+            self._async_refresh_eon_in_fundal(),
+            "utilitati_romania_eon_refresh",
         )
 
     async def _async_refresh_eon_in_fundal(self) -> None:

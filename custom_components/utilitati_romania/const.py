@@ -99,6 +99,7 @@ SERVICIU_SET_INVOICE_STATUS = "set_invoice_status"
 SERVICIU_SUBMIT_READING = "submit_reading"
 SERVICIU_SET_NOTIFICATION_PREFERENCES = "set_notification_preferences"
 SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY = "set_consumption_point_visibility"
+SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS = "set_distribution_supplier_links"
 
 CONF_MOBILE_NOTIFY_SERVICE = "mobile_notify_service"
 CONF_MOBILE_NOTIFICATION_SERVICE = "mobile_notification_service"

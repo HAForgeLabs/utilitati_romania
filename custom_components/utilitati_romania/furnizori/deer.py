@@ -175,15 +175,44 @@ def _extract_number(value: Any) -> float | None:
 
 
 def _extract_history_rows(html_text: str) -> list[dict[str, Any]]:
+    """Extrage istoricul din tabelul infoCP dedicat indexurilor.
+
+    Pagina DEER contine tabele imbricate. Parsarea tuturor randurilor din pagina
+    cu o expresie regulata simpla poate pierde randurile tabelului interior.
+    Identificam mai intai tabelul infoCP care contine antetele istoricului, apoi
+    extragem numai randurile sale.
+    """
+    table_html = ""
+    for candidate in re.findall(
+        r"<table\b[^>]*class=[\"'][^\"']*\binfoCP\b[^\"']*[\"'][^>]*>(.*?)</table>",
+        html_text,
+        flags=re.I | re.S,
+    ):
+        header = _normalize_key(_strip_tags(candidate)).lower()
+        if (
+            "zi citire" in header
+            and ("registri contor" in header or "registru contor" in header)
+            and "unitate masura" in header
+        ):
+            table_html = candidate
+            break
+
+    if not table_html:
+        return []
+
     rows: list[dict[str, Any]] = []
-    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", html_text, flags=re.I | re.S):
-        cells = [_normalize_key(_strip_tags(x)) for x in re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row_html, flags=re.I | re.S)]
+    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", table_html, flags=re.I | re.S):
+        cells = [
+            _normalize_key(_strip_tags(cell))
+            for cell in re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row_html, flags=re.I | re.S)
+        ]
         if len(cells) < 8:
             continue
         if not re.fullmatch(r"\d{12,}", cells[0] or ""):
             continue
         if not re.fullmatch(r"\d{3}", cells[4] or ""):
             continue
+
         citire = _extract_number(cells[6])
         rows.append(
             {
@@ -197,8 +226,51 @@ def _extract_history_rows(html_text: str) -> list[dict[str, Any]]:
                 "unitate_masura": cells[7],
             }
         )
-    rows.sort(key=lambda x: (_parse_date(str(x.get("zi_citire"))) or date.min, str(x.get("registru"))), reverse=True)
+
+    rows.sort(
+        key=lambda item: (
+            _parse_date(str(item.get("zi_citire"))) or date.min,
+            str(item.get("registru")),
+        ),
+        reverse=True,
+    )
     return rows
+
+
+def _build_monthly_history(rows: list[dict[str, Any]], register: str) -> list[dict[str, Any]]:
+    selected = [row for row in rows if str(row.get("registru") or "").strip() == register]
+    selected.sort(key=lambda row: _parse_date(str(row.get("zi_citire") or "")) or date.min)
+
+    monthly: list[dict[str, Any]] = []
+    for previous, current in zip(selected, selected[1:]):
+        previous_value = _extract_number(previous.get("citire"))
+        current_value = _extract_number(current.get("citire"))
+        current_date = _parse_date(str(current.get("zi_citire") or ""))
+        if previous_value is None or current_value is None or current_date is None:
+            continue
+        if str(previous.get("serie_contor") or "") != str(current.get("serie_contor") or ""):
+            continue
+
+        difference = current_value - previous_value
+        if difference < 0:
+            continue
+
+        multiplier = _extract_number(current.get("constanta_facturare"))
+        if multiplier is None or multiplier <= 0:
+            multiplier = 1.0
+
+        monthly.append(
+            {
+                "luna": current_date.strftime("%Y-%m"),
+                "data_citire": current_date.isoformat(),
+                "index_initial": previous_value,
+                "index_final": current_value,
+                "valoare": round(difference * multiplier, 3),
+                "registru": register,
+            }
+        )
+
+    return list(reversed(monthly[-12:]))
 
 
 def _history_latest_by_register(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -448,6 +520,8 @@ class ClientFurnizorDeer(ClientFurnizor):
             istoric_indici = _extract_history_rows(full_pod)
             istoric_registru_001 = [row for row in istoric_indici if str(row.get("registru") or row.get("registri_contor") or "").strip() == "001"][:10]
             istoric_registru_002 = [row for row in istoric_indici if str(row.get("registru") or row.get("registri_contor") or "").strip() == "002"][:10]
+            istoric_lunar_consum = _build_monthly_history(istoric_indici, "001")
+            istoric_lunar_injectie = _build_monthly_history(istoric_indici, "002")
             latest_by_register = _history_latest_by_register(istoric_indici)
 
             cod_client = cont_map.get("Cod client") or pod_map.get("Cod consumator")
@@ -556,6 +630,8 @@ class ClientFurnizorDeer(ClientFurnizor):
                         "istoric_indici": istoric_indici,
                         "istoric_registru_001": istoric_registru_001,
                         "istoric_registru_002": istoric_registru_002,
+                        "istoric_lunar_consum": istoric_lunar_consum,
+                        "istoric_lunar_injectie": istoric_lunar_injectie,
                         "index_registru_001": index_001,
                         "index_registru_002": index_002,
                         "data_ultima_citire": data_ultima_citire,
@@ -567,6 +643,21 @@ class ClientFurnizorDeer(ClientFurnizor):
                     },
                 )
             )
+
+            consum_ultima_perioada = istoric_lunar_consum[0].get("valoare") if istoric_lunar_consum else None
+            injectie_ultima_perioada = istoric_lunar_injectie[0].get("valoare") if istoric_lunar_injectie else None
+            consum_ultimele_12_luni = (
+                round(sum(float(item.get("valoare") or 0) for item in istoric_lunar_consum), 3)
+                if istoric_lunar_consum
+                else None
+            )
+            injectie_ultimele_12_luni = (
+                round(sum(float(item.get("valoare") or 0) for item in istoric_lunar_injectie), 3)
+                if istoric_lunar_injectie
+                else None
+            )
+            data_ultima_citire_consum = istoric_lunar_consum[0].get("data_citire") if istoric_lunar_consum else None
+            data_ultima_citire_injectie = istoric_lunar_injectie[0].get("data_citire") if istoric_lunar_injectie else None
 
             deer_items: list[tuple[str, Any, str | None]] = [
                 ("client", nume_client, None),
@@ -591,6 +682,12 @@ class ClientFurnizorDeer(ClientFurnizor):
                 ("clasa_precizie", clasa_precizie, None),
                 ("index_registru_001", index_001, "kWh"),
                 ("index_registru_002", index_002, "kWh"),
+                ("consum_ultima_perioada", consum_ultima_perioada, "kWh"),
+                ("consum_ultimele_12_luni", consum_ultimele_12_luni, "kWh"),
+                ("injectie_ultima_perioada", injectie_ultima_perioada, "kWh"),
+                ("injectie_ultimele_12_luni", injectie_ultimele_12_luni, "kWh"),
+                ("data_ultima_citire_consum", data_ultima_citire_consum, None),
+                ("data_ultima_citire_injectie", data_ultima_citire_injectie, None),
             ]
             for cheie, valoare, unitate in deer_items:
                 if valoare not in (None, "", "-"):

@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.10.13b9";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.12.0";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -18,11 +18,18 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._dashboardDrafts = new Map();
     this._licenseDraft = "";
     this._interactiveUntil = 0;
+    this._distributionChartModes = new Map();
+    this._distributionDetailsState = new Map();
+    this._activeDistributionTooltip = null;
+    this._distributionSupplierDrafts = new Map();
+    this._distributionSupplierLinksRemote = null;
+    this._distributionSupplierLinksLoading = false;
   }
 
   set hass(hass) {
     this._hass = hass;
     this._readingCache.clear();
+    this._ensureDistributionSupplierLinksLoaded();
     if (this._shouldDelayRenderForInteraction()) return;
     this._render();
   }
@@ -41,7 +48,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (Date.now() < this._interactiveUntil) return true;
     const active = this.shadowRoot.activeElement;
     if (!active) return false;
-    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias], [data-billing-group], [data-dashboard-pref-text], [data-consumption-visibility]");
+    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias], [data-billing-group], [data-dashboard-pref-text], [data-consumption-visibility], [data-distribution-supplier-link]");
   }
 
   _holdRenderBriefly(ms = 3500) {
@@ -1013,11 +1020,406 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     `;
   }
 
+
+  _distributionLocations() {
+    const states = Object.entries(this._hass?.states || {});
+    const locations = new Map();
+    const normalize = (value) => String(value ?? "").trim().toLowerCase();
+    const suffixes = [
+      "consum_ultimele_12_luni", "injectie_ultimele_12_luni",
+      "consum_ultima_perioada", "injectie_ultima_perioada",
+      "data_ultima_citire_consum", "data_ultima_citire_injectie",
+      "index_registru_001", "index_registru_002",
+      "istoric_registru_001", "istoric_registru_002",
+      "index_consum", "index_injectie", "client", "cod_client",
+      "adresa_loc_consum", "loc_consum", "pod", "nlc", "furnizor",
+      "denumire_furnizor", "stare_loc_consum", "stare_instalatiei",
+      "tip_loc_consum", "serie_contor", "tip_contor", "clasa_precizie",
+      "data_instalare_contor", "periodicitate_citire", "profil",
+      "validitate_contract", "putere_aprobata_consum",
+      "putere_aprobata_producere", "numar_atr", "data_inregistrare_atr",
+      "cod_punct_masurare", "punct_racordare", "tensiune_delimitare",
+      "masurare_orara", "masurare_zone_orare"
+    ].sort((a, b) => b.length - a.length);
+
+    for (const [entityId, state] of states) {
+      if (!entityId.startsWith("sensor.")) continue;
+      const attrs = state?.attributes || {};
+      const isDeo = entityId.startsWith("sensor.deo_");
+      const isDeer = entityId.startsWith("sensor.hidro_") && normalize(attrs.tip_serviciu).includes("distrib");
+      if (!isDeo && !isDeer) continue;
+
+      const provider = isDeo ? "deo" : "deer";
+      const locationId = String((isDeo ? (attrs.nlc || attrs.pod) : attrs.pod) || "").trim();
+      if (!locationId) continue;
+      const groupKey = `${provider}:${locationId}`;
+      if (!locations.has(groupKey)) {
+        locations.set(groupKey, {
+          provider,
+          providerLabel: isDeo ? "Distributie Energie Oltenia" : "Distributie Energie Electrica Romania",
+          id: locationId,
+          address: attrs.adresa || "",
+          entities: {},
+        });
+      }
+      const location = locations.get(groupKey);
+      if (!location.address && attrs.adresa) location.address = attrs.adresa;
+      const objectId = entityId.slice("sensor.".length);
+      const key = suffixes.find((suffix) => objectId.endsWith(`_${suffix}`));
+      if (key) location.entities[key] = { entityId, state };
+    }
+
+    return [...locations.values()].sort((a, b) => {
+      const providerCmp = a.providerLabel.localeCompare(b.providerLabel, "ro");
+      if (providerCmp) return providerCmp;
+      return String(a.address || a.id).localeCompare(String(b.address || b.id), "ro");
+    });
+  }
+
+
+  _distributionSupplierLinks() {
+    if (this._distributionSupplierLinksRemote && typeof this._distributionSupplierLinksRemote === "object") {
+      return { ...this._distributionSupplierLinksRemote };
+    }
+    return this._loadJsonPreference("distribution_supplier_links", {});
+  }
+
+  async _ensureDistributionSupplierLinksLoaded(force = false) {
+    if (!this._hass?.callWS || this._distributionSupplierLinksLoading) return;
+    if (!force && this._distributionSupplierLinksRemote !== null) return;
+    this._distributionSupplierLinksLoading = true;
+    try {
+      const response = await this._hass.callWS({ type: "utilitati_romania/distribution_supplier_links" });
+      const links = response?.links && typeof response.links === "object" ? response.links : {};
+      this._distributionSupplierLinksRemote = { ...links };
+      this._saveJsonPreference("distribution_supplier_links", links);
+      if (!this._shouldDelayRenderForInteraction()) this._render();
+    } catch (_err) {
+      if (this._distributionSupplierLinksRemote === null) {
+        this._distributionSupplierLinksRemote = this._loadJsonPreference("distribution_supplier_links", {});
+      }
+    } finally {
+      this._distributionSupplierLinksLoading = false;
+    }
+  }
+
+  _distributionSupplierOptionKey(location, provider) {
+    const providerKey = this._providerKey(provider) || this._normalizeText(this._providerName(provider)).replace(/\s+/g, "_");
+    const identifiers = [
+      provider?.pod, provider?.ppe, provider?.nlc, provider?.id_contract, provider?.id_cont,
+      provider?.cod_client, provider?.account_id, provider?.contract_id, provider?.service_id,
+      location?.locatie_cheie, location?.cheie, location?.id, location?.eticheta_locatie,
+      this._rawLocationName(location), this._bestLocationLabel(this._locationCandidates(location, provider)),
+    ].map((value) => String(value ?? "").trim()).filter(Boolean);
+    const stable = identifiers[0] || this._billingGroupEntitySignature(location, provider) || this._providerName(provider);
+    return `${providerKey}:${this._normalizeText(stable).replace(/\s+/g, "_")}`;
+  }
+
+  _distributionSupplierOptions(summary = this._summary()) {
+    return this._allProviders(summary.locations || []).map(({ location, provider }) => {
+      const key = this._distributionSupplierOptionKey(location, provider);
+      const providerLabel = this._providerName(provider);
+      const locationLabel = this._billingDisplayName(location, provider) || this._rawLocationName(location) || providerLabel;
+      const identifiers = [provider?.pod, provider?.ppe, provider?.nlc, provider?.id_contract, provider?.id_cont, provider?.cod_client].filter(Boolean);
+      const detail = identifiers.length ? ` · ${identifiers[0]}` : "";
+      return { key, label: `${providerLabel} - ${locationLabel}${detail}`, location, provider };
+    }).filter((item, index, all) => item.key && all.findIndex((other) => other.key === item.key) === index)
+      .sort((a, b) => a.label.localeCompare(b.label, "ro"));
+  }
+
+  _distributionLinkedSupplier(distributionLocation) {
+    const links = this._distributionSupplierLinks();
+    const linkKey = `${distributionLocation.provider}:${distributionLocation.id}`;
+    const selected = links[linkKey];
+    if (!selected) return null;
+    return this._distributionSupplierOptions().find((item) => item.key === selected) || null;
+  }
+
+  _distributionProviderCategory(provider) {
+    return this._normalizeText([
+      provider?.categorie,
+      provider?.tip_factura,
+      provider?.invoice_type,
+      provider?.tip_document,
+      provider?.description,
+      provider?.invoice_description,
+      provider?.service_type,
+      provider?.tip_serviciu,
+      provider?.ultima_factura,
+      provider?.invoice_title,
+    ].filter(Boolean).join(" "));
+  }
+
+  _isInjectionInvoiceProvider(provider) {
+    const text = this._distributionProviderCategory(provider);
+    return text.includes("inject") || text.includes("prosum") || text.includes("energie produsa") || text.includes("energie livrata");
+  }
+
+  _distributionSameSupplierPlace(reference, candidate) {
+    if (!reference || !candidate) return false;
+    if (this._providerKey(reference) !== this._providerKey(candidate)) return false;
+    const refTerms = new Set(this._providerIdentityTerms(reference));
+    const candTerms = this._providerIdentityTerms(candidate);
+    if (candTerms.some((term) => refTerms.has(term))) return true;
+    const refLocation = this._normalizeText([
+      reference?.adresa, reference?.locatie, reference?.nume_locatie, reference?.denumire_locatie,
+      reference?.pod, reference?.ppe, reference?.nlc, reference?.id_contract, reference?.id_cont,
+    ].filter(Boolean).join(" "));
+    const candLocation = this._normalizeText([
+      candidate?.adresa, candidate?.locatie, candidate?.nume_locatie, candidate?.denumire_locatie,
+      candidate?.pod, candidate?.ppe, candidate?.nlc, candidate?.id_contract, candidate?.id_cont,
+    ].filter(Boolean).join(" "));
+    return !!refLocation && !!candLocation && (refLocation.includes(candLocation) || candLocation.includes(refLocation));
+  }
+
+  _distributionInjectionProvider(linked) {
+    const selected = linked?.provider;
+    if (!selected) return null;
+    if (this._isInjectionInvoiceProvider(selected)) return selected;
+    const candidates = this._distributionSupplierOptions()
+      .map((item) => item.provider)
+      .filter((provider) => this._isInjectionInvoiceProvider(provider) && this._distributionSameSupplierPlace(selected, provider));
+    return candidates[0] || null;
+  }
+
+  _distributionRateValue(provider, sensorKind) {
+    const sensor = this._findProviderFinancialSensor(provider, sensorKind);
+    if (!sensor || ["unknown", "unavailable", ""].includes(String(sensor.state))) return null;
+    const value = this._num(sensor.state);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  _distributionEstimateDetail(label, energy, rate) {
+    if (!Number.isFinite(energy) || energy < 0 || !Number.isFinite(rate) || rate <= 0) return "";
+    return this._distributionDetail(label, this._money(energy * rate), "estimare");
+  }
+
+  _renderDistributionSupplierLink(location) {
+    const linked = this._distributionLinkedSupplier(location);
+    if (!linked) {
+      return `<div class="distribution-link-disclaimer"><ha-icon icon="mdi:link-variant-off"></ha-icon><div><strong>Locul de distributie nu este asociat cu un furnizor configurat.</strong><span>Asociaza-l din Setari pentru a vedea datele furnizorului langa valorile distribuitorului.</span></div><button type="button" data-open-distribution-settings>Deschide Setari</button></div>`;
+    }
+
+    const provider = linked.provider;
+    const amount = this._providerAmount(provider);
+    const due = this._providerDue(provider);
+    const status = this._status(provider);
+    const injectionProvider = this._distributionInjectionProvider(linked);
+    const prosumerRate = this._distributionRateValue(provider, "pret_mediu_energie_prosumator_ultima_factura")
+      ?? (injectionProvider ? this._distributionRateValue(injectionProvider, "pret_mediu_energie_prosumator_ultima_factura") : null);
+    const currentInjection = this._distributionNumber(location, "injectie_ultima_perioada");
+    const historyInjection = this._distributionHistory(location, "injection")
+      .reduce((total, item) => total + (Number(item?.valoare ?? item?.value ?? item?.injectie ?? 0) || 0), 0);
+
+    const consumptionBlock = `<div class="distribution-supplier-section"><div class="distribution-supplier-section-title"><ha-icon icon="mdi:flash"></ha-icon><strong>Energie consumata</strong></div><div class="distribution-details-grid">${this._distributionDetail("Ultima factura", this._providerInvoice(provider))}${this._distributionDetail("Valoare", amount !== null && amount !== undefined ? this._money(amount) : null)}${this._distributionDetail("Scadenta", due ? this._date(due) : null)}${this._distributionDetail("Sold / total de plata", provider?.unpaid_total ?? provider?.unpaid_amount ?? amount, (provider?.unpaid_total ?? provider?.unpaid_amount ?? amount) !== null && (provider?.unpaid_total ?? provider?.unpaid_amount ?? amount) !== undefined ? "lei" : "")}</div></div>`;
+
+    let injectionBlock = "";
+    if (injectionProvider || prosumerRate || (currentInjection !== null && currentInjection > 0)) {
+      const injectionAmount = injectionProvider ? this._providerAmount(injectionProvider) : null;
+      const injectionDue = injectionProvider ? this._providerDue(injectionProvider) : null;
+      const injectionStatus = injectionProvider ? this._status(injectionProvider) : "unknown";
+      injectionBlock = `<div class="distribution-supplier-section prosumer"><div class="distribution-supplier-section-title"><ha-icon icon="mdi:solar-power-variant"></ha-icon><strong>Energie injectata</strong>${injectionProvider ? `<span class="pill ${injectionStatus}">${this._escape(this._statusLabel(injectionStatus))}</span>` : `<span class="estimate-badge">estimare</span>`}</div><div class="distribution-details-grid">${injectionProvider ? this._distributionDetail("Ultima factura injectie", this._providerInvoice(injectionProvider)) : ""}${injectionProvider && injectionAmount !== null && injectionAmount !== undefined ? this._distributionDetail("Valoare factura injectie", this._money(injectionAmount)) : ""}${injectionProvider && injectionDue ? this._distributionDetail("Data / scadenta", this._date(injectionDue)) : ""}${prosumerRate ? this._distributionDetail("Pret mediu injectie", new Intl.NumberFormat("ro-RO", { maximumFractionDigits: 4 }).format(prosumerRate), "RON/kWh") : ""}${this._distributionEstimateDetail("Valoare estimata perioada", currentInjection, prosumerRate)}${this._distributionEstimateDetail("Valoare estimata istoric afisat", historyInjection, prosumerRate)}</div>${prosumerRate ? `<p class="distribution-estimate-note">Estimarea foloseste pretul mediu din ultima factura de prosumator si valorile de injectie raportate de distribuitor. Suma finala poate diferi prin regularizari, compensari sau perioade de facturare diferite.</p>` : ""}</div>`;
+    }
+
+    return `<section class="distribution-linked-supplier"><div class="distribution-linked-head"><div><span class="eyebrow">furnizor asociat</span><strong>${this._escape(linked.label)}</strong></div><span class="pill ${status}">${this._escape(this._statusLabel(status))}</span></div><div class="distribution-supplier-sections">${consumptionBlock}${injectionBlock}</div></section>`;
+  }
+
+  _distributionValue(location, ...keys) {
+    for (const key of keys) {
+      const entity = location?.entities?.[key];
+      if (!entity) continue;
+      const value = entity.state?.state;
+      if (value !== undefined && value !== null && !["", "unknown", "unavailable", "none"].includes(String(value).toLowerCase())) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  _distributionNumber(location, ...keys) {
+    const value = this._distributionValue(location, ...keys);
+    if (value === null) return null;
+    let raw = String(value).trim().replace(/[^0-9+\-.,]/g, "");
+    if (raw.includes(",") && raw.includes(".")) raw = raw.replace(/\./g, "").replace(",", ".");
+    else if (raw.includes(",")) raw = raw.replace(",", ".");
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  _distributionHistory(location, kind) {
+    const key = kind === "injection" ? "injectie_ultimele_12_luni" : "consum_ultimele_12_luni";
+    const entity = location?.entities?.[key];
+    const history = entity?.state?.attributes?.istoric_lunar;
+    return Array.isArray(history) ? history.slice(0, 12).filter((item) => item && item.luna) : [];
+  }
+
+  _distributionBars(location) {
+    const consumption = this._distributionHistory(location, "consumption");
+    const injection = this._distributionHistory(location, "injection");
+    const months = [...new Set([...consumption.map((x) => x.luna), ...injection.map((x) => x.luna)])]
+      .sort()
+      .slice(-12);
+    if (!months.length) {
+      return `<div class="distribution-no-history"><ha-icon icon="mdi:chart-bar-off"></ha-icon><span>Operatorul nu publica momentan istoric lunar pentru acest loc de consum.</span></div>`;
+    }
+
+    const byMonth = (items) => Object.fromEntries(items.map((item) => [item.luna, Number(item.valoare) || 0]));
+    const cMap = byMonth(consumption);
+    const iMap = byMonth(injection);
+    const chartKey = `${location.provider}:${location.id}`;
+    const mode = this._distributionChartModes.get(chartKey) || "compare";
+    const values = months.flatMap((month) => {
+      if (mode === "consumption") return [cMap[month] || 0];
+      if (mode === "injection") return [iMap[month] || 0];
+      return [cMap[month] || 0, iMap[month] || 0];
+    });
+    const rawMax = Math.max(1, ...values);
+    const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax)));
+    const normalized = rawMax / magnitude;
+    const nice = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+    const max = nice * magnitude;
+    const ticks = Array.from({ length: 5 }, (_, index) => max - (max / 4) * index);
+    const formatNumber = (value) => Number(value).toLocaleString("ro-RO", { maximumFractionDigits: 2 });
+    const monthLabel = (value, short = false) => {
+      const [year, month] = String(value).split("-");
+      const date = new Date(Number(year), Number(month) - 1, 1);
+      if (Number.isNaN(date.getTime())) return value;
+      return new Intl.DateTimeFormat("ro-RO", short ? { month: "short" } : { month: "long", year: "numeric" }).format(date);
+    };
+    const totalConsumption = months.reduce((sum, month) => sum + (cMap[month] || 0), 0);
+    const totalInjection = months.reduce((sum, month) => sum + (iMap[month] || 0), 0);
+    const totalBalance = totalInjection - totalConsumption;
+    const latestMonth = months[months.length - 1];
+
+    return `
+      <section class="distribution-history-card">
+        <div class="distribution-chart-head">
+          <div>
+            <strong>Istoric lunar</strong>
+            <span>Ultimele ${months.length} ${months.length === 1 ? "luna disponibila" : "luni disponibile"}</span>
+          </div>
+          <div class="distribution-chart-date">Date pana la ${this._escape(monthLabel(latestMonth))}</div>
+        </div>
+        <div class="distribution-chart-modes" role="group" aria-label="Mod afisare grafic">
+          ${[["compare","Comparativ"],["consumption","Consum"],["injection","Injectie"]].map(([id,label]) => `<button type="button" class="${mode === id ? "active" : ""}" data-distribution-mode="${id}" data-distribution-key="${this._escape(chartKey)}">${label}</button>`).join("")}
+        </div>
+        <div class="distribution-chart-shell">
+          <div class="distribution-y-axis" aria-hidden="true">
+            ${ticks.map((tick) => `<span>${this._escape(formatNumber(tick))}</span>`).join("")}
+            <small>kWh</small>
+          </div>
+          <div class="distribution-chart" style="--distribution-months:${months.length}" aria-label="Consum si injectie lunara">
+            <div class="distribution-grid-lines" aria-hidden="true">${ticks.map(() => "<i></i>").join("")}</div>
+            ${months.map((month) => {
+              const c = cMap[month] || 0;
+              const i = iMap[month] || 0;
+              const balance = i - c;
+              const showConsumption = mode !== "injection";
+              const showInjection = mode !== "consumption";
+              return `<div class="distribution-month" tabindex="0" data-distribution-tooltip-host aria-label="${this._escape(monthLabel(month))}: Consum ${this._escape(formatNumber(c))} kWh, Injectie ${this._escape(formatNumber(i))} kWh, Balanta ${this._escape(formatNumber(balance))} kWh">
+                <div class="distribution-bars">
+                  ${showConsumption ? `<span class="bar consumption" style="height:${Math.max(c > 0 ? 3 : 0, (c / max) * 100)}%"></span>` : ""}
+                  ${showInjection ? `<span class="bar injection" style="height:${Math.max(i > 0 ? 3 : 0, (i / max) * 100)}%"></span>` : ""}
+                </div>
+                <small>${this._escape(monthLabel(month, true))}<b>${this._escape(String(month).slice(2,4))}</b></small>
+                <div class="distribution-tooltip" role="tooltip">
+                  <strong>${this._escape(monthLabel(month))}</strong>
+                  <span><i class="consumption"></i>Consum: ${this._escape(formatNumber(c))} kWh</span>
+                  <span><i class="injection"></i>Injectie: ${this._escape(formatNumber(i))} kWh</span>
+                  <span>Balanta: ${balance > 0 ? "+" : ""}${this._escape(formatNumber(balance))} kWh</span>
+                </div>
+              </div>`;
+            }).join("")}
+          </div>
+        </div>
+        <div class="distribution-legend">
+          <span><i class="consumption"></i>Consum</span><span><i class="injection"></i>Injectie</span>
+        </div>
+        <div class="distribution-period-summary">
+          <span>Consum total <strong>${this._escape(formatNumber(totalConsumption))} kWh</strong></span>
+          <span>Injectie totala <strong>${this._escape(formatNumber(totalInjection))} kWh</strong></span>
+          <span>Balanta perioada <strong class="${totalBalance >= 0 ? "positive" : "negative"}">${totalBalance > 0 ? "+" : ""}${this._escape(formatNumber(totalBalance))} kWh</strong></span>
+        </div>
+      </section>`;
+  }
+
+  _distributionDetail(label, value, unit = "") {
+    if (value === null || value === undefined || value === "") return "";
+    return `<div><span>${this._escape(label)}</span><strong>${this._escape(value)}${unit ? ` ${this._escape(unit)}` : ""}</strong></div>`;
+  }
+
+  _renderDistributionLocation(location) {
+    const consumption = this._distributionNumber(location, "consum_ultima_perioada");
+    const injection = this._distributionNumber(location, "injectie_ultima_perioada");
+    const balance = consumption !== null && injection !== null ? injection - consumption : null;
+    const title = location.address || this._distributionValue(location, "adresa_loc_consum", "loc_consum") || `${location.providerLabel} · ${location.id}`;
+    const client = this._distributionValue(location, "client");
+    const status = this._distributionValue(location, "stare_loc_consum", "stare_instalatiei");
+    const type = this._distributionValue(location, "tip_loc_consum", "profil");
+    const supplier = this._distributionValue(location, "furnizor", "denumire_furnizor");
+    const locationKey = `${location.provider}:${location.id}`;
+    const locationDetailsKey = `${locationKey}:location`;
+    const meterDetailsKey = `${locationKey}:meter`;
+    const locationDetailsOpen = this._distributionDetailsState.has(locationDetailsKey) ? this._distributionDetailsState.get(locationDetailsKey) : true;
+    const meterDetailsOpen = this._distributionDetailsState.has(meterDetailsKey) ? this._distributionDetailsState.get(meterDetailsKey) : false;
+    return `
+      <article class="distribution-location-card">
+        <header>
+          <div><span class="eyebrow">${this._escape(location.providerLabel)}</span><h3>${this._escape(title)}</h3>${client ? `<p>${this._escape(client)}</p>` : ""}</div>
+          ${status ? `<span class="pill ${this._normalizeText(status).includes("conect") ? "paid" : "unknown"}">${this._escape(status)}</span>` : ""}
+        </header>
+        <div class="distribution-kpis">
+          ${this._distributionDetail("Consum ultima perioada", consumption, consumption !== null ? "kWh" : "")}
+          ${this._distributionDetail("Injectie ultima perioada", injection, injection !== null ? "kWh" : "")}
+          ${this._distributionDetail("Balanta energetica", balance !== null ? `${balance > 0 ? "+" : ""}${this._num(balance).toLocaleString("ro-RO", { maximumFractionDigits: 3 })}` : null, balance !== null ? "kWh" : "")}
+          ${this._distributionDetail("Ultima citire", this._distributionValue(location, "data_ultima_citire_consum", "data_ultima_citire_injectie"))}
+        </div>
+        ${this._renderDistributionSupplierLink(location)}
+        ${this._distributionBars(location)}
+        <details class="distribution-details" data-distribution-details-key="${this._escape(locationDetailsKey)}" ${locationDetailsOpen ? "open" : ""}>
+          <summary><span>Detalii loc de consum</span><ha-icon icon="mdi:chevron-down"></ha-icon></summary>
+          <div class="distribution-details-grid">
+            ${this._distributionDetail(location.provider === "deo" ? "NLC" : "POD", location.id)}
+            ${location.provider === "deo" ? this._distributionDetail("POD", this._distributionValue(location, "pod", "loc_consum")) : ""}
+            ${this._distributionDetail(location.provider === "deer" ? "Profil" : "Tip loc", type)}
+            ${this._distributionDetail("Furnizor", supplier)}
+            ${this._distributionDetail("Index consum", this._distributionValue(location, "index_consum", "index_registru_001"), "kWh")}
+            ${this._distributionDetail("Index injectie", this._distributionValue(location, "index_injectie", "index_registru_002"), "kWh")}
+          </div>
+        </details>
+        <details class="distribution-details" data-distribution-details-key="${this._escape(meterDetailsKey)}" ${meterDetailsOpen ? "open" : ""}>
+          <summary><span>Detalii contor si contract</span><ha-icon icon="mdi:chevron-down"></ha-icon></summary>
+          <div class="distribution-details-grid">
+            ${this._distributionDetail("Serie contor", this._distributionValue(location, "serie_contor"))}
+            ${this._distributionDetail("Tip contor", this._distributionValue(location, "tip_contor"))}
+            ${this._distributionDetail("Clasa precizie", this._distributionValue(location, "clasa_precizie"))}
+            ${this._distributionDetail("Data instalare", this._distributionValue(location, "data_instalare_contor"))}
+            ${this._distributionDetail("Periodicitate", this._distributionValue(location, "periodicitate_citire"))}
+            ${this._distributionDetail("Putere consum", this._distributionValue(location, "putere_aprobata_consum"), "kW")}
+            ${this._distributionDetail("Putere producere", this._distributionValue(location, "putere_aprobata_producere"), "kW")}
+            ${this._distributionDetail("Valabilitate contract", this._distributionValue(location, "validitate_contract"))}
+          </div>
+        </details>
+      </article>`;
+  }
+
+  _renderDistribution() {
+    const locations = this._distributionLocations();
+    if (!locations.length) return `<section class="panel-card"><div class="empty">Nu exista distribuitori de energie configurati.</div></section>`;
+    return `
+      <section class="panel-card wide distribution-intro">
+        <div class="card-head"><div><span class="eyebrow">distributie energie</span><h2>Consum, injectie si date tehnice</h2></div></div>
+        <p>Datele sunt preluate direct de la operatorii de distributie configurati. Graficele lunare apar acolo unde operatorul publica istoricul necesar.</p>
+      </section>
+      <section class="distribution-grid">${locations.map((location) => this._renderDistributionLocation(location)).join("")}</section>`;
+  }
+
   _renderTabs() {
     const tabs = [
       ["overview", "Prezentare", "mdi:view-dashboard"],
       ["invoices", "Facturi", "mdi:file-document-outline"],
       ["readings", "Indexuri", "mdi:gauge"],
+      ...(this._distributionLocations().length ? [["distribution", "Distributie energie", "mdi:transmission-tower"]] : []),
       ["license", "Licență", "mdi:shield-check"],
       ["contact", "Contact", "mdi:email-outline"],
       ["settings", "Setări", "mdi:cog-outline"],
@@ -2329,6 +2731,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const dashboardPrefs = this._dashboardPreferences();
     const aliases = this._locationAliases();
     const action = this._actions.get("settings");
+    const distributionLocations = this._distributionLocations();
+    const distributionSupplierOptions = this._distributionSupplierOptions(summary);
+    const distributionSupplierLinks = this._distributionSupplierLinks();
     const locations = summary.locations || [];
     const consumptionPoints = Array.isArray(summary.consumptionPoints) ? summary.consumptionPoints : [];
     const activeConsumptionPoints = consumptionPoints.filter((item) => !item.ignored);
@@ -2451,6 +2856,18 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         </div>
       </section>
       <section class="panel-card">
+        <div class="card-head"><div><span class="eyebrow">distributie si furnizare</span><h2>Asociere distribuitor - furnizor</h2><p>Leaga fiecare POD/NLC al distribuitorului de locul corespunzator al unui furnizor deja configurat. Asocierea este folosita numai in dashboard.</p></div><button class="primary dark small" data-save-distribution-links ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salveaza..." : "Salveaza asocierile"}</button></div>
+        <div class="support-note"><ha-icon icon="mdi:information-outline"></ha-icon><span>Asocierea nu modifica entitatile Home Assistant si nu amesteca datele brute: distribuitorul ramane sursa pentru consum/indexuri, iar furnizorul pentru facturi si sold.</span></div>
+        <div class="location-alias-list">
+          ${distributionLocations.length ? distributionLocations.map((location) => {
+            const key = `${location.provider}:${location.id}`;
+            const saved = this._distributionSupplierDrafts.has(key) ? this._distributionSupplierDrafts.get(key) : (distributionSupplierLinks[key] || "");
+            const title = location.address || this._distributionValue(location, "adresa_loc_consum", "loc_consum") || `${location.providerLabel} - ${location.id}`;
+            return `<label class="location-alias-row distribution-link-row"><span><strong>${this._escape(location.providerLabel)} - ${this._escape(title)}</strong><small>${this._escape(location.provider === "deo" ? "NLC" : "POD")}: ${this._escape(location.id)}</small></span><select data-distribution-supplier-link="${this._escape(key)}"><option value="">Neasociat</option>${distributionSupplierOptions.map((option) => `<option value="${this._escape(option.key)}" ${saved === option.key ? "selected" : ""}>${this._escape(option.label)}</option>`).join("")}</select></label>`;
+          }).join("") : `<div class="empty">Nu exista locuri de distributie configurate.</div>`}
+        </div>
+      </section>
+      <section class="panel-card">
         <div class="card-head"><div><span class="eyebrow">grupare facturi</span><h2>Locuri de consum pentru facturi</h2><p>Modifică gruparea reală folosită de card și de senzorul agregat. Valorile se salvează în entitățile de configurare ale integrării.</p></div><button class="primary dark small" data-save-billing-groups ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se salvează..." : "Salvează grupările"}</button></div>
         <div class="location-alias-list">
           ${billingGroups.length ? billingGroups.map((item) => {
@@ -2507,6 +2924,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const locations = summary.locations;
     if (this._activeTab === "invoices") return this._renderInvoices(locations);
     if (this._activeTab === "readings") return this._renderReadings(locations);
+    if (this._activeTab === "distribution") return this._renderDistribution();
     if (this._activeTab === "license") return this._renderLicense();
     if (this._activeTab === "contact") return this._renderContact();
     if (this._activeTab === "settings") return this._renderSettings(summary);
@@ -2519,6 +2937,65 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       :host { display:block; min-height:100vh; background:radial-gradient(circle at -70px -90px,#07111f 0,#10223d 250px,transparent 252px),radial-gradient(circle at 100% 0,rgba(78,161,255,.15),transparent 420px),linear-gradient(180deg,#eef4fb 0%,#f7f9fc 42%,#eef3f8 100%); color:#142033; font-family:var(--paper-font-body1_-_font-family, Roboto, Arial, sans-serif); }
       * { box-sizing:border-box; }
       .wrap { max-width:1280px; margin:0 auto; padding:28px clamp(16px,4vw,42px) 48px; }
+      .distribution-grid { display:grid; gap:18px; }
+      .distribution-intro p { margin:0; color:var(--secondary-text-color); line-height:1.55; }
+      .distribution-location-card { background:var(--card-background-color); color:var(--primary-text-color); border:1px solid var(--divider-color); border-radius:26px; padding:24px; box-shadow:0 18px 48px rgba(0,0,0,.12); }
+      .distribution-location-card header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:18px; }
+      .distribution-location-card h3 { margin:0; font-size:22px; letter-spacing:-.025em; color:var(--primary-text-color); }
+      .distribution-location-card header p { margin:6px 0 0; color:var(--secondary-text-color); }
+      .distribution-kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:22px; }
+      .distribution-kpis > div { padding:15px; border-radius:18px; background:#f7f9fc; border:1px solid rgba(17,32,51,.08); display:grid; gap:6px; }
+      .distribution-kpis span,.distribution-details-grid span { color:var(--secondary-text-color); font-size:12px; }
+      .distribution-kpis strong { font-size:20px; color:var(--primary-text-color); }
+      .distribution-history-card { margin:0 0 18px; padding:18px; border-radius:20px; background:#f7f9fc; border:1px solid rgba(17,32,51,.08); }
+      .distribution-chart-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:12px; }
+      .distribution-chart-head > div:first-child { display:grid; gap:3px; }
+      .distribution-chart-head strong { color:var(--primary-text-color); font-size:16px; }
+      .distribution-chart-head span,.distribution-chart-date { color:var(--secondary-text-color); font-size:12px; }
+      .distribution-chart-modes { display:inline-flex; padding:4px; gap:4px; border-radius:12px; background:var(--card-background-color); border:1px solid var(--divider-color); margin-bottom:14px; }
+      .distribution-chart-modes button { border:0; background:transparent; color:var(--secondary-text-color); padding:7px 11px; border-radius:9px; font-size:12px; font-weight:800; }
+      .distribution-chart-modes button.active { background:var(--primary-color); color:var(--text-primary-color,#fff); }
+      .distribution-chart-shell { display:grid; grid-template-columns:50px minmax(0,1fr); gap:8px; min-height:250px; }
+      .distribution-y-axis { position:relative; display:flex; flex-direction:column; justify-content:space-between; padding:2px 0 28px; text-align:right; color:var(--secondary-text-color); font-size:11px; }
+      .distribution-y-axis small { position:absolute; top:-13px; right:0; font-size:10px; font-weight:800; }
+      .distribution-chart { position:relative; min-width:max(100%, calc(var(--distribution-months) * 62px)); height:250px; display:grid; grid-template-columns:repeat(var(--distribution-months),minmax(48px,1fr)); gap:8px; align-items:end; padding:8px 10px 0; overflow:visible; }
+      .distribution-chart-shell { overflow:visible; }
+      .distribution-grid-lines { position:absolute; inset:8px 10px 28px; display:flex; flex-direction:column; justify-content:space-between; pointer-events:none; }
+      .distribution-grid-lines i { display:block; border-top:1px dashed color-mix(in srgb,var(--divider-color) 75%,transparent); }
+      .distribution-month { position:relative; z-index:1; min-width:48px; height:100%; display:grid; grid-template-rows:1fr 26px; gap:4px; text-align:center; outline:none; }
+      .distribution-bars { display:flex; gap:5px; align-items:end; justify-content:center; min-height:210px; }
+      .distribution-bars .bar { width:min(15px,36%); min-height:0; border-radius:7px 7px 2px 2px; display:block; box-shadow:0 3px 10px rgba(0,0,0,.12); transition:filter .15s ease,transform .15s ease; }
+      .distribution-month:hover .bar,.distribution-month:focus .bar { filter:brightness(1.12); transform:translateY(-2px); }
+      .distribution-bars .consumption,.distribution-legend i.consumption,.distribution-tooltip i.consumption { background:#4f7cff; }
+      .distribution-bars .injection,.distribution-legend i.injection,.distribution-tooltip i.injection { background:#25a66f; }
+      .distribution-month small { display:grid; line-height:1.05; font-size:10px; color:var(--secondary-text-color); text-transform:capitalize; }
+      .distribution-month small b { font-size:9px; opacity:.75; }
+      .distribution-tooltip { position:fixed; left:0; top:0; transform:none; z-index:1000; min-width:190px; max-width:min(260px,calc(100vw - 24px)); padding:11px 12px; border-radius:12px; background:var(--card-background-color); color:var(--primary-text-color); border:1px solid var(--divider-color); box-shadow:0 14px 34px rgba(0,0,0,.36); display:grid; gap:6px; text-align:left; font-size:12px; opacity:0; pointer-events:none; visibility:hidden; transition:opacity .12s ease; }
+      .distribution-tooltip.visible { opacity:1; visibility:visible; }
+      .distribution-tooltip strong { font-size:13px; text-transform:capitalize; }
+      .distribution-tooltip span { display:flex; align-items:center; gap:7px; }
+      .distribution-tooltip i { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
+      .distribution-legend { display:flex; gap:18px; margin:10px 0 14px 58px; color:var(--secondary-text-color); font-size:12px; }
+      .distribution-legend span { display:flex; align-items:center; gap:7px; }
+      .distribution-legend i { width:10px; height:10px; border-radius:3px; display:inline-block; }
+      .distribution-period-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding-top:14px; border-top:1px solid var(--divider-color); }
+      .distribution-period-summary span { display:grid; gap:4px; color:var(--secondary-text-color); font-size:11px; }
+      .distribution-period-summary strong { color:var(--primary-text-color); font-size:14px; }
+      .distribution-period-summary strong.positive { color:var(--success-color,#25a66f); }
+      .distribution-period-summary strong.negative { color:var(--error-color,#db4437); }
+      .distribution-no-history { display:flex; align-items:center; gap:10px; margin:0 0 18px; padding:18px; border:1px dashed var(--divider-color); border-radius:16px; color:var(--secondary-text-color); background:#f7f9fc; }
+      .distribution-details { margin-top:10px; border:1px solid rgba(17,32,51,.08); border-radius:16px; overflow:hidden; background:#f7f9fc; }
+      .distribution-details summary { list-style:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:13px 15px; color:var(--primary-text-color); font-weight:800; }
+      .distribution-details summary::-webkit-details-marker { display:none; }
+      .distribution-details summary ha-icon { transition:transform .18s ease; }
+      .distribution-details[open] summary ha-icon { transform:rotate(180deg); }
+      .distribution-details-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:0 12px 12px; }
+      .distribution-details-grid > div { min-width:0; padding:12px 14px; border-radius:15px; background:var(--card-background-color); border:1px solid var(--divider-color); display:grid; gap:5px; }
+      .distribution-details-grid strong { overflow-wrap:anywhere; font-size:13px; color:var(--primary-text-color); }
+      @media (max-width:900px) { .distribution-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .distribution-details-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .distribution-period-summary { grid-template-columns:1fr; } }
+      @media (max-width:560px) { .distribution-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .distribution-details-grid { grid-template-columns:1fr; } .distribution-location-card { padding:16px; border-radius:20px; } .distribution-location-card header { display:grid; } .distribution-chart-head { display:grid; } .distribution-chart-date { text-align:left; } .distribution-chart-modes { width:100%; display:grid; grid-template-columns:repeat(3,1fr); } .distribution-chart-modes button { padding:8px 4px; } .distribution-chart-shell { grid-template-columns:42px minmax(0,1fr); overflow-x:auto; overflow-y:hidden; } .distribution-legend { margin-left:50px; } .distribution-tooltip { min-width:170px; } }
+
+
       .hero { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:24px; align-items:stretch; margin-bottom:16px; }
       .hero-content { min-height:245px; padding:34px; border-radius:32px; background:radial-gradient(circle at top right,rgba(58,141,255,.52),transparent 36%),linear-gradient(135deg,#14233a,#213752 64%,#2e5f9e); border:1px solid rgba(255,255,255,.26); box-shadow:0 24px 80px rgba(0,0,0,.18); color:#fff; overflow:hidden; position:relative; }
       .hero-content::after { content:""; position:absolute; width:230px; height:230px; border-radius:50%; background:rgba(255,255,255,.09); right:-80px; bottom:-120px; }
@@ -2655,6 +3132,23 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .contact-action { display:flex; align-items:center; gap:10px; padding:16px; border-radius:18px; background:#f7f9fc; color:#142033; text-decoration:none; font-weight:900; border:1px solid rgba(17,32,51,.06); }
       .contact-action ha-icon { color:#4ea1ff; }
 
+
+      .distribution-link-disclaimer { display:flex; align-items:center; gap:12px; margin:14px 0 18px; padding:14px 16px; border:1px dashed rgba(17,32,51,.10); border-radius:14px; background:#f7f9fc; }
+      .distribution-link-disclaimer ha-icon { color:var(--secondary-text-color); }
+      .distribution-link-disclaimer div { display:grid; gap:3px; flex:1; }
+      .distribution-link-disclaimer span { color:var(--secondary-text-color); font-size:12px; }
+      .distribution-link-disclaimer button { border:0; border-radius:10px; padding:9px 12px; background:var(--primary-color); color:var(--text-primary-color,#fff); font-weight:700; cursor:pointer; }
+      .distribution-linked-supplier { margin:14px 0 18px; padding:14px; border:1px solid rgba(17,32,51,.08); border-radius:14px; background:#f7f9fc; }
+      .distribution-linked-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+      .distribution-linked-head > div { display:grid; gap:3px; }
+      .distribution-supplier-sections { display:grid; gap:12px; }
+      .distribution-supplier-section { padding:13px; border:1px solid rgba(17,32,51,.07); border-radius:13px; background:#fff; }
+      .distribution-supplier-section-title { display:flex; align-items:center; gap:8px; margin-bottom:10px; color:var(--primary-text-color); }
+      .distribution-supplier-section-title ha-icon { color:var(--primary-color); }
+      .distribution-supplier-section-title .pill,.distribution-supplier-section-title .estimate-badge { margin-left:auto; }
+      .estimate-badge { display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; background:rgba(245,158,11,.16); color:#f59e0b; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; }
+      .distribution-estimate-note { margin:10px 2px 0; color:var(--secondary-text-color); font-size:11px; line-height:1.45; }
+      .distribution-link-row select { min-width:280px; max-width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--divider-color); background:var(--card-background-color); color:var(--primary-text-color); }
       .settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
       .settings-grid.compact { grid-template-columns:minmax(0,1fr); margin-bottom:12px; }
       .setting-block { display:grid; gap:14px; align-content:start; padding:18px; border-radius:20px; background:#f7f9fc; border:1px solid rgba(17,32,51,.06); }
@@ -2729,6 +3223,13 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           box-shadow:0 18px 48px rgba(0,0,0,.26);
         }
         .hero-card::before { background:rgba(78,161,255,.16); }
+        .distribution-location-card { background:#172033; color:#edf3fb; border-color:rgba(255,255,255,.08); box-shadow:0 18px 48px rgba(0,0,0,.26); }
+        .distribution-history-card,.distribution-details,.distribution-kpis > div,.distribution-no-history { background:#111a2b; border-color:rgba(255,255,255,.08); }
+        .distribution-linked-supplier { background:#111a2b; border-color:rgba(255,255,255,.08); }
+        .distribution-supplier-section { background:#0f172a; border-color:rgba(255,255,255,.08); }
+        .distribution-details-grid > div,.distribution-chart-modes,.distribution-tooltip { background:#0f172a; color:#edf3fb; border-color:rgba(255,255,255,.10); }
+        .distribution-location-card h3,.distribution-kpis strong,.distribution-details-grid strong,.distribution-chart-head strong,.distribution-period-summary strong,.distribution-details summary { color:#edf3fb; }
+        .distribution-location-card header p,.distribution-kpis span,.distribution-details-grid span,.distribution-chart-head span,.distribution-chart-date,.distribution-y-axis,.distribution-month small,.distribution-legend,.distribution-period-summary span { color:#a8b3c4; }
         .tab { color:#a8b3c4; }
         .tab.active { background:#4ea1ff; color:#ffffff; box-shadow:0 12px 28px rgba(78,161,255,.26); }
         .hero-card-label,.hero-card small,.metric span,.due span,.location-compact span,.invoice-main span,.invoice-meta span,.reading-main span,.reading-period span,.reading-current span,.details-grid span,.summary-strip span,.empty,.contact-card p,.feature-note p,.provider-status-row span:not(.pill),.invoice-toolbar label,.invoice-toolbar span,.setting-block p,.setting-hint,.setting-toggle small,.setting-field small,.setting-field span,.location-alias-row small {
@@ -2919,11 +3420,69 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._render();
   }
 
+  _showDistributionTooltip(host) {
+    const tooltip = host?.querySelector?.(".distribution-tooltip");
+    if (!tooltip) return;
+    if (this._activeDistributionTooltip && this._activeDistributionTooltip !== tooltip) {
+      this._activeDistributionTooltip.classList.remove("visible");
+    }
+    tooltip.classList.add("visible");
+    tooltip.style.left = "12px";
+    tooltip.style.top = "12px";
+    const hostRect = host.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const margin = 12;
+    const preferredLeft = hostRect.left + (hostRect.width / 2) - (tooltipRect.width / 2);
+    const left = Math.min(Math.max(margin, preferredLeft), Math.max(margin, window.innerWidth - tooltipRect.width - margin));
+    let top = hostRect.top - tooltipRect.height - 10;
+    if (top < margin) top = hostRect.bottom + 10;
+    top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - tooltipRect.height - margin));
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+    this._activeDistributionTooltip = tooltip;
+  }
+
+  _hideDistributionTooltip(host) {
+    const tooltip = host?.querySelector?.(".distribution-tooltip");
+    if (!tooltip) return;
+    tooltip.classList.remove("visible");
+    if (this._activeDistributionTooltip === tooltip) this._activeDistributionTooltip = null;
+  }
+
   _bindEvents() {
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((button) => {
       button.addEventListener("click", () => {
         this._activeTab = button.getAttribute("data-tab") || "overview";
         this._render();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-distribution-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const key = button.getAttribute("data-distribution-key");
+        const mode = button.getAttribute("data-distribution-mode") || "compare";
+        if (key) this._distributionChartModes.set(key, mode);
+        this._render();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-distribution-details-key]").forEach((details) => {
+      details.addEventListener("toggle", () => {
+        const key = details.getAttribute("data-distribution-details-key");
+        if (key) this._distributionDetailsState.set(key, details.open);
+        this._holdRenderBriefly(1200);
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-distribution-tooltip-host]").forEach((host) => {
+      const show = () => this._showDistributionTooltip(host);
+      const hide = () => this._hideDistributionTooltip(host);
+      host.addEventListener("pointerenter", show);
+      host.addEventListener("pointerleave", hide);
+      host.addEventListener("focusin", show);
+      host.addEventListener("focusout", hide);
+      host.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const tooltip = host.querySelector(".distribution-tooltip");
+        if (tooltip?.classList.contains("visible")) hide();
+        else show();
       });
     });
     this.shadowRoot.querySelectorAll("[data-toggle-location]").forEach((button) => {
@@ -2951,6 +3510,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       invoiceGrouping.addEventListener("change", (event) => {
         this._setInvoiceGrouping(event.target.value);
         this._interactiveUntil = 0;
+    this._distributionChartModes = new Map();
+    this._distributionDetailsState = new Map();
+    this._activeDistributionTooltip = null;
         this._render();
       });
     }
@@ -2962,6 +3524,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       invoiceFilter.addEventListener("change", (event) => {
         this._setInvoiceFilter(event.target.value);
         this._interactiveUntil = 0;
+    this._distributionChartModes = new Map();
+    this._distributionDetailsState = new Map();
+    this._activeDistributionTooltip = null;
         this._render();
       });
     }
@@ -2982,6 +3547,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva dispozitivul mobil." });
         }
         this._interactiveUntil = 0;
+    this._distributionChartModes = new Map();
+    this._distributionDetailsState = new Map();
+    this._activeDistributionTooltip = null;
         this._render();
       });
     }
@@ -3001,6 +3569,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva telefonul pentru notificări." });
         }
         this._interactiveUntil = 0;
+    this._distributionChartModes = new Map();
+    this._distributionDetailsState = new Map();
+    this._activeDistributionTooltip = null;
         this._render();
       });
     }
@@ -3020,6 +3591,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva vizibilitatea locului de consum." });
         }
         this._interactiveUntil = 0;
+    this._distributionChartModes = new Map();
+    this._distributionDetailsState = new Map();
+    this._activeDistributionTooltip = null;
         this._render();
       };
       control.addEventListener(control.matches("input[type='checkbox']") ? "change" : "click", applyVisibility);
@@ -3065,6 +3639,40 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       input.addEventListener("focus", () => this._holdRenderBriefly(4500));
       input.addEventListener("input", (event) => { this._holdRenderBriefly(4500); this._settingsDrafts.set(`billing__${input.getAttribute("data-billing-group")}`, event.target.value || ""); });
     });
+    this.shadowRoot.querySelectorAll("[data-distribution-supplier-link]").forEach((select) => {
+      ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => select.addEventListener(eventName, () => this._holdRenderBriefly(9000)));
+      select.addEventListener("change", (event) => {
+        const key = select.getAttribute("data-distribution-supplier-link");
+        this._distributionSupplierDrafts.set(key, event.target.value || "");
+        this._holdRenderBriefly(9000);
+      });
+    });
+    const saveDistributionLinks = this.shadowRoot.querySelector("[data-save-distribution-links]");
+    if (saveDistributionLinks) {
+      saveDistributionLinks.addEventListener("click", async () => {
+        if (saveDistributionLinks.disabled) return;
+        const links = this._distributionSupplierLinks();
+        this.shadowRoot.querySelectorAll("[data-distribution-supplier-link]").forEach((select) => {
+          const key = select.getAttribute("data-distribution-supplier-link");
+          const value = String(select.value || "").trim();
+          if (value) links[key] = value; else delete links[key];
+        });
+        this._actions.set("settings", { status: "busy", message: "Se salveaza asocierile..." });
+        this._render();
+        try {
+          await this._hass.callService("utilitati_romania", "set_distribution_supplier_links", { links });
+          this._distributionSupplierLinksRemote = { ...links };
+          this._saveJsonPreference("distribution_supplier_links", links);
+          this._distributionSupplierDrafts.clear();
+          await this._ensureDistributionSupplierLinksLoaded(true);
+          this._actions.set("settings", { status: "ok", message: "Asocierile au fost salvate persistent in Home Assistant." });
+        } catch (error) {
+          this._actions.set("settings", { status: "error", message: `Nu am putut salva asocierile: ${error?.message || error}` });
+        }
+        this._render();
+      });
+    }
+    this.shadowRoot.querySelectorAll("[data-open-distribution-settings]").forEach((button) => button.addEventListener("click", () => { this._activeTab = "settings"; this._render(); }));
     const saveBillingGroups = this.shadowRoot.querySelector("[data-save-billing-groups]");
     if (saveBillingGroups) {
       saveBillingGroups.addEventListener("click", async () => {
@@ -3087,6 +3695,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva grupările facturilor." });
         }
         this._interactiveUntil = 0;
+    this._distributionChartModes = new Map();
+    this._distributionDetailsState = new Map();
+    this._activeDistributionTooltip = null;
         this._render();
       });
     }

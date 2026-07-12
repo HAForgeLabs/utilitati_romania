@@ -4,10 +4,12 @@ import asyncio
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import quote
 
-from homeassistant.components import persistent_notification
+from homeassistant.components import persistent_notification, websocket_api
+import voluptuous as vol
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
@@ -30,6 +32,7 @@ from .const import (
     SERVICIU_SUBMIT_READING,
     SERVICIU_SET_NOTIFICATION_PREFERENCES,
     SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY,
+    SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS,
 )
 from .coordonator import CoordonatorUtilitatiRomania
 from .grupare_facturi import async_incarca_grupari_facturi
@@ -49,11 +52,15 @@ from .ebloc_device import alias_loc_ebloc, slug_loc_ebloc
 from .naming import build_provider_slug, extract_street_slug
 from .storage_citiri import async_salveaza_citire
 from .notificari import async_salveaza_preferinte_notificari
+from .asocieri_distributie import (
+    async_incarca_asocieri_distributie,
+    async_salveaza_asocieri_distributie,
+)
 from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licenta
 
 _LOGGER = logging.getLogger(__name__)
 
-_FRONTEND_VERSION = "1.10.13b9"
+_FRONTEND_VERSION = "1.12.0"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -61,6 +68,13 @@ _PANEL_RESOURCE_URL = f"{_PANEL_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
 _LOVELACE_NOTIFICATION_ID = "utilitati_romania_card_resource"
 _ADMIN_PLATFORME = [Platform.SENSOR, Platform.BUTTON, Platform.TEXT, Platform.SELECT]
 
+
+
+@websocket_api.websocket_command({vol.Required("type"): "utilitati_romania/distribution_supplier_links"})
+@websocket_api.async_response
+async def _websocket_distribution_supplier_links(hass, connection, msg):
+    links = await async_incarca_asocieri_distributie(hass)
+    connection.send_result(msg["id"], {"links": links})
 
 def _slug_legacy(text: str | None) -> str:
     value = str(text or "cont").lower()
@@ -896,7 +910,15 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMENIU, SERVICIU_SET_INVOICE_STATUS, _async_handle_set_invoice_status)
     hass.services.async_register(DOMENIU, SERVICIU_SUBMIT_READING, _async_handle_submit_reading)
     hass.services.async_register(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES, _async_handle_set_notification_preferences)
+    async def _async_handle_set_distribution_supplier_links(call: ServiceCall) -> None:
+        links = call.data.get("links") or {}
+        if not isinstance(links, dict):
+            raise ValueError("Asocierile distribuitor-furnizor trebuie sa fie un obiect JSON.")
+        await async_salveaza_asocieri_distributie(hass, links)
+
     hass.services.async_register(DOMENIU, SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY, _async_handle_set_consumption_point_visibility)
+    hass.services.async_register(DOMENIU, SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS, _async_handle_set_distribution_supplier_links)
+    websocket_api.async_register_command(hass, _websocket_distribution_supplier_links)
     hass.data[DOMENIU]["_services_registered"] = True
 
 
@@ -912,6 +934,8 @@ def _async_remove_services_if_unused(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMENIU, SERVICIU_SET_INVOICE_STATUS)
     if hass.services.has_service(DOMENIU, SERVICIU_SUBMIT_READING):
         hass.services.async_remove(DOMENIU, SERVICIU_SUBMIT_READING)
+    if hass.services.has_service(DOMENIU, SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS):
+        hass.services.async_remove(DOMENIU, SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS)
     if hass.services.has_service(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES):
         hass.services.async_remove(DOMENIU, SERVICIU_SET_NOTIFICATION_PREFERENCES)
     if hass.services.has_service(DOMENIU, SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY):
@@ -1166,10 +1190,12 @@ async def _async_curata_intrare_apa_brasov(hass: HomeAssistant, entry: ConfigEnt
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMENIU, {})
+
     _async_ensure_services(hass)
     await async_incarca_grupari_facturi(hass)
     await async_incarca_statusuri_facturi_manuale(hass)
     await async_incarca_locuri_ignorate(hass)
+
     await _async_register_static_paths(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
