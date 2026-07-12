@@ -374,3 +374,11 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Taskul periodic E.ON nu mai blocheaza finalizarea startup-ului Home Assistant.
 - [ ] Logurile de diagnostic `UR STARTUP DEBUG` si `DEER HISTORY DEBUG` nu mai sunt prezente.
 - [ ] Arhiva nu contine `__pycache__` sau fisiere `.pyc`.
+
+## v1.12.1 - Republicare HACS
+
+- [ ] Codul functional este identic cu release-ul stabil v1.12.0.
+- [ ] `manifest.json`, resursele frontend si cache-busting-ul folosesc versiunea `1.12.1`.
+- [ ] Tag-ul `v1.12.1` este creat pe un commit nou, diferit de commitul release-ului v1.12.0.
+- [ ] HACS detecteaza versiunea v1.12.1 ca ultima versiune disponibila.
+- [ ] Arhiva nu contine `__pycache__` sau fisiere `.pyc`.
