@@ -573,9 +573,6 @@ class EonApiClient:
                 "Authorization": authorization,
             }
             generation_before = self._token_generation
-            self._trace_cookies("refresh_before")
-
-
             try:
                 async with self._session.post(
                     URL_REFRESH_TOKEN,
@@ -584,7 +581,6 @@ class EonApiClient:
                     timeout=self._timeout,
                 ) as resp:
                     response_text = await resp.text()
-                    self._trace_cookies("refresh_after_response")
                     _LOGGER.debug(
                         "[REFRESH] E.ON status=%s body_len=%s gen=%s",
                         resp.status,

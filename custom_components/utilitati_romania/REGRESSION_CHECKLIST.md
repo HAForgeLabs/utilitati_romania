@@ -239,3 +239,11 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [x] Distributie Energie Oltenia expune datele contractuale, contorul, indexurile de consum si injectie si istoricul lunar.
 - [x] DEO nu participa la facturi sau totalurile de plata.
 - [x] Arhiva publica nu contine `__pycache__` sau fisiere `.pyc`.
+
+
+## Hotfix public v1.11.1
+
+- [x] Eliminate apelurile ramase catre helperul de diagnostic E.ON `_trace_cookies`.
+- [x] Refresh-ul periodic E.ON nu mai esueaza dupa eliminarea logurilor sensibile.
+- [x] Persistenta tokenului si a cookie jar-ului E.ON ramane activa.
+- [x] Nu sunt modificate fluxurile DEO sau ale altor furnizori.
