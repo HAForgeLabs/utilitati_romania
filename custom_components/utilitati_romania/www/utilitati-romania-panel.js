@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.12.1";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.13.0";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -1047,16 +1047,20 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const attrs = state?.attributes || {};
       const isDeo = entityId.startsWith("sensor.deo_");
       const isDeer = entityId.startsWith("sensor.hidro_") && normalize(attrs.tip_serviciu).includes("distrib");
-      if (!isDeo && !isDeer) continue;
+      const isReteleElectrice = entityId.startsWith("sensor.retele_electrice_");
+      if (!isDeo && !isDeer && !isReteleElectrice) continue;
 
-      const provider = isDeo ? "deo" : "deer";
+      const provider = isDeo ? "deo" : (isDeer ? "deer" : "retele_electrice");
       const locationId = String((isDeo ? (attrs.nlc || attrs.pod) : attrs.pod) || "").trim();
       if (!locationId) continue;
       const groupKey = `${provider}:${locationId}`;
       if (!locations.has(groupKey)) {
+        const providerLabel = isDeo
+          ? "Distributie Energie Oltenia"
+          : (isDeer ? "Distributie Energie Electrica Romania" : "Retele Electrice Romania");
         locations.set(groupKey, {
           provider,
-          providerLabel: isDeo ? "Distributie Energie Oltenia" : "Distributie Energie Electrica Romania",
+          providerLabel,
           id: locationId,
           address: attrs.adresa || "",
           entities: {},
@@ -1263,15 +1267,21 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       return `<div class="distribution-no-history"><ha-icon icon="mdi:chart-bar-off"></ha-icon><span>Operatorul nu publica momentan istoric lunar pentru acest loc de consum.</span></div>`;
     }
 
-    const byMonth = (items) => Object.fromEntries(items.map((item) => [item.luna, Number(item.valoare) || 0]));
+    const byMonth = (items) => Object.fromEntries(items.map((item) => {
+      const raw = item?.valoare;
+      const value = raw === null || raw === undefined || raw === "" ? null : Number(raw);
+      return [item.luna, Number.isFinite(value) ? value : null];
+    }));
     const cMap = byMonth(consumption);
     const iMap = byMonth(injection);
     const chartKey = `${location.provider}:${location.id}`;
     const mode = this._distributionChartModes.get(chartKey) || "compare";
     const values = months.flatMap((month) => {
-      if (mode === "consumption") return [cMap[month] || 0];
-      if (mode === "injection") return [iMap[month] || 0];
-      return [cMap[month] || 0, iMap[month] || 0];
+      const consumptionValue = Number.isFinite(cMap[month]) ? cMap[month] : 0;
+      const injectionValue = Number.isFinite(iMap[month]) ? iMap[month] : 0;
+      if (mode === "consumption") return [consumptionValue];
+      if (mode === "injection") return [injectionValue];
+      return [consumptionValue, injectionValue];
     });
     const rawMax = Math.max(1, ...values);
     const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax)));
@@ -1286,8 +1296,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       if (Number.isNaN(date.getTime())) return value;
       return new Intl.DateTimeFormat("ro-RO", short ? { month: "short" } : { month: "long", year: "numeric" }).format(date);
     };
-    const totalConsumption = months.reduce((sum, month) => sum + (cMap[month] || 0), 0);
-    const totalInjection = months.reduce((sum, month) => sum + (iMap[month] || 0), 0);
+    const totalConsumption = months.reduce((sum, month) => sum + (Number.isFinite(cMap[month]) ? cMap[month] : 0), 0);
+    const totalInjection = months.reduce((sum, month) => sum + (Number.isFinite(iMap[month]) ? iMap[month] : 0), 0);
     const totalBalance = totalInjection - totalConsumption;
     const latestMonth = months[months.length - 1];
 
@@ -1311,22 +1321,28 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           <div class="distribution-chart" style="--distribution-months:${months.length}" aria-label="Consum si injectie lunara">
             <div class="distribution-grid-lines" aria-hidden="true">${ticks.map(() => "<i></i>").join("")}</div>
             ${months.map((month) => {
-              const c = cMap[month] || 0;
-              const i = iMap[month] || 0;
+              const consumptionAvailable = Number.isFinite(cMap[month]);
+              const injectionAvailable = Number.isFinite(iMap[month]);
+              const c = consumptionAvailable ? cMap[month] : 0;
+              const i = injectionAvailable ? iMap[month] : 0;
+              const balanceAvailable = consumptionAvailable || injectionAvailable;
               const balance = i - c;
               const showConsumption = mode !== "injection";
               const showInjection = mode !== "consumption";
-              return `<div class="distribution-month" tabindex="0" data-distribution-tooltip-host aria-label="${this._escape(monthLabel(month))}: Consum ${this._escape(formatNumber(c))} kWh, Injectie ${this._escape(formatNumber(i))} kWh, Balanta ${this._escape(formatNumber(balance))} kWh">
+              const ariaParts = [this._escape(monthLabel(month))];
+              ariaParts.push(consumptionAvailable ? `Consum ${this._escape(formatNumber(c))} kWh` : "Consum fara date");
+              ariaParts.push(injectionAvailable ? `Injectie ${this._escape(formatNumber(i))} kWh` : "Injectie fara date");
+              return `<div class="distribution-month" tabindex="0" data-distribution-tooltip-host aria-label="${ariaParts.join(", ")}">
                 <div class="distribution-bars">
-                  ${showConsumption ? `<span class="bar consumption" style="height:${Math.max(c > 0 ? 3 : 0, (c / max) * 100)}%"></span>` : ""}
-                  ${showInjection ? `<span class="bar injection" style="height:${Math.max(i > 0 ? 3 : 0, (i / max) * 100)}%"></span>` : ""}
+                  ${showConsumption ? `<span class="bar consumption ${consumptionAvailable ? "" : "unavailable"}" style="height:${consumptionAvailable ? Math.max(c > 0 ? 3 : 0, (c / max) * 100) : 0}%"></span>` : ""}
+                  ${showInjection ? `<span class="bar injection ${injectionAvailable ? "" : "unavailable"}" style="height:${injectionAvailable ? Math.max(i > 0 ? 3 : 0, (i / max) * 100) : 0}%"></span>` : ""}
                 </div>
                 <small>${this._escape(monthLabel(month, true))}<b>${this._escape(String(month).slice(2,4))}</b></small>
                 <div class="distribution-tooltip" role="tooltip">
                   <strong>${this._escape(monthLabel(month))}</strong>
-                  <span><i class="consumption"></i>Consum: ${this._escape(formatNumber(c))} kWh</span>
-                  <span><i class="injection"></i>Injectie: ${this._escape(formatNumber(i))} kWh</span>
-                  <span>Balanta: ${balance > 0 ? "+" : ""}${this._escape(formatNumber(balance))} kWh</span>
+                  <span><i class="consumption"></i>Consum: ${consumptionAvailable ? `${this._escape(formatNumber(c))} kWh` : "date indisponibile"}</span>
+                  <span><i class="injection"></i>Injectie: ${injectionAvailable ? `${this._escape(formatNumber(i))} kWh` : "date indisponibile"}</span>
+                  ${balanceAvailable ? `<span>Balanta: ${balance > 0 ? "+" : ""}${this._escape(formatNumber(balance))} kWh</span>` : ""}
                 </div>
               </div>`;
             }).join("")}
@@ -2968,6 +2984,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .distribution-month:hover .bar,.distribution-month:focus .bar { filter:brightness(1.12); transform:translateY(-2px); }
       .distribution-bars .consumption,.distribution-legend i.consumption,.distribution-tooltip i.consumption { background:#4f7cff; }
       .distribution-bars .injection,.distribution-legend i.injection,.distribution-tooltip i.injection { background:#25a66f; }
+      .distribution-bars .bar.unavailable { height:0 !important; min-height:0; box-shadow:none; opacity:.25; }
       .distribution-month small { display:grid; line-height:1.05; font-size:10px; color:var(--secondary-text-color); text-transform:capitalize; }
       .distribution-month small b { font-size:9px; opacity:.75; }
       .distribution-tooltip { position:fixed; left:0; top:0; transform:none; z-index:1000; min-width:190px; max-width:min(260px,calc(100vw - 24px)); padding:11px 12px; border-radius:12px; background:var(--card-background-color); color:var(--primary-text-color); border:1px solid var(--divider-color); box-shadow:0 14px 34px rgba(0,0,0,.36); display:grid; gap:6px; text-align:left; font-size:12px; opacity:0; pointer-events:none; visibility:hidden; transition:opacity .12s ease; }

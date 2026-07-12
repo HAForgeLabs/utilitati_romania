@@ -382,3 +382,73 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Tag-ul `v1.12.1` este creat pe un commit nou, diferit de commitul release-ului v1.12.0.
 - [ ] HACS detecteaza versiunea v1.12.1 ca ultima versiune disponibila.
 - [ ] Arhiva nu contine `__pycache__` sau fisiere `.pyc`.
+
+## v1.13.0b5 - Retele Electrice Romania
+
+- [ ] Importurile helperilor de naming pentru dispozitivul Retele Electrice se incarca fara `ImportError`.
+
+- [ ] Furnizorul `Retele Electrice Romania` apare in fluxul de configurare si autentificarea foloseste o sesiune dedicata.
+- [ ] Un cont valid incarca toate POD-urile fara a expune in log CNP/CUI, parola, cookie-uri sau tokenul Salesforce Aura.
+- [ ] Fiecare POD este creat ca dispozitiv separat, cu adresa, stare, tip consumator, serie si tip contor.
+- [ ] Istoricul contorului inteligent genereaza maximum 12 luni de consum si injectie din indecsii cumulativi.
+- [ ] Diferentele negative si schimbarile seriei contorului nu genereaza consum lunar fals.
+- [ ] Pentru citirile din primele trei zile ale lunii, consumul este atribuit lunii anterioare.
+- [ ] Locurile fara date de injectie nu afiseaza valori de injectie inventate.
+- [ ] Tabul `Distributie energie` detecteaza entitatile `sensor.retele_electrice_*`, afiseaza graficul si permite asocierea cu un furnizor.
+- [ ] Asocierea distribuitor-furnizor ramane persistenta dupa restart.
+- [ ] DEO si DEER continua sa functioneze si sa fie afisate separat.
+- [ ] Versiunea din manifest, backend si frontend este `1.13.0b5`.
+- [ ] Arhiva nu contine HAR-uri, credentiale, `__pycache__` sau fisiere `.pyc`.
+
+### Autentificare Retele Electrice b3
+- [ ] Config flow foloseste sesiune dedicata cu cookie jar propriu si nu mai apeleaza `close()` pe sesiunea Home Assistant.
+- [ ] Prima cerere porneste din `/s/`, urmeaza redirectul real catre formular si foloseste URL-ul final drept Referer.
+- [ ] Raspunsul Salesforce `frontdoor.jsp` este identificat si urmat.
+- [ ] Configuratia Aura este detectata pentru formele `var auraConfig`, `window.auraConfig` sau `auraConfig`.
+- [ ] Logurile `[RETELE ELECTRICE LOGIN DEBUG]` nu contin utilizator, parola, token, SID sau ViewState.
+
+## v1.13.0b5 - autentificare Visualforce Retele Electrice
+
+- [ ] Pagina de login este incarcata din URL-ul canonic cu `ec=302`.
+- [ ] Payload-ul contine formularul, username, password, ViewState, ViewStateVersion, ViewStateMAC si `loginPage:loginForm:j_id25`.
+- [ ] Cererea POST foloseste antetele de navigare observate in browser.
+- [ ] URL-ul `frontdoor.jsp` este detectat si urmat fara expunerea SID-ului in log.
+- [ ] Logurile de diagnostic nu contin credentiale sau tokenuri.
+- [ ] Versiunea din manifest, backend si frontend este `1.13.0b5`.
+
+
+## v1.13.0b7 - submit Visualforce confirmat pentru Retele Electrice
+
+- [ ] Formularul `loginPage:loginForm` adauga explicit `loginPage:loginForm:j_id25` cand butonul apeleaza `logintest()`.
+- [ ] Autentificarea nu mai retrimite pagina de login din cauza lipsei comenzii JSF.
+- [ ] Raspunsul de autentificare contine sau conduce catre `frontdoor.jsp`.
+- [ ] Configuratia Aura este incarcata dupa autentificare.
+- [ ] Logurile de diagnostic nu contin parola, ViewState, SID sau tokenuri.
+- [ ] Versiunea din manifest, backend si frontend este `1.13.0b7`.
+
+
+## v1.13.0b7 - istoric lunar Retele Electrice
+
+- [ ] Diferentele dintre toate citirile valide din aceeasi luna sunt insumate, nu deduplicate.
+- [ ] Citirile sunt calculate separat pentru fiecare serie de contor.
+- [ ] La demontarea contorului, intervalul final al contorului vechi este atribuit lunii anterioare.
+- [ ] Lunile calendaristice fara o diferenta calculabila apar in istoric ca date indisponibile, nu sunt sarite.
+- [ ] Pentru POD-ul de test, consumul iunie 2026 este 462 kWh si totalul ultimelor 12 luni este 4723 kWh.
+- [ ] Versiunea din manifest, backend si frontend este `1.13.0b7`.
+
+
+## v1.13.0 - Retele Electrice Romania
+
+- [ ] Furnizorul `Retele Electrice Romania` poate fi adaugat cu datele contului din portal.
+- [ ] Autentificarea Visualforce urmeaza `frontdoor.jsp`, initializeaza sesiunea Aura si nu expune credentiale sau tokenuri.
+- [ ] Fiecare POD este creat ca dispozitiv separat, cu adresa, stare, tip loc, contor si date contractuale.
+- [ ] Istoricul lunar afiseaza maximum 12 luni consecutive, fara luni sarite artificial.
+- [ ] Diferentele dintre citiri sunt insumate in luna corecta si sunt calculate separat pentru fiecare serie de contor.
+- [ ] Schimbarea contorului nu produce diferente negative si nu amesteca indecsii contoarelor.
+- [ ] Pentru POD-ul testat, iunie 2026 este 462 kWh, iar totalul ultimelor 12 luni este 4723 kWh.
+- [ ] Locurile neprosumatoare nu afiseaza valori de injectie inventate.
+- [ ] Tabul `Distributie energie` afiseaza Retele Electrice si permite asocierea persistenta cu furnizorul.
+- [ ] DEO si DEER continua sa functioneze fara regresii.
+- [ ] Logurile temporare `[RETELE ELECTRICE LOGIN DEBUG]` nu mai sunt prezente.
+- [ ] Versiunea din manifest, backend si frontend este `1.13.0`.
+- [ ] Arhiva nu contine HAR-uri, credentiale, `__pycache__` sau fisiere `.pyc`.

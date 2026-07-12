@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, CookieJar
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -81,9 +81,12 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         # Pentru acestea nu folosim sesiunea globala Home Assistant, deoarece doua
         # config entry-uri ale aceluiasi furnizor pot ajunge sa imparta acelasi
         # cookie jar si sa citeasca datele altui cont.
-        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati", "eon", "deo"}
+        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati", "eon", "deo", "retele_electrice"}
         self.sesiune: ClientSession = (
-            async_create_clientsession(hass)
+            async_create_clientsession(
+                hass,
+                cookie_jar=CookieJar(unsafe=True),
+            )
             if self._sesiune_dedicata
             else async_get_clientsession(hass)
         )
@@ -147,8 +150,6 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         if callable(inchidere):
             await inchidere()
 
-        if getattr(self, "_sesiune_dedicata", False) and not self.sesiune.closed:
-            await self.sesiune.close()
 
     def _porneste_refresh_eon_in_fundal(self) -> None:
         if self._task_refresh_eon is not None and not self._task_refresh_eon.done():

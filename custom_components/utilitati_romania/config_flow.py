@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+
+import aiohttp
 import logging
 from typing import Any
 
@@ -76,6 +78,19 @@ from .licentiere import (
 from .naming import build_location_alias
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _creeaza_sesiune_dedicata(hass):
+    return async_create_clientsession(
+        hass,
+        auto_cleanup=False,
+        cookie_jar=aiohttp.CookieJar(unsafe=True),
+    )
+
+
+def _elibereaza_sesiune_dedicata(sesiune: aiohttp.ClientSession) -> None:
+    if not sesiune.closed:
+        sesiune.detach()
 
 FURNIZOR_OPTIONS: list[SelectOptionDict] = [
     {"value": cheie, "label": clasa.nume_prietenos}
@@ -224,8 +239,14 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                         else:
                             return await self.async_step_selectare_contract_apa_brasov()
                 else:
+                    sesiune_dedicata = self._furnizor in {"deo", "retele_electrice"}
+                    sesiune = (
+                        _creeaza_sesiune_dedicata(self.hass)
+                        if sesiune_dedicata
+                        else async_get_clientsession(self.hass)
+                    )
                     client = clasa_furnizor(
-                        sesiune=async_get_clientsession(self.hass),
+                        sesiune=sesiune,
                         utilizator=user_input[CONF_UTILIZATOR],
                         parola=user_input[CONF_PAROLA],
                         optiuni=user_input,
@@ -255,6 +276,9 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                                 **user_input,
                             },
                         )
+                    finally:
+                        if sesiune_dedicata:
+                            _elibereaza_sesiune_dedicata(sesiune)
 
         schema_items: dict[Any, Any] = {
             vol.Required(CONF_UTILIZATOR): TextSelector(
@@ -1084,8 +1108,14 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                         return await self._finalizeaza_reauth_digi()
 
             else:
+                sesiune_dedicata = self._furnizor in {"deo", "retele_electrice"}
+                sesiune = (
+                    _creeaza_sesiune_dedicata(self.hass)
+                    if sesiune_dedicata
+                    else async_get_clientsession(self.hass)
+                )
                 client = clasa_furnizor(
-                    sesiune=async_get_clientsession(self.hass),
+                    sesiune=sesiune,
                     utilizator=user_input[CONF_UTILIZATOR],
                     parola=user_input[CONF_PAROLA],
                     optiuni=intrare.data,
@@ -1107,6 +1137,9 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                             CONF_PAROLA: user_input[CONF_PAROLA],
                         },
                     )
+                finally:
+                    if sesiune_dedicata:
+                        _elibereaza_sesiune_dedicata(sesiune)
 
         schema = vol.Schema(
             {
