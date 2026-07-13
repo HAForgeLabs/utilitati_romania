@@ -42,6 +42,7 @@ _PROVIDER_LABELS = {
     "orange": "Orange",
     "rervest": "RER Vest",
     "retim": "RETIM",
+    "aquatim": "Aquatim",
 }
 
 _STATUS_PAID_TOKENS = {

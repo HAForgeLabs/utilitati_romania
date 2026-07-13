@@ -524,6 +524,13 @@ def _provider_open_target(provider: str | None) -> dict[str, str] | None:
             "fallback": "https://rervest.ro/contul-meu/",
         }
 
+    if key == "aquatim":
+        return {
+            "mode": "launch_app",
+            "package_name": "com.aquatim.dev",
+            "fallback": "https://self.aquatim.ro/",
+        }
+
     if key == "retim":
         return {
             "mode": "url",

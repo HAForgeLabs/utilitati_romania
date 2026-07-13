@@ -1671,6 +1671,23 @@ SENZORI_CONT_APA_ORADEA: tuple[DescriereSenzorCont, ...] = (
 
 
 SENZORI_CONT_APA_GALATI: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA
+SENZORI_CONT_AQUATIM: tuple[DescriereSenzorCont, ...] = (
+    DescriereSenzorCont(key="de_plata", name="De plată", icon="mdi:cash-clock", native_unit_of_measurement="RON", functie_valoare=lambda i, c: round(float(_valoare_consum(i, "de_plata", c.id_cont) or 0.0), 2)),
+    DescriereSenzorCont(key="sold_curent", name="Sold curent", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "sold_curent", c.id_cont)),
+    DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:receipt-text-check", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "valoare_ultima_factura", c.id_cont)),
+    DescriereSenzorCont(key="id_ultima_factura", name="ID ultima factură", icon="mdi:file-document-outline", functie_valoare=lambda i, c: _valoare_consum(i, "id_ultima_factura", c.id_cont)),
+    DescriereSenzorCont(key="numar_facturi", name="Număr facturi", icon="mdi:file-document-multiple-outline", functie_valoare=lambda i, c: _valoare_consum(i, "numar_facturi", c.id_cont)),
+    DescriereSenzorCont(key="numar_plati", name="Număr plăți", icon="mdi:cash-check", functie_valoare=lambda i, c: _valoare_consum(i, "numar_plati", c.id_cont)),
+    DescriereSenzorCont(key="data_ultima_plata", name="Data ultimei plăți", icon="mdi:calendar-check", functie_valoare=lambda i, c: _valoare_consum(i, "data_ultima_plata", c.id_cont)),
+    DescriereSenzorCont(key="valoare_ultima_plata", name="Ultima plată", icon="mdi:cash-fast", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _valoare_consum(i, "valoare_ultima_plata", c.id_cont)),
+    DescriereSenzorCont(key="factura_restanta", name="Factură restantă", icon="mdi:alert-circle", functie_valoare=lambda i, c: _valoare_consum(i, "factura_restanta", c.id_cont)),
+    DescriereSenzorCont(key="urmatoarea_scadenta", name="Scadența ultimei facturi", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "urmatoarea_scadenta", c.id_cont)),
+    DescriereSenzorCont(key="index_contor", name="Index contor", icon="mdi:counter", native_unit_of_measurement="m³", functie_valoare=lambda i, c: _valoare_consum(i, "index_contor", c.id_cont)),
+    DescriereSenzorCont(key="ultim_consum", name="Ultimul consum", icon="mdi:water", native_unit_of_measurement="m³", functie_valoare=lambda i, c: _valoare_consum(i, "ultim_consum", c.id_cont)),
+    DescriereSenzorCont(key="citire_index_permisa", name="Citire index permisă", icon="mdi:clock-check-outline", functie_valoare=lambda i, c: _valoare_consum(i, "citire_index_permisa", c.id_cont)),
+    DescriereSenzorCont(key="perioada_citire", name="Perioadă citire index", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "perioada_citire", c.id_cont)),
+    DescriereSenzorCont(key="zile_pana_citire_index", name="Zile până la citire index", icon="mdi:calendar-arrow-right", native_unit_of_measurement="zile", functie_valoare=lambda i, c: _valoare_consum(i, "zile_pana_citire_index", c.id_cont)),
+)
 SENZORI_CONT_APAREGIO: tuple[DescriereSenzorCont, ...] = SENZORI_CONT_APA_ORADEA + (
     DescriereSenzorCont(key="citire_index_permisa", name="Citire index permisă", icon="mdi:clock-check-outline", functie_valoare=lambda i, c: _valoare_consum(i, "citire_index_permisa", c.id_cont)),
     DescriereSenzorCont(key="perioada_citire", name="Perioadă citire index", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "perioada_citire", c.id_cont)),
@@ -2025,6 +2042,12 @@ async def async_setup_entry(
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_APA_BRASOV:
                 entitati.append(SenzorContApaBrasov(coordonator, cont, descriere))
+
+    elif instantaneu and instantaneu.furnizor == "aquatim":
+        entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
+        for cont in instantaneu.conturi:
+            for descriere in SENZORI_CONT_AQUATIM:
+                entitati.append(SenzorContAquatim(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "apa_oradea":
         entitati.extend(SenzorRezumat(coordonator, d) for d in (list(SENZORI_REZUMAT) + list(SENZORI_REZUMAT_FINANCIAR)))
@@ -3140,6 +3163,18 @@ def _slug_loc_apa_oradea(cont) -> str:
     return build_provider_slug("apa_oradea", baza, getattr(cont, "id_cont", None))
 
 
+
+def info_device_aquatim(entry_id: str, cont) -> DeviceInfo:
+    ident = getattr(cont, "id_cont", "aquatim")
+    nume = getattr(cont, "nume", None) or ident
+    return DeviceInfo(
+        identifiers={(DOMENIU, f"{entry_id}_aquatim_{ident}")},
+        name=f"Aquatim - {nume}",
+        manufacturer="Aquatim",
+        model="Apă / canal",
+    )
+
+
 def info_device_apa_oradea(entry_id: str, cont) -> DeviceInfo:
     ident = getattr(cont, "id_cont", "apa_oradea")
     nume = _nume_loc_apa_oradea(cont)
@@ -3229,6 +3264,19 @@ class SenzorContApaOradea(EntitateUtilitatiRomania, SensorEntity):
             ]
         return attrs
 
+
+class SenzorContAquatim(SenzorContApaOradea):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: DescriereSenzorCont) -> None:
+        EntitateUtilitatiRomania.__init__(self, coordonator)
+        self.cont = cont
+        self.entity_description = descriere
+        slug = build_provider_slug("aquatim", getattr(cont, "nume", None) or cont.id_cont, cont.id_cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_aquatim_{cont.id_cont}_{descriere.key}"
+        self._attr_name = descriere.name
+        self._attr_suggested_object_id = f"{slug}_{descriere.key}"
+        self.entity_id = f"sensor.{slug}_{descriere.key}"
+        self._attr_device_info = info_device_aquatim(coordonator.intrare.entry_id, cont)
+        _aplica_unitate_cost_mediu(self, cont)
 
 def _nume_loc_apa_galati(cont) -> str:
     raw = getattr(cont, "date_brute", None) or {}
