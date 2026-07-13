@@ -452,3 +452,64 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Logurile temporare `[RETELE ELECTRICE LOGIN DEBUG]` nu mai sunt prezente.
 - [ ] Versiunea din manifest, backend si frontend este `1.13.0`.
 - [ ] Arhiva nu contine HAR-uri, credentiale, `__pycache__` sau fisiere `.pyc`.
+
+
+## v1.13.1b1 - date instantanee contor Retele Electrice
+
+- [ ] Butoanele `Solicită actualizare contor` si `Încarcă date contor` apar numai pentru locurile cu contor inteligent.
+- [ ] `Solicită actualizare contor` trimite actiunea `ReqMeterInstantData` si afiseaza timpul estimat comunicat de portal.
+- [ ] `Încarcă date contor` foloseste actiunea `FindOutMeterInstantData` si actualizeaza entitatile fara restart sau reload al integrarii.
+- [ ] Sunt disponibile indexurile instant 1.8.0 si 2.8.0, energiile reactive, tensiunile, curentii si puterea instantanee.
+- [ ] Pentru un loc neprosumator nu sunt create entitatile de injectie.
+- [ ] Datele instantanee apar si in tabul `Distributie energie`, impreuna cu cele doua actiuni.
+- [ ] Valorile istorice lunare si indexurile oficiale existente nu sunt suprascrise cu citirea instantanee.
+- [ ] Un esec sau o valoare inca indisponibila produce un mesaj clar, fara a bloca refresh-ul obisnuit.
+- [ ] Versiunea din manifest, backend si frontend este `1.13.1b1`.
+
+## v1.13.1b2 - actualizare automata si intreruperi Retele Electrice
+
+- [ ] Versiunea din manifest, backend si frontend este `1.13.1b2`.
+- [ ] La `Actualizeaza contor`, integrarea memoreaza valoarea `LAST_UPDATED` existenta inainte de solicitare.
+- [ ] `Incarca date` nu accepta drept succes aceeasi valoare `LAST_UPDATED`; afiseaza ca portalul returneaza inca datele anterioare.
+- [ ] Dupa aparitia unei citiri noi, `Data si ora citire` afiseaza data si ora completa.
+- [ ] Dashboard-ul formateaza `Ultima actualizare raportata de contor` cu data si ora locala.
+- [ ] In Setari apare campul `Actualizare automata contor` pentru intrarile Retele Electrice.
+- [ ] Valoarea 0 dezactiveaza actualizarea automata; valorile 1-24 pornesc ciclul la intervalul ales.
+- [ ] Intervalul este salvat in options/config entry si persista dupa restart Home Assistant.
+- [ ] Pentru mai multe POD-uri cu smart meter, cererile sunt lansate inainte de asteptare, apoi datele sunt incarcate pentru fiecare POD.
+- [ ] Actualizarea automata asteapta estimarea portalului si reincearca daca `LAST_UPDATED` nu s-a schimbat.
+- [ ] Textul despre starea alimentarii este preluat din fluxul `PowerOutages`.
+- [ ] Mesajul `nu avem inregistrata nicio intrerupere` este afisat informativ si nu activeaza binary sensorul de problema.
+- [ ] Un mesaj real despre avarie/intrerupere activeaza binary sensorul si bannerul de avertizare.
+- [ ] Incarcarea manuala si automata a datelor contorului actualizeaza si starea intreruperilor.
+- [ ] Disclaimerul pentru asocierea distribuitor-furnizor este lizibil in tema dark.
+- [ ] Tema light ramane coerenta pentru disclaimer, valori instantanee si bannerul de alimentare.
+- [ ] Arhiva nu contine HAR-uri, credentiale, `__pycache__` sau fisiere `.pyc`.
+
+
+## v1.13.1b3 - incarcare valori existente in timpul asteptarii
+
+- [ ] Versiunea din manifest, backend si frontend este `1.13.1b3`.
+- [ ] La pornire, un contor inteligent incarca ultimele valori instantanee disponibile si senzorii nu raman `unknown`.
+- [ ] Dupa `Solicita actualizare contor`, apasarea imediata pe `Incarca date contor` incarca valorile vechi disponibile.
+- [ ] Cand noile valori nu sunt inca disponibile, notificarea precizeaza ca au fost incarcate datele anterioare si afiseaza data si ora lor.
+- [ ] Dashboard-ul afiseaza persistent starea de asteptare si timestampul valorilor incarcate.
+- [ ] Actualizarea automata continua sa reincearce pana la 4 ori pentru date noi, dar pastreaza ultimele valori disponibile daca portalul nu s-a actualizat.
+- [ ] Cand portalul returneaza un timestamp nou, starea se schimba in `actualizate`.
+
+## v1.13.1 - date instantanee, actualizare automata si stare alimentare Retele Electrice
+
+- [ ] Versiunea din manifest, backend si frontend este `1.13.1`.
+- [ ] Butoanele `Solicita actualizare contor` si `Incarca date contor` apar numai pentru locurile cu contor inteligent.
+- [ ] Solicitarea actualizarii transmite cererea catre contor si afiseaza timpul estimat comunicat de portal.
+- [ ] Incarcarea datelor actualizeaza indexurile instantanee, energiile reactive, tensiunile, curentii, puterea si data/ora citirii.
+- [ ] Daca citirea noua nu este inca disponibila, sunt pastrate si afisate ultimele valori disponibile impreuna cu timestampul lor.
+- [ ] La pornire, ultimele valori disponibile sunt incarcate in fundal fara sa blocheze finalizarea pornirii Home Assistant.
+- [ ] Intervalul de actualizare automata poate fi configurat intre 0 si 24 de ore si persista dupa restart.
+- [ ] Actualizarea automata solicita mai intai citirea, asteapta intervalul portalului si reincearca preluarea fara a pierde datele vechi.
+- [ ] Mesajul despre intreruperile de alimentare este preluat din portal si actualizeaza bannerul si binary sensorul dedicat.
+- [ ] Lipsa unei intreruperi este afisata informativ si nu activeaza binary sensorul de problema.
+- [ ] Disclaimerul pentru asocierea distribuitor-furnizor este lizibil in temele light si dark.
+- [ ] Datele istorice si indexurile oficiale nu sunt suprascrise de valorile instantanee.
+- [ ] DEO, DEER si celelalte platforme continua sa functioneze fara regresii.
+- [ ] Arhiva nu contine HAR-uri, credentiale, loguri temporare, `__pycache__` sau fisiere `.pyc`.

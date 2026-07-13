@@ -118,7 +118,8 @@
           "utilizator": "Utilizator / email",
           "parola": "Parolă",
           "cheie_licenta": "Cheie licență",
-          "digi_history_limit": "Număr facturi istorice per adresă"
+          "digi_history_limit": "Număr facturi istorice per adresă",
+          "retele_interval_date_instantanee": "Interval actualizare automata contor (ore, 0 = dezactivat)"
         }
       }
     }

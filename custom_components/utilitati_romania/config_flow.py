@@ -41,6 +41,7 @@ from .const import (
     DATE_VERIFICARE_LICENTA,
     FURNIZOR_ADMIN_GLOBAL,
     CONF_INTERVAL_ACTUALIZARE,
+    CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
     CONF_PAROLA,
     CONF_PUNCTE_CONSUM_SELECTATE,
     CONF_MOBILE_NOTIFY_SERVICE,
@@ -49,10 +50,13 @@ from .const import (
     DOMENIU,
     IMPLICIT_DIGI_HISTORY_LIMIT,
     IMPLICIT_INTERVAL_ACTUALIZARE_ORE,
+    IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
     MAXIM_DIGI_HISTORY_LIMIT,
     MAXIM_INTERVAL_ACTUALIZARE_ORE,
+    MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
     MINIM_DIGI_HISTORY_LIMIT,
     MINIM_INTERVAL_ACTUALIZARE_ORE,
+    MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
 )
 from .exceptions import EroareAutentificare, EroareConectare
 from .furnizori.apa_canal import ClientFurnizorApaCanal, OptiuneContractApaCanal
@@ -1397,6 +1401,19 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
                             ),
                         )
                     )
+                if self._config_entry.data.get(CONF_FURNIZOR) == "retele_electrice":
+                    data[CONF_RETELE_INTERVAL_DATE_INSTANTANEE] = int(
+                        user_input.get(
+                            CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                            self._config_entry.options.get(
+                                CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                                self._config_entry.data.get(
+                                    CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                                    IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+                                ),
+                            ),
+                        )
+                    )
                 return self.async_create_entry(title="", data=data)
 
         if self._config_entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:
@@ -1524,4 +1541,30 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
                 )
             )
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema_items), errors={})
+        if self._config_entry.data.get(CONF_FURNIZOR) == "retele_electrice":
+            interval_contor = self._config_entry.options.get(
+                CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                self._config_entry.data.get(
+                    CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                    IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+                ),
+            )
+            try:
+                interval_contor = int(interval_contor)
+            except (TypeError, ValueError):
+                interval_contor = IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE
+            schema_items[
+                vol.Required(
+                    CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                    default=interval_contor,
+                )
+            ] = NumberSelector(
+                NumberSelectorConfig(
+                    min=MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+                    max=MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            )
+
+        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema_items), errors=erori)

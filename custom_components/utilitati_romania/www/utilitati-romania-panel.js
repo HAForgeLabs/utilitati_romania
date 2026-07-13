@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.13.0";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.13.1";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -48,7 +48,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (Date.now() < this._interactiveUntil) return true;
     const active = this.shadowRoot.activeElement;
     if (!active) return false;
-    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias], [data-billing-group], [data-dashboard-pref-text], [data-consumption-visibility], [data-distribution-supplier-link]");
+    return !!active.closest?.("[data-invoice-grouping], [data-invoice-filter], .reading-input, #license-input, [data-mobile-device-select], [data-setting-toggle], [data-location-alias], [data-billing-group], [data-dashboard-pref-text], [data-consumption-visibility], [data-distribution-supplier-link], [data-smart-meter-auto-interval]");
   }
 
   _holdRenderBriefly(ms = 3500) {
@@ -210,6 +210,40 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (!Number.isNaN(parsed.getTime())) {
       try {
         return new Intl.DateTimeFormat("ro-RO").format(parsed);
+      } catch (_err) {
+        return text;
+      }
+    }
+    return text || "—";
+  }
+
+  _dateTime(value) {
+    if (!value || value === "-") return "—";
+    const text = String(value).trim();
+    const roMatch = text.match(/^(\d{2})[./](\d{2})[./](\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+    let parsed;
+    if (roMatch) {
+      parsed = new Date(
+        Number(roMatch[3]),
+        Number(roMatch[2]) - 1,
+        Number(roMatch[1]),
+        Number(roMatch[4] || 0),
+        Number(roMatch[5] || 0),
+        Number(roMatch[6] || 0),
+      );
+    } else {
+      parsed = new Date(text);
+    }
+    if (!Number.isNaN(parsed.getTime())) {
+      try {
+        return new Intl.DateTimeFormat("ro-RO", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }).format(parsed);
       } catch (_err) {
         return text;
       }
@@ -533,6 +567,18 @@ class UtilitatiRomaniaPanel extends HTMLElement {
 
   _mobileNotificationSelectEntity() {
     return this._mobileSelectEntityByPurpose("notificari");
+  }
+
+  _smartMeterAutoIntervalEntities() {
+    const states = Object.values(this._hass?.states || {});
+    return states.filter((stateObj) => {
+      const entityId = String(stateObj?.entity_id || "").toLowerCase();
+      if (!entityId.startsWith("number.")) return false;
+      if (String(stateObj?.attributes?.furnizor || "").toLowerCase() === "retele_electrice") return true;
+      if (entityId.includes("retele_electrice_interval_actualizare_automata_contor")) return true;
+      return this._entityFriendlyText(stateObj).includes("interval actualizare automata contor");
+    }).sort((a, b) => String(a.attributes?.nume_intrare || a.attributes?.friendly_name || a.entity_id)
+      .localeCompare(String(b.attributes?.nume_intrare || b.attributes?.friendly_name || b.entity_id), "ro"));
   }
 
   _mobileSelectEntityByPurpose(purpose) {
@@ -1039,15 +1085,29 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       "validitate_contract", "putere_aprobata_consum",
       "putere_aprobata_producere", "numar_atr", "data_inregistrare_atr",
       "cod_punct_masurare", "punct_racordare", "tensiune_delimitare",
-      "masurare_orara", "masurare_zone_orare"
+      "masurare_orara", "masurare_zone_orare",
+      "index_instant_consum", "index_instant_injectie",
+      "energie_reactiva_inductiva", "energie_reactiva_capacitiva",
+      "tensiune_faza_r", "tensiune_faza_s", "tensiune_faza_t",
+      "curent_faza_r", "curent_faza_s", "curent_faza_t",
+      "putere_instantanee_absorbita", "data_citire_instantanee",
+      "ultima_actualizare_contor", "status_alimentare"
+    ].sort((a, b) => b.length - a.length);
+    const actionSuffixes = [
+      "solicita_actualizare_contor",
+      "incarca_date_contor"
     ].sort((a, b) => b.length - a.length);
 
     for (const [entityId, state] of states) {
-      if (!entityId.startsWith("sensor.")) continue;
+      const isSensor = entityId.startsWith("sensor.");
+      const isButton = entityId.startsWith("button.");
+      if (!isSensor && !isButton) continue;
       const attrs = state?.attributes || {};
-      const isDeo = entityId.startsWith("sensor.deo_");
-      const isDeer = entityId.startsWith("sensor.hidro_") && normalize(attrs.tip_serviciu).includes("distrib");
-      const isReteleElectrice = entityId.startsWith("sensor.retele_electrice_");
+      const isDeo = isSensor && entityId.startsWith("sensor.deo_");
+      const isDeer = isSensor && entityId.startsWith("sensor.hidro_") && normalize(attrs.tip_serviciu).includes("distrib");
+      const isReteleElectrice =
+        (isSensor && entityId.startsWith("sensor.retele_electrice_")) ||
+        (isButton && entityId.startsWith("button.retele_electrice_"));
       if (!isDeo && !isDeer && !isReteleElectrice) continue;
 
       const provider = isDeo ? "deo" : (isDeer ? "deer" : "retele_electrice");
@@ -1064,13 +1124,19 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           id: locationId,
           address: attrs.adresa || "",
           entities: {},
+          actions: {},
         });
       }
       const location = locations.get(groupKey);
       if (!location.address && attrs.adresa) location.address = attrs.adresa;
-      const objectId = entityId.slice("sensor.".length);
-      const key = suffixes.find((suffix) => objectId.endsWith(`_${suffix}`));
-      if (key) location.entities[key] = { entityId, state };
+      const objectId = entityId.slice((isSensor ? "sensor." : "button.").length);
+      if (isSensor) {
+        const key = suffixes.find((suffix) => objectId.endsWith(`_${suffix}`));
+        if (key) location.entities[key] = { entityId, state };
+      } else {
+        const key = actionSuffixes.find((suffix) => objectId.endsWith(`_${suffix}`));
+        if (key) location.actions[key] = { entityId, state };
+      }
     }
 
     return [...locations.values()].sort((a, b) => {
@@ -1364,6 +1430,85 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `<div><span>${this._escape(label)}</span><strong>${this._escape(value)}${unit ? ` ${this._escape(unit)}` : ""}</strong></div>`;
   }
 
+  _renderDistributionOutage(location) {
+    if (location.provider !== "retele_electrice") return "";
+    const entity = location.entities?.status_alimentare?.state;
+    if (!entity) return "";
+    const attrs = entity.attributes || {};
+    const stateValue = String(entity.state || "").trim();
+    const message = String(attrs.mesaj || "").trim();
+    if (!message && (!stateValue || ["unknown", "unavailable", "necunoscut"].includes(this._normalizeText(stateValue)))) return "";
+    const active = attrs.intrerupere_activa === true || this._normalizeText(stateValue).includes("intrerupere raportata");
+    const title = active ? "Intrerupere raportata" : "Informatii despre alimentare";
+    const icon = active ? "mdi:transmission-tower-off" : "mdi:transmission-tower";
+    return `<section class="distribution-outage-banner ${active ? "active" : "clear"}">
+      <ha-icon icon="${icon}"></ha-icon>
+      <div><strong>${this._escape(title)}</strong><span>${this._escape(message || stateValue)}</span></div>
+    </section>`;
+  }
+
+  _renderDistributionInstant(location) {
+    if (location.provider !== "retele_electrice") return "";
+    const actions = location.actions || {};
+    const requestEntity = actions.solicita_actualizare_contor?.entityId || "";
+    const loadEntity = actions.incarca_date_contor?.entityId || "";
+    const keys = [
+      "index_instant_consum", "index_instant_injectie",
+      "energie_reactiva_inductiva", "energie_reactiva_capacitiva",
+      "tensiune_faza_r", "tensiune_faza_s", "tensiune_faza_t",
+      "curent_faza_r", "curent_faza_s", "curent_faza_t",
+      "putere_instantanee_absorbita", "data_citire_instantanee",
+      "ultima_actualizare_contor"
+    ];
+    const hasData = keys.some((key) => this._distributionValue(location, key) !== null && this._distributionValue(location, key) !== undefined && this._distributionValue(location, key) !== "");
+    if (!requestEntity && !loadEntity && !hasData) return "";
+
+    const requestKey = `smart_meter_request__${location.id}`;
+    const loadKey = `smart_meter_load__${location.id}`;
+    const requestAction = this._actions.get(requestKey);
+    const loadAction = this._actions.get(loadKey);
+    const message = loadAction?.message || requestAction?.message || "";
+    const messageTone = (loadAction?.status || requestAction?.status || "") === "error" ? "error" : "ok";
+    const instantMetaEntity =
+      location.entities?.data_citire_instantanee?.state ||
+      location.entities?.ultima_actualizare_contor?.state ||
+      null;
+    const instantMeta = instantMetaEntity?.attributes || {};
+    const portalStatusMessage = String(instantMeta.mesaj_stare_date || "").trim();
+    const portalStatusTone = instantMeta.date_noi_disponibile === false ? "warning" : "ok";
+
+    return `
+      <section class="distribution-live-card">
+        <div class="distribution-live-head">
+          <div>
+            <span class="eyebrow">date contor in timp real</span>
+            <strong>Valori instantanee</strong>
+            <small>${this._distributionValue(location, "ultima_actualizare_contor") ? `Ultima actualizare raportata de contor: ${this._escape(this._dateTime(this._distributionValue(location, "ultima_actualizare_contor")))}` : "Solicita actualizarea, apoi incarca valorile raportate de contor."}</small>
+          </div>
+          <div class="distribution-live-actions">
+            ${requestEntity ? `<button class="primary dark small" data-smart-meter-action="request" data-entity-id="${this._escape(requestEntity)}" data-action-key="${this._escape(requestKey)}" ${requestAction?.status === "busy" ? "disabled" : ""}>${requestAction?.status === "busy" ? "Se solicita..." : "Actualizeaza contor"}</button>` : ""}
+            ${loadEntity ? `<button class="primary small" data-smart-meter-action="load" data-entity-id="${this._escape(loadEntity)}" data-action-key="${this._escape(loadKey)}" ${loadAction?.status === "busy" ? "disabled" : ""}>${loadAction?.status === "busy" ? "Se incarca..." : "Incarca date"}</button>` : ""}
+          </div>
+        </div>
+        ${message ? `<div class="action-message ${messageTone}">${this._escape(message)}</div>` : ""}
+        ${portalStatusMessage ? `<div class="action-message ${portalStatusTone}">${this._escape(portalStatusMessage)}${instantMeta.ultima_actualizare ? ` Date generate la ${this._escape(this._dateTime(instantMeta.ultima_actualizare))}.` : ""}</div>` : ""}
+        ${hasData ? `<div class="distribution-details-grid distribution-live-grid">
+          ${this._distributionDetail("Index consum 1.8.0", this._distributionValue(location, "index_instant_consum"), "kWh")}
+          ${this._distributionDetail("Index injectie 2.8.0", this._distributionValue(location, "index_instant_injectie"), "kWh")}
+          ${this._distributionDetail("Putere instantanee", this._distributionValue(location, "putere_instantanee_absorbita"), "kW")}
+          ${this._distributionDetail("Tensiune faza R", this._distributionValue(location, "tensiune_faza_r"), "V")}
+          ${this._distributionDetail("Tensiune faza S", this._distributionValue(location, "tensiune_faza_s"), "V")}
+          ${this._distributionDetail("Tensiune faza T", this._distributionValue(location, "tensiune_faza_t"), "V")}
+          ${this._distributionDetail("Curent faza R", this._distributionValue(location, "curent_faza_r"), "A")}
+          ${this._distributionDetail("Curent faza S", this._distributionValue(location, "curent_faza_s"), "A")}
+          ${this._distributionDetail("Curent faza T", this._distributionValue(location, "curent_faza_t"), "A")}
+          ${this._distributionDetail("Energie reactiva inductiva", this._distributionValue(location, "energie_reactiva_inductiva"), "kVArh")}
+          ${this._distributionDetail("Energie reactiva capacitiva", this._distributionValue(location, "energie_reactiva_capacitiva"), "kVArh")}
+          ${this._distributionDetail("Data si ora citire", this._dateTime(this._distributionValue(location, "data_citire_instantanee")))}
+        </div>` : ""}
+      </section>`;
+  }
+
   _renderDistributionLocation(location) {
     const consumption = this._distributionNumber(location, "consum_ultima_perioada");
     const injection = this._distributionNumber(location, "injectie_ultima_perioada");
@@ -1390,7 +1535,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           ${this._distributionDetail("Balanta energetica", balance !== null ? `${balance > 0 ? "+" : ""}${this._num(balance).toLocaleString("ro-RO", { maximumFractionDigits: 3 })}` : null, balance !== null ? "kWh" : "")}
           ${this._distributionDetail("Ultima citire", this._distributionValue(location, "data_ultima_citire_consum", "data_ultima_citire_injectie"))}
         </div>
+        ${this._renderDistributionOutage(location)}
         ${this._renderDistributionSupplierLink(location)}
+        ${this._renderDistributionInstant(location)}
         ${this._distributionBars(location)}
         <details class="distribution-details" data-distribution-details-key="${this._escape(locationDetailsKey)}" ${locationDetailsOpen ? "open" : ""}>
           <summary><span>Detalii loc de consum</span><ha-icon icon="mdi:chevron-down"></ha-icon></summary>
@@ -2741,6 +2888,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const mobileOptions = Array.isArray(mobileSelect?.attributes?.options) ? mobileSelect.attributes.options : [];
     const selectedMobile = mobileSelect?.state || "none";
     const notificationMobileSelect = this._mobileNotificationSelectEntity();
+    const smartMeterIntervalEntities = this._smartMeterAutoIntervalEntities();
     const notificationMobileOptions = Array.isArray(notificationMobileSelect?.attributes?.options) ? notificationMobileSelect.attributes.options : [];
     const selectedNotificationMobile = notificationMobileSelect?.state || "none";
     const prefs = this._notificationPreferences();
@@ -2795,7 +2943,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return `
       <section class="panel-card">
         <div class="card-head"><div><span class="eyebrow">administrare</span><h2>Setări rapide</h2></div></div>
-        <div class="support-note"><ha-icon icon="mdi:information-outline"></ha-icon><span>Setările de afișare și denumirile de mai jos modifică doar dashboard-ul integrat. Nu redenumesc entitățile Home Assistant și nu modifică dashboard-urile Lovelace existente.</span></div>
+        <div class="support-note"><ha-icon icon="mdi:information-outline"></ha-icon><span>Preferintele de afisare si denumirile modifica doar dashboard-ul integrat. Setarile functionale, precum intervalul Retele Electrice, sunt salvate persistent in integrare.</span></div>
         <div class="settings-grid">
           <div class="setting-block">
             <div><span class="eyebrow">aplicații furnizori</span><h3>Dispozitiv mobil</h3><p>Alege telefonul pe care se deschid aplicațiile furnizorilor din butoanele aflate în facturi.</p></div>
@@ -2806,6 +2954,20 @@ class UtilitatiRomaniaPanel extends HTMLElement {
               <small class="setting-hint">Entitate: ${this._escape(mobileSelect.entity_id)}</small>
             ` : `<div class="empty">Nu am găsit entitatea de selectare a dispozitivului mobil. Verifică intrarea „Administrare integrare”.</div>`}
           </div>
+          ${smartMeterIntervalEntities.map((intervalEntity) => {
+            const rawInterval = !["unknown", "unavailable"].includes(intervalEntity.state) ? Number(intervalEntity.state) : 0;
+            const intervalValue = Number.isFinite(rawInterval) ? rawInterval : 0;
+            const entryName = intervalEntity.attributes?.nume_intrare || intervalEntity.attributes?.friendly_name || "Retele Electrice";
+            return `<div class="setting-block">
+              <div><span class="eyebrow">Retele Electrice</span><h3>Actualizare automata contor</h3><p>${this._escape(entryName)}. La intervalul ales, integrarea solicita o citire noua, asteapta timpul estimat de portal si incarca automat valorile disponibile.</p></div>
+              <label class="setting-field">
+                <span>Interval in ore</span>
+                <small>0 dezactiveaza actualizarea automata. Interval disponibil: 1-24 ore.</small>
+                <input type="number" min="0" max="24" step="1" data-smart-meter-auto-interval data-entity-id="${this._escape(intervalEntity.entity_id)}" value="${this._escape(intervalValue)}">
+              </label>
+              <small class="setting-hint">Entitate: ${this._escape(intervalEntity.entity_id)}</small>
+            </div>`;
+          }).join("")}
           <div class="setting-block">
             <div><span class="eyebrow">afișare</span><h3>Preferințe dashboard</h3><p>Setări locale pentru acest panou. Nu modifică dashboard-urile Lovelace ale utilizatorului.</p></div>
             <label class="setting-toggle">
@@ -2963,6 +3125,22 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .distribution-kpis > div { padding:15px; border-radius:18px; background:#f7f9fc; border:1px solid rgba(17,32,51,.08); display:grid; gap:6px; }
       .distribution-kpis span,.distribution-details-grid span { color:var(--secondary-text-color); font-size:12px; }
       .distribution-kpis strong { font-size:20px; color:var(--primary-text-color); }
+      .distribution-outage-banner { display:flex; align-items:flex-start; gap:12px; margin:0 0 18px; padding:14px 16px; border-radius:16px; border:1px solid rgba(17,32,51,.08); }
+      .distribution-outage-banner ha-icon { flex:0 0 auto; margin-top:1px; }
+      .distribution-outage-banner div { display:grid; gap:4px; }
+      .distribution-outage-banner strong { color:var(--primary-text-color); }
+      .distribution-outage-banner span { color:var(--secondary-text-color); line-height:1.45; }
+      .distribution-outage-banner.clear { background:#eaf8ef; border-color:#bfe7cb; }
+      .distribution-outage-banner.clear ha-icon { color:#18864b; }
+      .distribution-outage-banner.active { background:#fff1e8; border-color:#f2c4a7; }
+      .distribution-outage-banner.active ha-icon { color:#c65b16; }
+      .distribution-live-card { margin:0 0 18px; padding:16px; border-radius:18px; background:#f7f9fc; border:1px solid rgba(17,32,51,.08); }
+      .distribution-live-head { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; margin-bottom:12px; }
+      .distribution-live-head > div:first-child { display:grid; gap:4px; }
+      .distribution-live-head strong { color:var(--primary-text-color); font-size:16px; }
+      .distribution-live-head small { color:var(--secondary-text-color); }
+      .distribution-live-actions { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
+      .distribution-live-grid { padding:0; margin-top:12px; }
       .distribution-history-card { margin:0 0 18px; padding:18px; border-radius:20px; background:#f7f9fc; border:1px solid rgba(17,32,51,.08); }
       .distribution-chart-head { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:12px; }
       .distribution-chart-head > div:first-child { display:grid; gap:3px; }
@@ -3010,7 +3188,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .distribution-details-grid > div { min-width:0; padding:12px 14px; border-radius:15px; background:var(--card-background-color); border:1px solid var(--divider-color); display:grid; gap:5px; }
       .distribution-details-grid strong { overflow-wrap:anywhere; font-size:13px; color:var(--primary-text-color); }
       @media (max-width:900px) { .distribution-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .distribution-details-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .distribution-period-summary { grid-template-columns:1fr; } }
-      @media (max-width:560px) { .distribution-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .distribution-details-grid { grid-template-columns:1fr; } .distribution-location-card { padding:16px; border-radius:20px; } .distribution-location-card header { display:grid; } .distribution-chart-head { display:grid; } .distribution-chart-date { text-align:left; } .distribution-chart-modes { width:100%; display:grid; grid-template-columns:repeat(3,1fr); } .distribution-chart-modes button { padding:8px 4px; } .distribution-chart-shell { grid-template-columns:42px minmax(0,1fr); overflow-x:auto; overflow-y:hidden; } .distribution-legend { margin-left:50px; } .distribution-tooltip { min-width:170px; } }
+      @media (max-width:560px) { .distribution-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .distribution-details-grid { grid-template-columns:1fr; } .distribution-location-card { padding:16px; border-radius:20px; } .distribution-location-card header { display:grid; } .distribution-chart-head { display:grid; } .distribution-chart-date { text-align:left; } .distribution-chart-modes { width:100%; display:grid; grid-template-columns:repeat(3,1fr); } .distribution-chart-modes button { padding:8px 4px; } .distribution-chart-shell { grid-template-columns:42px minmax(0,1fr); overflow-x:auto; overflow-y:hidden; } .distribution-legend { margin-left:50px; } .distribution-tooltip { min-width:170px; } .distribution-live-head { display:grid; } .distribution-live-actions { justify-content:flex-start; } .distribution-live-actions button { flex:1; } }
 
 
       .hero { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:24px; align-items:stretch; margin-bottom:16px; }
@@ -3218,6 +3396,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       .provider-status-row span:not(.pill) { color:#6b7b90; font-size:13px; }
       .action-message { margin-top:14px; border-radius:16px; padding:12px 14px; font-weight:700; }
       .action-message.ok { background:#e9f8ee; color:#14783c; }
+      .action-message.warning { background:#fff7df; color:#8a5b00; }
       .action-message.error { background:#fff0e6; color:#b55415; }
       .empty { color:#6b7b90; background:#f7f9fc; border-radius:18px; padding:18px; }
 
@@ -3241,7 +3420,18 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         }
         .hero-card::before { background:rgba(78,161,255,.16); }
         .distribution-location-card { background:#172033; color:#edf3fb; border-color:rgba(255,255,255,.08); box-shadow:0 18px 48px rgba(0,0,0,.26); }
-        .distribution-history-card,.distribution-details,.distribution-kpis > div,.distribution-no-history { background:#111a2b; border-color:rgba(255,255,255,.08); }
+        .distribution-history-card,.distribution-details,.distribution-kpis > div,.distribution-no-history,.distribution-live-card { background:#111a2b; border-color:rgba(255,255,255,.08); }
+        .distribution-link-disclaimer { background:#111a2b; border-color:rgba(255,255,255,.14); }
+        .distribution-link-disclaimer strong { color:#edf3fb; }
+        .distribution-link-disclaimer span { color:#a8b3c4; }
+        .distribution-link-disclaimer ha-icon { color:#a8b3c4; }
+        .distribution-outage-banner.clear { background:#10271d; border-color:rgba(77,201,125,.34); }
+        .distribution-outage-banner.active { background:#2b1c15; border-color:rgba(255,143,66,.38); }
+        .distribution-outage-banner strong { color:#edf3fb; }
+        .distribution-outage-banner span { color:#c7d1df; }
+        .action-message.ok { background:rgba(39,180,105,.14); color:#a8edc3; }
+        .action-message.warning { background:rgba(255,193,7,.14); color:#ffe08a; }
+        .action-message.error { background:rgba(255,145,73,.14); color:#ffc49f; }
         .distribution-linked-supplier { background:#111a2b; border-color:rgba(255,255,255,.08); }
         .distribution-supplier-section { background:#0f172a; border-color:rgba(255,255,255,.08); }
         .distribution-details-grid > div,.distribution-chart-modes,.distribution-tooltip { background:#0f172a; color:#edf3fb; border-color:rgba(255,255,255,.10); }
@@ -3548,6 +3738,26 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       });
     }
 
+    this.shadowRoot.querySelectorAll("[data-smart-meter-auto-interval]").forEach((smartMeterAutoInterval) => {
+      ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => smartMeterAutoInterval.addEventListener(eventName, () => this._holdRenderBriefly(9000)));
+      smartMeterAutoInterval.addEventListener("change", async () => {
+        const entityId = smartMeterAutoInterval.getAttribute("data-entity-id");
+        const rawValue = Number(smartMeterAutoInterval.value);
+        const value = Number.isFinite(rawValue) ? Math.max(0, Math.min(24, Math.round(rawValue))) : 0;
+        this._actions.set("settings", { status: "busy", message: "Se salveaza intervalul de actualizare automata..." });
+        this._holdRenderBriefly(1500);
+        this._render();
+        try {
+          await this._hass.callService("number", "set_value", { entity_id: entityId, value });
+          this._actions.set("settings", { status: "ok", message: value === 0 ? "Actualizarea automata a contorului a fost dezactivata." : `Contorul va fi actualizat automat la fiecare ${value} ${value === 1 ? "ora" : "ore"}.` });
+        } catch (err) {
+          this._actions.set("settings", { status: "error", message: err?.message || "Nu am putut salva intervalul de actualizare automata." });
+        }
+        this._interactiveUntil = 0;
+        this._render();
+      });
+    });
+
     const mobileDeviceSelect = this.shadowRoot.querySelector("[data-mobile-device-select]");
     if (mobileDeviceSelect) {
       ["focus", "mousedown", "pointerdown", "touchstart"].forEach((eventName) => mobileDeviceSelect.addEventListener(eventName, () => this._holdRenderBriefly(4500)));
@@ -3778,6 +3988,28 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           this._actions.set(key, { status: "ok" });
         } catch (err) {
           this._actions.set(key, { status: "error", message: err?.message || "Nu am putut deschide aplicația furnizorului." });
+        }
+        this._render();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-smart-meter-action]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const entityId = button.getAttribute("data-entity-id");
+        const actionType = button.getAttribute("data-smart-meter-action") || "";
+        const key = button.getAttribute("data-action-key") || `smart_meter__${entityId}`;
+        if (!entityId || button.disabled) return;
+        this._actions.set(key, { status: "busy", message: "" });
+        this._render();
+        try {
+          await this._hass.callService("button", "press", { entity_id: entityId });
+          this._actions.set(key, {
+            status: "ok",
+            message: actionType === "request"
+              ? "Cererea a fost trimisa. Portalul recomanda sa astepti cateva minute, apoi sa folosesti «Incarca date»."
+              : "Au fost incarcate cele mai recente date disponibile in portal."
+          });
+        } catch (err) {
+          this._actions.set(key, { status: "error", message: err?.message || "Operatiunea contorului a esuat." });
         }
         this._render();
       });

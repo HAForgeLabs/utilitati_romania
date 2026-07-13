@@ -4,9 +4,16 @@ from homeassistant.components.number import NumberEntity, RestoreNumber
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import EntityCategory
 
 from .coordonator import CoordonatorUtilitatiRomania
-from .const import DOMENIU
+from .const import (
+    CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+    DOMENIU,
+    IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+    MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+    MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+)
 from .entitate import EntitateUtilitatiRomania
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_device_eon, slug_serviciu_loc_eon, tip_serviciu_eon
@@ -184,7 +191,47 @@ async def async_setup_entry(
             for cont in coordonator.data.conturi:
                 entitati.append(NumarPersoaneEbloc(coordonator, cont))
 
+        elif coordonator.data.furnizor == "retele_electrice":
+            entitati.append(NumarIntervalActualizareContorRetele(coordonator))
+
     async_add_entities(entitati)
+
+
+class NumarIntervalActualizareContorRetele(EntitateUtilitatiRomania, NumberEntity):
+    _attr_name = "Interval actualizare automata contor"
+    _attr_icon = "mdi:timer-sync-outline"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE
+    _attr_native_max_value = MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "h"
+    _attr_mode = "box"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania) -> None:
+        super().__init__(coordonator)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_retele_electrice_interval_actualizare_automata_contor"
+        self._attr_suggested_object_id = "retele_electrice_interval_actualizare_automata_contor"
+
+    @property
+    def native_value(self) -> float:
+        return float(getattr(
+            self.coordinator,
+            "interval_date_instantanee_ore",
+            IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+        ))
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self.coordinator.async_seteaza_interval_date_instantanee(value)
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            "furnizor": "retele_electrice",
+            "config_entry_id": self.coordinator.intrare.entry_id,
+            "nume_intrare": self.coordinator.intrare.title,
+            "dezactivat_la_zero": True,
+        }
 
 
 class NumarIndexHidro(EntitateUtilitatiRomania, RestoreNumber):

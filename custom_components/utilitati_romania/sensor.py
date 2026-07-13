@@ -1768,6 +1768,7 @@ SENZORI_CONT_RETELE_ELECTRICE: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="pod", name="POD", icon="mdi:identifier", functie_valoare=lambda i, c: _valoare_consum(i, "pod", c.id_cont) or c.id_cont),
     DescriereSenzorCont(key="adresa_loc_consum", name="Adresa loc consum", icon="mdi:map-marker", functie_valoare=lambda i, c: _valoare_consum(i, "adresa_loc_consum", c.id_cont) or c.adresa),
     DescriereSenzorCont(key="stare_loc_consum", name="Stare loc de consum", icon="mdi:connection", functie_valoare=lambda i, c: _valoare_consum(i, "stare_loc_consum", c.id_cont) or c.stare),
+    DescriereSenzorCont(key="status_alimentare", name="Status alimentare", icon="mdi:transmission-tower", functie_valoare=lambda i, c: _valoare_consum(i, "status_alimentare", c.id_cont)),
     DescriereSenzorCont(key="tip_loc_consum", name="Tip loc de consum", icon="mdi:home-lightning-bolt", functie_valoare=lambda i, c: _valoare_consum(i, "tip_loc_consum", c.id_cont)),
     DescriereSenzorCont(key="serie_contor", name="Serie contor", icon="mdi:counter", functie_valoare=lambda i, c: _valoare_consum(i, "serie_contor", c.id_cont)),
     DescriereSenzorCont(key="tip_contor", name="Tip contor", icon="mdi:meter-electric", functie_valoare=lambda i, c: _valoare_consum(i, "tip_contor", c.id_cont)),
@@ -1792,6 +1793,19 @@ SENZORI_CONT_RETELE_ELECTRICE: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="tensiune_delimitare", name="Tensiune nominala", icon="mdi:sine-wave", native_unit_of_measurement="kV", functie_valoare=lambda i, c: _valoare_consum(i, "tensiune_delimitare", c.id_cont)),
     DescriereSenzorCont(key="masurare_orara", name="Contor inteligent", icon="mdi:clock-time-four", functie_valoare=lambda i, c: _valoare_consum(i, "masurare_orara", c.id_cont)),
     DescriereSenzorCont(key="masurare_zone_orare", name="Masurare pe zone orare", icon="mdi:clock-time-eight", functie_valoare=lambda i, c: _valoare_consum(i, "masurare_zone_orare", c.id_cont)),
+    DescriereSenzorCont(key="index_instant_consum", name="Index instant consum 1.8.0", icon="mdi:transmission-tower-import", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_instant_consum", c.id_cont)),
+    DescriereSenzorCont(key="index_instant_injectie", name="Index instant injectie 2.8.0", icon="mdi:transmission-tower-export", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum(i, "index_instant_injectie", c.id_cont)),
+    DescriereSenzorCont(key="energie_reactiva_inductiva", name="Energie reactiva inductiva 3.8.0", icon="mdi:sine-wave", native_unit_of_measurement="kVArh", functie_valoare=lambda i, c: _valoare_consum(i, "energie_reactiva_inductiva", c.id_cont)),
+    DescriereSenzorCont(key="energie_reactiva_capacitiva", name="Energie reactiva capacitiva 4.8.0", icon="mdi:sine-wave", native_unit_of_measurement="kVArh", functie_valoare=lambda i, c: _valoare_consum(i, "energie_reactiva_capacitiva", c.id_cont)),
+    DescriereSenzorCont(key="tensiune_faza_r", name="Tensiune faza R", icon="mdi:current-ac", native_unit_of_measurement="V", functie_valoare=lambda i, c: _valoare_consum(i, "tensiune_faza_r", c.id_cont)),
+    DescriereSenzorCont(key="tensiune_faza_s", name="Tensiune faza S", icon="mdi:current-ac", native_unit_of_measurement="V", functie_valoare=lambda i, c: _valoare_consum(i, "tensiune_faza_s", c.id_cont)),
+    DescriereSenzorCont(key="tensiune_faza_t", name="Tensiune faza T", icon="mdi:current-ac", native_unit_of_measurement="V", functie_valoare=lambda i, c: _valoare_consum(i, "tensiune_faza_t", c.id_cont)),
+    DescriereSenzorCont(key="curent_faza_r", name="Curent faza R", icon="mdi:current-ac", native_unit_of_measurement="A", functie_valoare=lambda i, c: _valoare_consum(i, "curent_faza_r", c.id_cont)),
+    DescriereSenzorCont(key="curent_faza_s", name="Curent faza S", icon="mdi:current-ac", native_unit_of_measurement="A", functie_valoare=lambda i, c: _valoare_consum(i, "curent_faza_s", c.id_cont)),
+    DescriereSenzorCont(key="curent_faza_t", name="Curent faza T", icon="mdi:current-ac", native_unit_of_measurement="A", functie_valoare=lambda i, c: _valoare_consum(i, "curent_faza_t", c.id_cont)),
+    DescriereSenzorCont(key="putere_instantanee_absorbita", name="Putere instantanee absorbita", icon="mdi:flash", native_unit_of_measurement="kW", functie_valoare=lambda i, c: _valoare_consum(i, "putere_instantanee_absorbita", c.id_cont)),
+    DescriereSenzorCont(key="data_citire_instantanee", name="Data si ora citire instantanee", icon="mdi:calendar-clock", functie_valoare=lambda i, c: _valoare_consum(i, "data_citire_instantanee", c.id_cont)),
+    DescriereSenzorCont(key="ultima_actualizare_contor", name="Ultima actualizare raportata de contor", icon="mdi:update", functie_valoare=lambda i, c: _valoare_consum(i, "ultima_actualizare_contor", c.id_cont)),
 )
 
 SENZORI_CONT_ENGIE: tuple[DescriereSenzorCont, ...] = (
@@ -1965,8 +1979,35 @@ async def async_setup_entry(
 
     elif instantaneu and instantaneu.furnizor == "retele_electrice":
         entitati.extend(SenzorRezumat(coordonator, d) for d in SENZORI_REZUMAT_RETELE_ELECTRICE)
+        chei_injectie = {
+            "index_injectie",
+            "injectie_ultima_perioada",
+            "injectie_ultimele_12_luni",
+            "data_ultima_citire_injectie",
+            "index_instant_injectie",
+        }
+        chei_instantanee = {
+            "index_instant_consum",
+            "index_instant_injectie",
+            "energie_reactiva_inductiva",
+            "energie_reactiva_capacitiva",
+            "tensiune_faza_r",
+            "tensiune_faza_s",
+            "tensiune_faza_t",
+            "curent_faza_r",
+            "curent_faza_s",
+            "curent_faza_t",
+            "putere_instantanee_absorbita",
+            "data_citire_instantanee",
+            "ultima_actualizare_contor",
+        }
         for cont in instantaneu.conturi:
+            raw = getattr(cont, "date_brute", None) or {}
             for descriere in SENZORI_CONT_RETELE_ELECTRICE:
+                if descriere.key in chei_injectie and not getattr(cont, "este_prosumator", False):
+                    continue
+                if descriere.key in chei_instantanee and raw.get("suport_date_instantanee") is not True:
+                    continue
                 entitati.append(SenzorContReteleElectrice(coordonator, cont, descriere))
 
     elif instantaneu and instantaneu.furnizor == "ebloc":
@@ -2869,6 +2910,37 @@ class SenzorContReteleElectrice(EntitateUtilitatiRomania, SensorEntity):
             for key in ("serie_contor", "tip_contor", "data_instalare_contor", "stare_contor", "configuratie_faze", "telecitit"):
                 if raw.get(key) not in (None, ""):
                     attrs[key] = raw.get(key)
+        elif self.entity_description.key == "status_alimentare":
+            if raw.get("mesaj_intreruperi"):
+                attrs["mesaj"] = raw.get("mesaj_intreruperi")
+            attrs["intrerupere_activa"] = raw.get("intrerupere_activa") is True
+        elif self.entity_description.key in {
+            "index_instant_consum",
+            "index_instant_injectie",
+            "energie_reactiva_inductiva",
+            "energie_reactiva_capacitiva",
+            "tensiune_faza_r",
+            "tensiune_faza_s",
+            "tensiune_faza_t",
+            "curent_faza_r",
+            "curent_faza_s",
+            "curent_faza_t",
+            "putere_instantanee_absorbita",
+            "data_citire_instantanee",
+            "ultima_actualizare_contor",
+        }:
+            instant = raw.get("date_instantanee") or {}
+            for key in (
+                "serie_contor",
+                "data_citire",
+                "ultima_actualizare",
+                "preluat_la",
+                "date_noi_disponibile",
+                "stare_date",
+                "mesaj_stare_date",
+            ):
+                if instant.get(key) not in (None, ""):
+                    attrs[key] = instant.get(key)
         return attrs
 
 

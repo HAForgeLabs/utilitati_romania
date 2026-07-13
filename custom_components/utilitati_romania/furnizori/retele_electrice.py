@@ -31,6 +31,8 @@ URL_AURA = f"{URL_BAZA}/s/sfsites/aura"
 URL_DETALII_POD = f"{URL_BAZA}/PED_ProxyCallWSAsync_Curve_VF"
 URL_CITIRI = f"{URL_BAZA}/PED_ProxyCallWSAsync_SmartMeter_Vf"
 URL_CONTOR = f"{URL_BAZA}/PED_ProxyCallWSAsynSmartMeterCurrentData"
+URL_CONTOR_INSTANT = f"{URL_BAZA}/PED_ProxyCallWSAsynSmartMeterIstantData"
+URL_INTRERUPERI = f"{URL_BAZA}/PED_ProxyCallWSAsynPowerOutages_VF"
 
 HEADERS_BROWSER = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -98,6 +100,178 @@ def _date(value: Any) -> date | None:
 def _iso_date(value: Any) -> str | None:
     parsed = _date(value)
     return parsed.isoformat() if parsed else (_text(value) or None)
+
+
+def _iso_datetime(value: Any) -> str | None:
+    raw = _text(value)
+    if not raw:
+        return None
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(raw, fmt).isoformat()
+        except ValueError:
+            continue
+    return raw
+
+
+def _normalizare_date_instantanee(result: dict[str, Any]) -> dict[str, Any]:
+    rows = result.get("dataIstantValueList") if isinstance(result, dict) else None
+    row = next((item for item in rows or [] if isinstance(item, dict)), None)
+    if not isinstance(row, dict):
+        mesaj = _text(result.get("ErrorMessage")) if isinstance(result, dict) else ""
+        raise EroareConectare(mesaj or "Portalul nu a returnat inca datele instantanee ale contorului")
+
+    energii: dict[str, float | int | None] = {}
+    for item in row.get("energyReadingList") or []:
+        if not isinstance(item, dict):
+            continue
+        tip = _text(item.get("ENERGY_TYPE")).upper()
+        if tip:
+            energii[tip] = _compact_number(_number(item.get("VALUE")))
+
+    ultima_actualizare = _iso_datetime(row.get("LAST_UPDATED"))
+    data_citire = _iso_date(row.get("READING_DATE"))
+    if ultima_actualizare and data_citire and ultima_actualizare.startswith(data_citire):
+        data_citire = ultima_actualizare
+
+    return {
+        "serie_contor": _text(row.get("METER")) or None,
+        "data_citire": data_citire,
+        "ultima_actualizare": ultima_actualizare,
+        "preluat_la": datetime.now().isoformat(timespec="seconds"),
+        "index_consum": energii.get("EA"),
+        "index_injectie": energii.get("EAP"),
+        "energie_reactiva_inductiva": energii.get("ER"),
+        "energie_reactiva_capacitiva": energii.get("ERC"),
+        "tensiune_faza_r": _compact_number(_number(row.get("UR_VALUE"))),
+        "tensiune_faza_s": _compact_number(_number(row.get("US_VALUE"))),
+        "tensiune_faza_t": _compact_number(_number(row.get("UT_VALUE"))),
+        "curent_faza_r": _compact_number(_number(row.get("IR_VALUE"))),
+        "curent_faza_s": _compact_number(_number(row.get("IS_VALUE"))),
+        "curent_faza_t": _compact_number(_number(row.get("IT_VALUE"))),
+        "putere_instantanee_absorbita": _compact_number(_number(row.get("P_VALUE"))),
+    }
+
+
+def _normalizare_intreruperi(result: dict[str, Any]) -> dict[str, Any]:
+    data = result.get("data") if isinstance(result, dict) else None
+    data = data if isinstance(data, dict) else {}
+    mesaj = _text(data.get("messaggio") or result.get("message") or result.get("ErrorMessage"))
+    mesaj_normalizat = mesaj.lower()
+    fara_intrerupere = any(
+        marker in mesaj_normalizat
+        for marker in (
+            "nu avem inregistrata nicio intrerupere",
+            "nu avem înregistrată nicio întrerupere",
+            "nu exista intreruperi",
+            "nu există întreruperi",
+            "nicio intrerupere",
+            "nicio întrerupere",
+        )
+    )
+    intrerupere_activa = bool(mesaj) and not fara_intrerupere and any(
+        marker in mesaj_normalizat
+        for marker in ("intrerup", "întrerup", "avarie", "intervent", "intervenț")
+    )
+    if intrerupere_activa:
+        stare = "Intrerupere raportata"
+    elif mesaj:
+        stare = "Fara intreruperi"
+    else:
+        stare = "Necunoscut"
+    return {
+        "stare": stare,
+        "intrerupere_activa": intrerupere_activa,
+        "mesaj": mesaj or None,
+        "esito": _text(data.get("esito") or result.get("esito") or result.get("Result")) or None,
+    }
+
+
+DATE_INSTANTANEE_SENZORI: tuple[tuple[str, str, str | None], ...] = (
+    ("index_instant_consum", "index_consum", "kWh"),
+    ("index_instant_injectie", "index_injectie", "kWh"),
+    ("energie_reactiva_inductiva", "energie_reactiva_inductiva", "kVArh"),
+    ("energie_reactiva_capacitiva", "energie_reactiva_capacitiva", "kVArh"),
+    ("tensiune_faza_r", "tensiune_faza_r", "V"),
+    ("tensiune_faza_s", "tensiune_faza_s", "V"),
+    ("tensiune_faza_t", "tensiune_faza_t", "V"),
+    ("curent_faza_r", "curent_faza_r", "A"),
+    ("curent_faza_s", "curent_faza_s", "A"),
+    ("curent_faza_t", "curent_faza_t", "A"),
+    ("putere_instantanee_absorbita", "putere_instantanee_absorbita", "kW"),
+    ("data_citire_instantanee", "data_citire", None),
+    ("ultima_actualizare_contor", "ultima_actualizare", None),
+)
+
+
+def aplica_date_instantanee(
+    instantaneu: InstantaneuFurnizor | None,
+    pod: str,
+    date_instantanee: dict[str, Any],
+) -> InstantaneuFurnizor | None:
+    if instantaneu is None:
+        return None
+
+    cont = next((item for item in instantaneu.conturi if item.id_cont == pod), None)
+    if cont is None:
+        return instantaneu
+
+    raw = cont.date_brute if isinstance(cont.date_brute, dict) else {}
+    raw["date_instantanee"] = dict(date_instantanee)
+    for cheie in ("status_alimentare", "intrerupere_activa", "mesaj_intreruperi"):
+        if cheie in date_instantanee:
+            raw[cheie] = date_instantanee.get(cheie)
+    cont.date_brute = raw
+
+    if "status_alimentare" in date_instantanee:
+        status = date_instantanee.get("status_alimentare")
+        existent_status = next(
+            (
+                item
+                for item in instantaneu.consumuri
+                if item.id_cont == pod and item.cheie == "status_alimentare"
+            ),
+            None,
+        )
+        if existent_status is not None:
+            existent_status.valoare = status
+        else:
+            instantaneu.consumuri.append(
+                ConsumUtilitate(
+                    "status_alimentare",
+                    status,
+                    None,
+                    id_cont=pod,
+                    tip_utilitate="energie",
+                    tip_serviciu="distributie",
+                )
+            )
+
+    for cheie_senzor, cheie_date, unitate in DATE_INSTANTANEE_SENZORI:
+        valoare = date_instantanee.get(cheie_date)
+        existent = next(
+            (
+                item
+                for item in instantaneu.consumuri
+                if item.id_cont == pod and item.cheie == cheie_senzor
+            ),
+            None,
+        )
+        if existent is not None:
+            existent.valoare = valoare
+            existent.unitate = unitate
+            continue
+        instantaneu.consumuri.append(
+            ConsumUtilitate(
+                cheie_senzor,
+                valoare,
+                unitate,
+                id_cont=pod,
+                tip_utilitate="energie",
+                tip_serviciu="distributie",
+            )
+        )
+    return instantaneu
 
 
 
@@ -484,6 +658,9 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
         self._aura_context: dict[str, Any] | None = None
         self._aura_token: str | None = None
         self._authenticated = False
+        self._pod_items: dict[str, dict[str, Any]] = {}
+        self._date_instantanee_cache: dict[str, dict[str, Any]] = {}
+        self._actualizari_instantanee: dict[str, dict[str, Any]] = {}
 
 
     async def _request_text(self, method: str, url: str, **kwargs: Any) -> tuple[aiohttp.ClientResponse, str]:
@@ -739,6 +916,11 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
         if not isinstance(value, list):
             raise EroareParsare("Lista POD Retele Electrice are un format neasteptat")
         pods = [item for item in value if isinstance(item, dict) and _text(item.get("POD__c") or item.get("Name"))]
+        self._pod_items = {
+            _text(item.get("POD__c") or item.get("Name")): item
+            for item in pods
+            if _text(item.get("POD__c") or item.get("Name"))
+        }
         _LOGGER.debug("Retele Electrice a returnat %s locuri de consum", len(pods))
         return pods
 
@@ -848,6 +1030,118 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
             params=params,
         )
 
+    async def _get_power_outages(self, pod: str) -> dict[str, Any]:
+        result = await self._visualforce_action(
+            url=URL_INTRERUPERI,
+            method_name="PowerOutages",
+            params=f"{pod},ro",
+        )
+        return _normalizare_intreruperi(result)
+
+    async def _item_pentru_pod(self, pod: str) -> dict[str, Any]:
+        item = self._pod_items.get(pod)
+        if item is not None:
+            return item
+        await self._get_pods()
+        item = self._pod_items.get(pod)
+        if item is None:
+            raise EroareParsare("Locul de consum Retele Electrice nu a fost gasit")
+        return item
+
+    async def async_solicita_actualizare_contor(self, pod: str) -> dict[str, Any]:
+        item = await self._item_pentru_pod(pod)
+        _, params = self._fiscal_params(item, pod)
+        if not _text(item.get("Fiscal_Code__c")):
+            raise EroareParsare("Contul Retele Electrice nu contine identificatorul necesar actualizarii contorului")
+
+        anterior = self._date_instantanee_cache.get(pod) or {}
+        if not anterior.get("ultima_actualizare"):
+            try:
+                rezultat_anterior = await self._visualforce_action(
+                    url=URL_CONTOR_INSTANT,
+                    method_name="FindOutMeterInstantData",
+                    params=params,
+                )
+                if _text(rezultat_anterior.get("Result")).upper() == "OK":
+                    anterior = _normalizare_date_instantanee(rezultat_anterior)
+                    self._date_instantanee_cache[pod] = anterior
+            except (EroareConectare, EroareParsare):
+                anterior = {}
+
+        result = await self._visualforce_action(
+            url=URL_CONTOR_INSTANT,
+            method_name="ReqMeterInstantData",
+            params=params,
+        )
+        if _text(result.get("Result")).upper() != "OK":
+            raise EroareConectare(_text(result.get("ErrorMessage")) or "Cererea de actualizare a contorului a esuat")
+
+        row = result.get("row") if isinstance(result.get("row"), dict) else {}
+        estimare = int(_number(row.get("ESTIMATION")) or 180)
+        payload = {
+            "pod": pod,
+            "serie_contor": _text(row.get("METER")) or None,
+            "estimare_secunde": max(0, estimare),
+            "solicitat_la": datetime.now().isoformat(timespec="seconds"),
+            "ultima_actualizare_anterioara": anterior.get("ultima_actualizare"),
+        }
+        self._actualizari_instantanee[pod] = payload
+        return payload
+
+    async def async_incarca_date_contor(self, pod: str) -> dict[str, Any]:
+        item = await self._item_pentru_pod(pod)
+        _, params = self._fiscal_params(item, pod)
+        if not _text(item.get("Fiscal_Code__c")):
+            raise EroareParsare("Contul Retele Electrice nu contine identificatorul necesar citirii contorului")
+
+        result = await self._visualforce_action(
+            url=URL_CONTOR_INSTANT,
+            method_name="FindOutMeterInstantData",
+            params=params,
+        )
+        if _text(result.get("Result")).upper() != "OK":
+            raise EroareConectare(_text(result.get("ErrorMessage")) or "Datele actualizate ale contorului nu sunt disponibile")
+
+        normalized = _normalizare_date_instantanee(result)
+        solicitare = self._actualizari_instantanee.get(pod) or {}
+        ultima_anterioara = _text(solicitare.get("ultima_actualizare_anterioara"))
+        ultima_noua = _text(normalized.get("ultima_actualizare"))
+        solicitare_activa = bool(solicitare)
+        date_noi_disponibile = not (
+            solicitare_activa
+            and ultima_anterioara
+            and ultima_noua
+            and ultima_anterioara == ultima_noua
+        )
+
+        normalized["date_noi_disponibile"] = date_noi_disponibile if solicitare_activa else None
+        if solicitare_activa and not date_noi_disponibile:
+            normalized["stare_date"] = "in_asteptare"
+            normalized["mesaj_stare_date"] = (
+                "Noile date solicitate nu sunt inca disponibile. "
+                "Au fost incarcate ultimele valori existente in portal."
+            )
+        elif solicitare_activa:
+            normalized["stare_date"] = "actualizate"
+            normalized["mesaj_stare_date"] = "Noile date raportate de contor au fost incarcate."
+        else:
+            normalized["stare_date"] = "ultimele_disponibile"
+            normalized["mesaj_stare_date"] = "Au fost incarcate cele mai recente valori disponibile in portal."
+
+        try:
+            intreruperi = await self._get_power_outages(pod)
+        except (EroareConectare, EroareParsare):
+            intreruperi = None
+        if intreruperi:
+            normalized["status_alimentare"] = intreruperi.get("stare")
+            normalized["intrerupere_activa"] = intreruperi.get("intrerupere_activa") is True
+            normalized["mesaj_intreruperi"] = intreruperi.get("mesaj")
+
+        self._date_instantanee_cache[pod] = normalized
+        if normalized.get("date_noi_disponibile") is not False:
+            self._actualizari_instantanee.pop(pod, None)
+        return normalized
+
     async def async_testeaza_conexiunea(self) -> str:
         pods = await self._get_pods()
         if not pods:
@@ -880,6 +1174,16 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
             except (EroareConectare, EroareParsare) as err:
                 _LOGGER.warning("Istoricul Retele Electrice nu a putut fi citit pentru POD %s: %s", _masked_pod(pod), err)
                 readings_response = {}
+
+            try:
+                intreruperi = await self._get_power_outages(pod)
+            except (EroareConectare, EroareParsare) as err:
+                _LOGGER.debug("Statusul intreruperilor nu este disponibil pentru POD %s: %s", _masked_pod(pod), err)
+                intreruperi = {
+                    "stare": "Necunoscut",
+                    "intrerupere_activa": False,
+                    "mesaj": None,
+                }
 
             technical_meters = technical.get("Contor") if isinstance(technical, dict) else None
             technical_meter = next((value for value in technical_meters or [] if isinstance(value, dict)), {})
@@ -942,6 +1246,14 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
             remote_reading = item.get("Remotely_read_meter__c")
             if remote_reading in (None, ""):
                 remote_reading = "Da" if item.get("Remote_Sensing__c") or item.get("Smart_meter__c") else "Nu"
+            telecitit_value = _text(technical.get("telecitit")) or _text(remote_reading)
+            smart_meter = bool(
+                item.get("Smart_meter__c")
+                or item.get("IsSmartMeter__c")
+                or item.get("Remote_Sensing__c")
+                or telecitit_value.lower() in {"da", "yes", "true", "1"}
+            )
+            date_instantanee = self._date_instantanee_cache.get(pod) or {}
 
             raw = {
                 "pod": pod,
@@ -949,6 +1261,9 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
                 "adresa_loc_consum": address or None,
                 "tip_loc_consum": "Prosumator" if is_prosumer else _text(item.get("Consumer_Type_Account__c")) or "Consumator",
                 "stare_loc_consum": connection_state,
+                "status_alimentare": intreruperi.get("stare"),
+                "intrerupere_activa": intreruperi.get("intrerupere_activa") is True,
+                "mesaj_intreruperi": intreruperi.get("mesaj"),
                 "operator_distributie": distributor_name or self.nume_prietenos,
                 "furnizor": supplier_name or None,
                 "serie_contor": series or None,
@@ -956,7 +1271,7 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
                 "clasa_precizie": meter_precision or None,
                 "data_instalare_contor": installation_date,
                 "periodicitate_citire": reading_frequency or None,
-                "masurare_orara": "Da" if item.get("Smart_meter__c") or item.get("IsSmartMeter__c") else "Nu",
+                "masurare_orara": "Da" if smart_meter else "Nu",
                 "masurare_zone_orare": "Da" if any(
                     any(zone in _text(row.get("tip_energie")).upper().split("+") for zone in TIPURI_CONSUM_ZONE)
                     for row in consumption_points
@@ -969,7 +1284,9 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
                 "cod_punct_masurare": pod,
                 "punct_racordare": connection_point or None,
                 "tensiune_delimitare": voltage_value,
-                "telecitit": _text(technical.get("telecitit")) or _text(remote_reading) or None,
+                "telecitit": telecitit_value or None,
+                "suport_date_instantanee": smart_meter,
+                "date_instantanee": dict(date_instantanee),
                 "stare_contor": meter_status or None,
                 "configuratie_faze": phase or None,
                 "istoric_citiri": [
@@ -1022,6 +1339,7 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
                 ("loc_consum", pod, None),
                 ("furnizor", supplier_name or None, None),
                 ("stare_loc_consum", connection_state, None),
+                ("status_alimentare", raw["status_alimentare"], None),
                 ("tip_loc_consum", raw["tip_loc_consum"], None),
                 ("serie_contor", series or None, None),
                 ("tip_contor", meter_type or None, None),
@@ -1047,6 +1365,11 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
                 ("masurare_orara", raw["masurare_orara"], None),
                 ("masurare_zone_orare", raw["masurare_zone_orare"], None),
             ]
+            for cheie_senzor, cheie_date, unitate in DATE_INSTANTANEE_SENZORI:
+                if cheie_senzor == "index_instant_injectie" and not is_prosumer:
+                    continue
+                values.append((cheie_senzor, date_instantanee.get(cheie_date), unitate))
+
             for key, value, unit in values:
                 if value in (None, ""):
                     continue

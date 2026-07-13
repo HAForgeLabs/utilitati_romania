@@ -17,10 +17,14 @@ from .const import (
     CONF_DIGI_COOKIES,
     CONF_FURNIZOR,
     CONF_INTERVAL_ACTUALIZARE,
+    CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
     CONF_DATE_TOKEN_EON,
     CONF_PAROLA,
     CONF_UTILIZATOR,
     DOMENIU,
+    IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+    MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+    MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
 )
 from .exceptions import EroareAutentificare, EroareConectare, EroareLicenta
 from .furnizori.registru import obtine_clasa_furnizor
@@ -94,6 +98,18 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         self._notificari_incarcate = False
         self._task_refresh_initial_deer: asyncio.Task[None] | None = None
         self._task_refresh_eon: asyncio.Task[None] | None = None
+        self._task_actualizare_contor_retele: asyncio.Task[None] | None = None
+        self._task_incarcare_initiala_contor_retele: asyncio.Task[None] | None = None
+        self._lock_actualizare_contor_retele = asyncio.Lock()
+        self._interval_date_instantanee_ore = self._normalizeaza_interval_date_instantanee(
+            intrare.options.get(
+                CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                intrare.data.get(
+                    CONF_RETELE_INTERVAL_DATE_INSTANTANEE,
+                    IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+                ),
+            )
+        )
 
         interval_ore = intrare.options.get(
             CONF_INTERVAL_ACTUALIZARE,
@@ -126,6 +142,8 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
 
         if self.cheie_furnizor == "eon":
             self._porneste_refresh_eon_in_fundal()
+        if self.cheie_furnizor == "retele_electrice":
+            self._porneste_actualizare_contor_retele_in_fundal()
 
     async def async_inchide(self) -> None:
         if self._task_refresh_initial_deer is not None:
@@ -146,10 +164,198 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             finally:
                 self._task_refresh_eon = None
 
+        if self._task_incarcare_initiala_contor_retele is not None:
+            self._task_incarcare_initiala_contor_retele.cancel()
+            try:
+                await self._task_incarcare_initiala_contor_retele
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._task_incarcare_initiala_contor_retele = None
+
+        if self._task_actualizare_contor_retele is not None:
+            self._task_actualizare_contor_retele.cancel()
+            try:
+                await self._task_actualizare_contor_retele
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._task_actualizare_contor_retele = None
+
         inchidere = getattr(self.client, "async_inchide", None)
         if callable(inchidere):
             await inchidere()
 
+
+    @staticmethod
+    def _normalizeaza_interval_date_instantanee(value: Any) -> int:
+        try:
+            interval = int(float(value))
+        except (TypeError, ValueError):
+            interval = IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE
+        return max(
+            MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+            min(MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE, interval),
+        )
+
+    @property
+    def interval_date_instantanee_ore(self) -> int:
+        return self._interval_date_instantanee_ore
+
+    async def async_seteaza_interval_date_instantanee(self, value: Any) -> None:
+        interval = self._normalizeaza_interval_date_instantanee(value)
+        self._interval_date_instantanee_ore = interval
+        options = dict(self.intrare.options)
+        options[CONF_RETELE_INTERVAL_DATE_INSTANTANEE] = interval
+        self.hass.config_entries.async_update_entry(self.intrare, options=options)
+
+        if self._task_actualizare_contor_retele is not None:
+            self._task_actualizare_contor_retele.cancel()
+            try:
+                await self._task_actualizare_contor_retele
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._task_actualizare_contor_retele = None
+        self._porneste_actualizare_contor_retele_in_fundal()
+
+    def _porneste_incarcare_initiala_contor_retele_in_fundal(
+        self,
+        instantaneu: InstantaneuFurnizor,
+    ) -> None:
+        if self.cheie_furnizor != "retele_electrice":
+            return
+        if (
+            self._task_incarcare_initiala_contor_retele is not None
+            and not self._task_incarcare_initiala_contor_retele.done()
+        ):
+            return
+        self._task_incarcare_initiala_contor_retele = self.hass.async_create_background_task(
+            self._async_incarcare_initiala_contor_retele_in_fundal(instantaneu),
+            f"utilitati_romania_retele_contor_initial_{self.intrare.entry_id}",
+        )
+
+    async def _async_incarcare_initiala_contor_retele_in_fundal(
+        self,
+        instantaneu: InstantaneuFurnizor,
+    ) -> None:
+        from .furnizori.retele_electrice import aplica_date_instantanee
+
+        actualizate = 0
+        try:
+            conturi = [
+                cont
+                for cont in (getattr(instantaneu, "conturi", None) or [])
+                if (getattr(cont, "date_brute", None) or {}).get("suport_date_instantanee") is True
+            ]
+            for cont in conturi:
+                pod = str(getattr(cont, "id_cont", None) or "").strip()
+                if not pod:
+                    continue
+                try:
+                    date_instantanee = await self.client.async_incarca_date_contor(pod)
+                    rezultat = aplica_date_instantanee(instantaneu, pod, date_instantanee)
+                    if rezultat is not None:
+                        instantaneu = rezultat
+                        actualizate += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug(
+                        "Incarcarea initiala a datelor contorului Retele Electrice a esuat pentru POD %s: %s",
+                        pod[-4:].rjust(len(pod), "*"),
+                        err,
+                    )
+
+            if actualizate:
+                self.async_set_updated_data(instantaneu)
+        finally:
+            self._task_incarcare_initiala_contor_retele = None
+
+    def _porneste_actualizare_contor_retele_in_fundal(self) -> None:
+        if self.cheie_furnizor != "retele_electrice" or self._interval_date_instantanee_ore <= 0:
+            return
+        if self._task_actualizare_contor_retele is not None and not self._task_actualizare_contor_retele.done():
+            return
+        self._task_actualizare_contor_retele = self.hass.async_create_background_task(
+            self._async_actualizare_contor_retele_in_fundal(),
+            f"utilitati_romania_retele_contor_{self.intrare.entry_id}",
+        )
+
+    async def _async_actualizare_contor_retele_in_fundal(self) -> None:
+        try:
+            while self._interval_date_instantanee_ore > 0:
+                await asyncio.sleep(self._interval_date_instantanee_ore * 3600)
+                await self.async_actualizeaza_date_instantanee_retele()
+        except asyncio.CancelledError:
+            raise
+
+    async def async_actualizeaza_date_instantanee_retele(self) -> int:
+        if self.cheie_furnizor != "retele_electrice" or self.data is None:
+            return 0
+        if self._lock_actualizare_contor_retele.locked():
+            return 0
+
+        from .furnizori.retele_electrice import aplica_date_instantanee
+
+        actualizate = 0
+        async with self._lock_actualizare_contor_retele:
+            conturi = [
+                cont
+                for cont in (getattr(self.data, "conturi", None) or [])
+                if (getattr(cont, "date_brute", None) or {}).get("suport_date_instantanee") is True
+            ]
+            solicitari: list[tuple[str, int]] = []
+            for cont in conturi:
+                pod = str(getattr(cont, "id_cont", None) or "").strip()
+                if not pod:
+                    continue
+                try:
+                    solicitare = await self.client.async_solicita_actualizare_contor(pod)
+                    estimare = int(solicitare.get("estimare_secunde") or 180)
+                    solicitari.append((pod, max(30, min(estimare, 600))))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "Solicitarea automata a contorului Retele Electrice a esuat pentru POD %s: %s",
+                        pod[-4:].rjust(len(pod), "*"),
+                        err,
+                    )
+
+            if not solicitari:
+                return 0
+
+            await asyncio.sleep(max(estimare for _, estimare in solicitari))
+
+            for pod, _ in solicitari:
+                try:
+                    date_instantanee = None
+                    for incercare in range(4):
+                        date_instantanee = await self.client.async_incarca_date_contor(pod)
+                        if date_instantanee.get("date_noi_disponibile") is not False:
+                            break
+                        if incercare < 3:
+                            await asyncio.sleep(30)
+
+                    if date_instantanee is None:
+                        continue
+                    actualizat = aplica_date_instantanee(self.data, pod, date_instantanee)
+                    if actualizat is not None:
+                        self.data = actualizat
+                        actualizate += 1
+                except asyncio.CancelledError:
+                    raise
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "Incarcarea automata a datelor contorului Retele Electrice a esuat pentru POD %s: %s",
+                        pod[-4:].rjust(len(pod), "*"),
+                        err,
+                    )
+
+            if actualizate and self.data is not None:
+                self.async_set_updated_data(self.data)
+        return actualizate
 
     def _porneste_refresh_eon_in_fundal(self) -> None:
         if self._task_refresh_eon is not None and not self._task_refresh_eon.done():
@@ -321,6 +527,9 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
 
             await self._sincronizeaza_citiri_din_portal(instantaneu)
             self._salveaza_token_runtime_furnizor(instantaneu)
+
+            if self.cheie_furnizor == "retele_electrice" and self.data is None:
+                self._porneste_incarcare_initiala_contor_retele_in_fundal(instantaneu)
 
             return instantaneu
 

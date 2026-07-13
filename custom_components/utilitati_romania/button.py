@@ -29,8 +29,11 @@ from .furnizori.hidroelectrica_helper import build_usage_entity, safe_get
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
 from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
 from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
+from .retele_electrice_device import alias_loc_retele_electrice, info_device_retele_electrice, slug_loc_retele_electrice
 from .naming import build_provider_slug
 from .furnizori.apa_brasov import nume_scurt_locatie_apa_brasov
+from .furnizori.retele_electrice import aplica_date_instantanee
+from .exceptions import EroareUtilitatiRomania
 
 from .storage_citiri import async_salveaza_citire
 
@@ -278,6 +281,12 @@ async def async_setup_entry(
             raw = getattr(cont, "date_brute", None) or {}
             if raw.get("poc") and raw.get("division") and raw.get("installation_number"):
                 entitati.append(ButonTrimiteIndexEngie(coordonator, cont))
+    elif coordonator.data and coordonator.data.furnizor == "retele_electrice":
+        for cont in coordonator.data.conturi:
+            raw = getattr(cont, "date_brute", None) or {}
+            if raw.get("suport_date_instantanee") is True:
+                entitati.append(ButonSolicitaActualizareContorRetele(coordonator, cont))
+                entitati.append(ButonIncarcaDateContorRetele(coordonator, cont))
     elif coordonator.data and coordonator.data.furnizor == "ebloc":
         entitati.append(ButonCurataSesiuniEbloc(coordonator))
         for cont in coordonator.data.conturi:
@@ -428,6 +437,110 @@ class ButonActualizareAcum(EntitateUtilitatiRomania, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.async_request_refresh()
+
+
+class _ButonContorReteleBaza(EntitateUtilitatiRomania, ButtonEntity):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, *, actiune: str, nume: str, icon: str) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        alias = alias_loc_retele_electrice(cont.nume, cont.adresa, cont.id_cont)
+        slug = slug_loc_retele_electrice(cont.id_cont, alias, cont.adresa)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_retele_electrice_{cont.id_cont}_{actiune}"
+        self._attr_name = nume
+        self._attr_icon = icon
+        self._attr_device_info = info_device_retele_electrice(coordonator.intrare.entry_id, cont)
+        self._attr_suggested_object_id = f"retele_electrice_{cont.id_cont}_{slug}_{actiune}"
+        self.entity_id = f"button.retele_electrice_{cont.id_cont}_{slug}_{actiune}"
+
+    @property
+    def available(self) -> bool:
+        cont = _cont_curent_dupa_id(self.coordinator, getattr(self.cont, "id_cont", None))
+        raw = getattr(cont, "date_brute", None) or {}
+        return cont is not None and raw.get("suport_date_instantanee") is True
+
+    @property
+    def extra_state_attributes(self):
+        cont = _cont_curent_dupa_id(self.coordinator, getattr(self.cont, "id_cont", None)) or self.cont
+        return {
+            "pod": getattr(cont, "id_cont", None),
+            "adresa": getattr(cont, "adresa", None),
+            "tip_serviciu": getattr(cont, "tip_serviciu", None),
+            "tip_utilitate": getattr(cont, "tip_utilitate", None),
+        }
+
+
+class ButonSolicitaActualizareContorRetele(_ButonContorReteleBaza):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(
+            coordonator,
+            cont,
+            actiune="solicita_actualizare_contor",
+            nume="Solicită actualizare contor",
+            icon="mdi:meter-electric-outline",
+        )
+
+    async def async_press(self) -> None:
+        try:
+            rezultat = await self.coordinator.client.async_solicita_actualizare_contor(self.cont.id_cont)
+        except EroareUtilitatiRomania as err:
+            raise HomeAssistantError(str(err)) from err
+
+        secunde = int(rezultat.get("estimare_secunde") or 180)
+        minute = max(1, round(secunde / 60))
+        persistent_notification.async_create(
+            self.hass,
+            (
+                "Cererea de actualizare a contorului a fost trimisă către Retele Electrice.\n\n"
+                f"Portalul estimează aproximativ **{minute} minute** până la disponibilitatea noilor valori. "
+                "După acest interval folosește butonul **Încarcă date contor**."
+            ),
+            title="Utilități România – Retele Electrice",
+            notification_id=f"utilitati_romania_retele_actualizare_{self.cont.id_cont}",
+        )
+
+
+class ButonIncarcaDateContorRetele(_ButonContorReteleBaza):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(
+            coordonator,
+            cont,
+            actiune="incarca_date_contor",
+            nume="Încarcă date contor",
+            icon="mdi:download-circle-outline",
+        )
+
+    async def async_press(self) -> None:
+        try:
+            date_instantanee = await self.coordinator.client.async_incarca_date_contor(self.cont.id_cont)
+        except EroareUtilitatiRomania as err:
+            raise HomeAssistantError(str(err)) from err
+
+        actualizat = aplica_date_instantanee(
+            self.coordinator.data,
+            self.cont.id_cont,
+            date_instantanee,
+        )
+        if actualizat is not None:
+            self.coordinator.async_set_updated_data(actualizat)
+
+        ultima_actualizare = date_instantanee.get("ultima_actualizare") or "-"
+        if date_instantanee.get("date_noi_disponibile") is False:
+            mesaj = (
+                "Noile date solicitate nu sunt încă disponibile.\n\n"
+                "Au fost încărcate ultimele valori existente în portal, "
+                f"generate la **{ultima_actualizare}**."
+            )
+        else:
+            mesaj = (
+                "Datele contorului au fost încărcate cu succes.\n\n"
+                f"Ultima actualizare raportată de portal: **{ultima_actualizare}**."
+            )
+        persistent_notification.async_create(
+            self.hass,
+            mesaj,
+            title="Utilități România – Retele Electrice",
+            notification_id=f"utilitati_romania_retele_actualizare_{self.cont.id_cont}",
+        )
 
 
 class ButonTrimiteIndexHidro(EntitateUtilitatiRomania, ButtonEntity):
