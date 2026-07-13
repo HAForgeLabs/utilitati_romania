@@ -860,7 +860,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   _isRerVestProvider(provider) {
     const key = String(provider?.furnizor || provider?.provider || provider?.provider_key || provider?.platform || "").toLowerCase();
     const label = String(provider?.furnizor_label || provider?.supplier || provider?.name || "").toLowerCase();
-    return key === "rervest" || key === "rer_vest" || label.includes("rer vest");
+    return key === "rervest" || key === "rer_vest" || key === "retim" || label.includes("rer vest") || label.includes("retim");
   }
 
   _providerAmount(provider) {

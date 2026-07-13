@@ -1147,7 +1147,7 @@ def _scadenta_urmatoare(instantaneu: InstantaneuFurnizor):
     if instantaneu.furnizor == "digi":
         return _valoare_consum_global(instantaneu, "urmatoarea_scadenta")
 
-    if instantaneu.furnizor == "polaris":
+    if instantaneu.furnizor in {"polaris", "retim"}:
         scadenta = _valoare_consum(instantaneu, "urmatoarea_scadenta")
         if scadenta not in (None, "", "unknown", "Unknown", "Necunoscut"):
             return scadenta

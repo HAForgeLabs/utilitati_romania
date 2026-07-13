@@ -126,7 +126,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   _isRerVestProvider(provider) {
     const key = String(provider?.furnizor || provider?.provider || provider?.provider_key || provider?.platform || "").toLowerCase();
     const label = String(provider?.furnizor_label || provider?.supplier || provider?.name || "").toLowerCase();
-    return key === "rervest" || key === "rer_vest" || label.includes("rer vest");
+    return key === "rervest" || key === "rer_vest" || key === "retim" || label.includes("rer vest") || label.includes("retim");
   }
 
   _providerUnpaidTotalValue(provider) {
@@ -1542,6 +1542,7 @@ _buildProviderRefreshButton(provider) {
       ebloc: "App. e-bloc",
       orange: "App. Orange",
       rervest: "App. RER Vest",
+      retim: "Portal RETIM",
       comprest: "Portal Comprest",
       apa_oradea: "Portal Apă Oradea",
       aparegio: "Portal ApaRegio Gorj",
