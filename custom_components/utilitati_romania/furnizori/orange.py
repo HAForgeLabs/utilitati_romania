@@ -625,8 +625,6 @@ class ClientFurnizorOrange(ClientFurnizor):
 
             data_scadenta = _data_sigura(last_bill.get("dueDate"))
             rest_plata = _float_sigur(balance.get("serviceBalanceAmount"))
-            if rest_plata is None:
-                rest_plata = _float_sigur(balance.get("totalBalanceAmount"))
             if rest_plata is None and istoric_curent:
                 rest_plata = _float_sigur(istoric_curent.get("serviceBalanceAmount"))
 
@@ -676,6 +674,7 @@ class ClientFurnizorOrange(ClientFurnizor):
                 )
             )
 
+        _reconciliaza_solduri_facturi_orange(facturi)
         facturi.sort(key=lambda item: item.data_emitere or date.min, reverse=True)
         return facturi
 
@@ -711,9 +710,7 @@ class ClientFurnizorOrange(ClientFurnizor):
             last_bill = factura_raw.get("last_bill") if isinstance(factura_raw.get("last_bill"), dict) else {}
             invoice_info = factura_raw.get("invoice_info") if isinstance(factura_raw.get("invoice_info"), dict) else {}
 
-            sold = _float_sigur(balance.get("serviceBalanceAmount"))
-            if sold is None:
-                sold = _float_sigur(balance.get("totalBalanceAmount"))
+            sold = _float_sigur(factura_raw.get("rest_plata"))
             if sold is not None:
                 are_sold = True
                 total_sold += sold
@@ -775,6 +772,122 @@ class ClientFurnizorOrange(ClientFurnizor):
                 "invoice_history_customers": list((date_brute.get("invoice_history", {}) or {}).keys()),
             },
         }
+
+
+
+def _reconciliaza_solduri_facturi_orange(facturi: list[FacturaUtilitate]) -> None:
+    """Distribuie soldul total doar când poate fi reconciliat sigur pe servicii."""
+    grupuri: dict[str, list[FacturaUtilitate]] = {}
+    for factura in facturi:
+        cheie = factura.id_contract or factura.id_cont or ""
+        grupuri.setdefault(cheie, []).append(factura)
+
+    for grup in grupuri.values():
+        # Unele răspunsuri Orange repetă soldul total al profilului în
+        # serviceBalanceAmount pentru fiecare serviciu. Când toate serviciile
+        # primesc aceeași valoare, iar suma facturilor curente este exact acel
+        # sold, distribuim soldul după valoarea facturii fiecărui serviciu.
+        if len(grup) > 1:
+            solduri_servicii = [
+                _float_sigur(factura.date_brute.get("rest_plata"))
+                for factura in grup
+            ]
+            solduri_valide = [sold for sold in solduri_servicii if sold is not None]
+            totaluri_profil = []
+            for factura in grup:
+                balance = factura.date_brute.get("balance_data")
+                if isinstance(balance, dict):
+                    total = _float_sigur(balance.get("totalBalanceAmount"))
+                    if total is not None:
+                        totaluri_profil.append(total)
+
+            if (
+                len(solduri_valide) == len(grup)
+                and solduri_valide
+                and all(abs(sold - solduri_valide[0]) <= 0.01 for sold in solduri_valide[1:])
+                and totaluri_profil
+                and all(abs(total - totaluri_profil[0]) <= 0.01 for total in totaluri_profil[1:])
+                and abs(solduri_valide[0] - totaluri_profil[0]) <= 0.01
+            ):
+                suma_facturi = sum(max(factura.valoare or 0.0, 0.0) for factura in grup)
+                if abs(suma_facturi - totaluri_profil[0]) <= 0.02:
+                    for factura in grup:
+                        sold = round(max(factura.valoare or 0.0, 0.0), 2)
+                        factura.date_brute["rest_plata"] = sold
+                        factura.date_brute["amount_remaining"] = sold
+                        factura.date_brute["sold_source"] = "factura_curenta_sold_profil_duplicat"
+                        factura.stare = _stare_factura(
+                            sold,
+                            factura.data_scadenta,
+                            factura.date_brute.get("history_item"),
+                        )
+                    _orange_diag(
+                        "sold_profil_duplicat_distribuit",
+                        {
+                            "numar_servicii": len(grup),
+                            "total_profil": totaluri_profil[0],
+                            "suma_facturi_curente": suma_facturi,
+                        },
+                    )
+
+        nerezolvate = [
+            factura
+            for factura in grup
+            if _float_sigur(factura.date_brute.get("rest_plata")) is None
+        ]
+        if not nerezolvate:
+            continue
+
+        totaluri = []
+        for factura in nerezolvate:
+            balance = factura.date_brute.get("balance_data")
+            if not isinstance(balance, dict):
+                continue
+            total = _float_sigur(balance.get("totalBalanceAmount"))
+            if total is not None:
+                totaluri.append(total)
+
+        if not totaluri:
+            continue
+
+        total_cont = totaluri[0]
+        if any(abs(total - total_cont) > 0.01 for total in totaluri[1:]):
+            continue
+
+        solduri_cunoscute = sum(
+            max(_float_sigur(factura.date_brute.get("rest_plata")) or 0.0, 0.0)
+            for factura in grup
+            if factura not in nerezolvate
+        )
+        ramas = max(total_cont - solduri_cunoscute, 0.0)
+        suma_facturi = sum(max(factura.valoare or 0.0, 0.0) for factura in nerezolvate)
+
+        if len(nerezolvate) == 1:
+            alocari = [ramas]
+        elif abs(suma_facturi - ramas) <= 0.02:
+            alocari = [max(factura.valoare or 0.0, 0.0) for factura in nerezolvate]
+        else:
+            _orange_diag(
+                "sold_total_nealocat",
+                {
+                    "numar_servicii": len(nerezolvate),
+                    "total_cont": total_cont,
+                    "solduri_cunoscute": solduri_cunoscute,
+                    "suma_facturi_curente": suma_facturi,
+                },
+            )
+            continue
+
+        for factura, sold in zip(nerezolvate, alocari, strict=True):
+            sold = round(sold, 2)
+            factura.date_brute["rest_plata"] = sold
+            factura.date_brute["amount_remaining"] = sold
+            factura.date_brute["sold_source"] = "reconciliere_total_cont"
+            factura.stare = _stare_factura(
+                sold,
+                factura.data_scadenta,
+                factura.date_brute.get("history_item"),
+            )
 
 
 def _formateaza_adresa_orange(subscriber: dict[str, Any]) -> str:
