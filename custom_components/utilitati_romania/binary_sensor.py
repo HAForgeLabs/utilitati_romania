@@ -7,10 +7,13 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+import re
+
 from .const import DOMENIU
 from .coordonator import CoordonatorUtilitatiRomania
 from .entitate import EntitateUtilitatiRomania
 from .retele_electrice_device import info_device_retele_electrice
+from .naming import build_provider_slug
 
 
 async def async_setup_entry(
@@ -28,6 +31,11 @@ async def async_setup_entry(
     if coordonator.data and coordonator.data.furnizor == "retele_electrice":
         for cont in coordonator.data.conturi:
             entitati.append(ReteleElectriceIntrerupereBinarySensor(coordonator, cont))
+
+    if coordonator.data and coordonator.data.furnizor == "apa_nova_bucuresti":
+        for cont in coordonator.data.conturi:
+            entitati.append(ApaNovaFacturaRestantaBinarySensor(coordonator, cont))
+            entitati.append(ApaNovaContorInteligentBinarySensor(coordonator, cont))
 
     async_add_entities(entitati)
 
@@ -99,3 +107,75 @@ class ReteleElectriceIntrerupereBinarySensor(EntitateUtilitatiRomania, BinarySen
             "mesaj": raw.get("mesaj_intreruperi"),
             "status_alimentare": raw.get("status_alimentare"),
         }
+
+
+def _valoare_consum_cont(coordonator: CoordonatorUtilitatiRomania, cont_id: str, cheie: str):
+    if coordonator.data is None:
+        return None
+    for consum in coordonator.data.consumuri:
+        if consum.id_cont == cont_id and consum.cheie == cheie:
+            return consum.valoare
+    return None
+
+
+def _nume_loc_apa_nova(cont) -> str:
+    raw = getattr(cont, "date_brute", None) or {}
+    adresa = getattr(cont, "adresa", None) or getattr(cont, "nume", None) or "Loc consum"
+    detaliu = raw.get("numar_instalatie") or raw.get("cod_client") or getattr(cont, "id_cont", None)
+    text = f"{adresa} ({detaliu})" if detaliu and str(detaliu) not in str(adresa) else str(adresa)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _slug_loc_apa_nova(cont) -> str:
+    raw = getattr(cont, "date_brute", None) or {}
+    baza = getattr(cont, "adresa", None) or getattr(cont, "nume", None) or raw.get("cod_client")
+    return build_provider_slug("apa_nova_bucuresti", baza, getattr(cont, "id_cont", None))
+
+
+def _info_device_apa_nova(entry_id: str, cont) -> DeviceInfo:
+    ident = getattr(cont, "id_cont", "apa_nova_bucuresti")
+    return DeviceInfo(
+        identifiers={(DOMENIU, f"{entry_id}_apa_nova_bucuresti_{ident}")},
+        name=f"Apa Nova București - {_nume_loc_apa_nova(cont)}",
+        manufacturer="Apa Nova București",
+        model="Apă / canal",
+    )
+
+
+class _ApaNovaBinarySensorBase(EntitateUtilitatiRomania, BinarySensorEntity):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, key: str) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self._key = key
+        slug = _slug_loc_apa_nova(cont)
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_apa_nova_bucuresti_{cont.id_cont}_{key}"
+        self._attr_suggested_object_id = f"{slug}_{key}"
+        self.entity_id = f"binary_sensor.{slug}_{key}"
+        self._attr_device_info = _info_device_apa_nova(coordonator.intrare.entry_id, cont)
+
+    @property
+    def available(self) -> bool:
+        if self.coordinator.data is None:
+            return False
+        return any(getattr(item, "id_cont", None) == self.cont.id_cont for item in self.coordinator.data.conturi)
+
+    @property
+    def is_on(self) -> bool:
+        return _valoare_consum_cont(self.coordinator, self.cont.id_cont, self._key) is True
+
+
+class ApaNovaFacturaRestantaBinarySensor(_ApaNovaBinarySensorBase):
+    _attr_name = "Factură restantă"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_icon = "mdi:alert-circle"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator, cont, "factura_restanta")
+
+
+class ApaNovaContorInteligentBinarySensor(_ApaNovaBinarySensorBase):
+    _attr_name = "Contor inteligent"
+    _attr_icon = "mdi:water-sync"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator, cont, "contor_inteligent")

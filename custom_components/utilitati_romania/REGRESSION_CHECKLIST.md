@@ -513,3 +513,71 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Datele istorice si indexurile oficiale nu sunt suprascrise de valorile instantanee.
 - [ ] DEO, DEER si celelalte platforme continua sa functioneze fara regresii.
 - [ ] Arhiva nu contine HAR-uri, credentiale, loguri temporare, `__pycache__` sau fisiere `.pyc`.
+
+## v1.15.2b1 - Apa Nova Bucuresti
+
+- [ ] Furnizorul `Apa Nova Bucuresti` apare in config flow si poate fi adaugat cu emailul si parola contului mobil.
+- [ ] Autentificarea obtine mai intai tokenul tehnic al aplicatiei, apoi tokenul utilizatorului, fara sa scrie credentiale sau tokenuri in log.
+- [ ] Lista codurilor de client este citita din `GetCodClientListByToken`, iar fiecare cod este procesat separat.
+- [ ] Punctele de consum cu contor activ sunt create ca dispozitive distincte, folosind codul punctului de consum drept identificator stabil.
+- [ ] Punctele istorice fara contor nu genereaza entitati goale sau duplicate.
+- [ ] Soldul total este preluat din `apiclientsold` si coincide cu valoarea afisata in aplicatie.
+- [ ] Istoricul facturilor este preluat din `apiclientinvoices`; factura achitata are sold zero si status `achitata`.
+- [ ] Facturile neachitate sunt identificate din soldul individual si nu doar din textul statusului.
+- [ ] Ultima factura, urmatoarea scadenta, numarul facturilor si numarul facturilor neachitate sunt afisate corect.
+- [ ] Ultimul index, data citirii, seria contorului si starea smart sunt preluate din `apiclientcheckmeterautoreading`.
+- [ ] Istoricul indexurilor si consumul lunar sunt preluate din `apiclientindexhistory`.
+- [ ] Pentru contoarele smart, citirea manuala nu este marcata ca disponibila.
+- [ ] Endpointul de descarcare factura ramane documentat: PDF-ul este Base64 in `content.InvoiceContent`; integrarea nu logheaza continutul PDF.
+- [ ] Diagnostics nu expune parola, tokenurile de acces, tokenul de refresh sau credentialele tehnice ale aplicatiei.
+- [ ] Versiunea din manifest, backend si frontend este `1.15.2b1`.
+- [ ] Arhiva nu contine HAR-uri, credentiale de utilizator, tokenuri capturate, `__pycache__` sau fisiere `.pyc`.
+
+
+## v1.15.2b2 - plati si curatare entitati Apa Nova Bucuresti
+
+- [ ] Endpointul `apiclientpayments/{client_number}` este incarcat pentru fiecare cod de client.
+- [ ] `Numar plati` afiseaza numarul real al documentelor de plata returnate de API.
+- [ ] `Data ultimei plati` este cea mai recenta data valida din istoricul platilor.
+- [ ] `Valoare ultima plata` insumeaza toate documentele din cea mai recenta zi de plata.
+- [ ] Atributele ultimei plati contin metodele si numerele documentelor individuale.
+- [ ] `Scadenta ultimei facturi` foloseste scadenta celei mai recente facturi, nu cea mai veche restanta.
+- [ ] `Sold curent` nu mai dubleaza senzorul `De plata`.
+- [ ] `Factura restanta` este binary sensor de tip problem.
+- [ ] `Contor inteligent` este binary sensor si nu mai afiseaza valoarea textuala `True`.
+- [ ] Senzorii vechi `sensor.*_factura_restanta`, `sensor.*_contor_inteligent` si `sensor.*_sold_curent` nu mai sunt creati pentru Apa Nova Bucuresti.
+- [ ] Versiunea din manifest, backend si frontend este `1.15.2b2`.
+- [ ] Arhiva nu contine HAR-uri, credentiale de utilizator, tokenuri capturate, `__pycache__` sau fisiere `.pyc`.
+
+
+## v1.15.2b4 - facturi neachitate individuale Apa Nova Bucuresti
+
+- [ ] Pentru Apa Nova Bucuresti, fiecare factura neachitata este afisata ca rand/card separat in dashboard.
+- [ ] Numarul de facturi neachitate din dashboard este egal cu lista returnata de `apiclientunpaidinvoices`.
+- [ ] Totalul neplatit se calculeaza din soldul individual al fiecarei facturi (`sold_factura`/`Sold`), fara multiplicarea soldului total al contului.
+- [ ] Pentru datele de test, sunt afisate 3 facturi neachitate, iar totalul este 640,12 RON.
+- [ ] Facturile platite raman agregate conform comportamentului existent si nu dubleaza cardurile.
+- [ ] Versiunea din manifest, backend si frontend este `1.15.2b4`.
+
+
+## v1.15.2b7 - Apa Nova: afișare facturi în dashboard
+
+- Baza modificării este v1.15.2b4, deoarece aceasta păstra corect toate facturile și totalul neachitat.
+- Dacă există facturi neachitate, dashboardul afișează exclusiv toate facturile neachitate.
+- Facturile sunt clasificate folosind `date_brute.sold_factura` și `FacturaUtilitate.stare`, nu atribute inexistente pe model.
+- Dacă nu există restanțe, dashboardul afișează numai ultima factură.
+- Totalul de plată rămâne suma soldurilor individuale ale tuturor facturilor neachitate; pentru contul de test: 640,12 RON.
+- Caz de regresie: 3 facturi neachitate + 1 factură plătită trebuie să producă 3 carduri, 0 carduri plătite și total 640,12 RON.
+
+
+## v1.16.0 - Apa Nova Bucuresti
+
+- [ ] Furnizorul Apa Nova Bucuresti poate fi configurat cu email si parola.
+- [ ] Sunt procesate toate codurile de client asociate contului.
+- [ ] Soldul total, facturile, PDF-urile, punctele de consum, indexurile si platile sunt disponibile.
+- [ ] Daca exista facturi neachitate, dashboardul afiseaza toate facturile neachitate si nu afiseaza facturi platite.
+- [ ] Daca nu exista facturi neachitate, dashboardul afiseaza doar cea mai recenta factura.
+- [ ] Totalul neachitat este calculat din soldurile reale ale facturilor si corespunde soldului contului.
+- [ ] Pentru contul de test sunt afisate 3 facturi neachitate, cu total 640,12 RON.
+- [ ] Entitatile de plati folosesc ultima zi de plata, iar valoarea reprezinta suma documentelor din acea zi.
+- [ ] Versiunea din manifest, backend si frontend este `1.16.0`.

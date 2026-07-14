@@ -161,6 +161,8 @@ _UNPAID_RAW_KEYS = (
     "rest",
     "rest_plata",
     "sold",
+    "Sold",
+    "sold_factura",
     "remaining",
     "amount_remaining",
     "AmountRemaining",
@@ -1171,6 +1173,23 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
         )
         return (locatie, furnizor, normalize_text(identificator_punct).lower())
 
+    if furnizor == "apa_nova_bucuresti":
+        identificator_cont = (
+            item.get("id_cont")
+            or item.get("id_contract")
+            or item.get("nume_cont")
+            or ""
+        )
+        factura_id = _curata_identificator_factura(item.get("invoice_id"))
+        if item.get("status") == "unpaid" and factura_id:
+            return (
+                locatie,
+                furnizor,
+                normalize_text(identificator_cont).lower(),
+                normalize_text(factura_id).lower(),
+            )
+        return (locatie, furnizor, normalize_text(identificator_cont).lower())
+
     if furnizor == "hidroelectrica":
         identificator_cont = (
             item.get("id_cont")
@@ -1614,6 +1633,32 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                 if str(getattr(factura, "id_factura", "") or "") in latest_ids
                 or (instantaneu.furnizor == "hidroelectrica" and _hidroelectrica_are_rest_de_plata(factura))
             ]
+
+        if instantaneu.furnizor == "apa_nova_bucuresti":
+            # Dashboardul afișează toate facturile neachitate. O factură plătită
+            # este păstrată doar ca ultimă factură atunci când nu există restanțe.
+            facturi_neachitate = []
+            for factura in facturi_de_afisat:
+                date_brute = factura.date_brute if isinstance(factura.date_brute, dict) else {}
+                sold_factura = _to_float(date_brute.get("sold_factura"))
+                stare = normalize_text(getattr(factura, "stare", "")).lower()
+                if (sold_factura is not None and sold_factura > 0.005) or _status_in(
+                    stare, _NORMALIZED_STATUS_UNPAID_TOKENS
+                ):
+                    facturi_neachitate.append(factura)
+
+            if facturi_neachitate:
+                facturi_de_afisat = facturi_neachitate
+            elif facturi_de_afisat:
+                facturi_de_afisat = [
+                    max(
+                        facturi_de_afisat,
+                        key=lambda factura: (
+                            getattr(factura, "data_emitere", None) or date.min,
+                            str(getattr(factura, "id_factura", "") or ""),
+                        ),
+                    )
+                ]
 
         # 1. Facturi reale, dacă există
         for factura in facturi_de_afisat:

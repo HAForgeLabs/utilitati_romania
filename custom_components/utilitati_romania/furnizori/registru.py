@@ -4,6 +4,7 @@ from .apa_canal import ClientFurnizorApaCanal
 from .aquatim import ClientFurnizorAquatim
 from .apa_brasov import ClientFurnizorApaBrasov
 from .apa_oradea import ClientFurnizorApaOradea
+from .apa_nova_bucuresti import ClientFurnizorApaNovaBucuresti
 from .apa_galati import ClientFurnizorApaGalati
 from .aparegio import ClientFurnizorAparegio
 from .baza import ClientFurnizor
@@ -33,6 +34,7 @@ FURNIZORI: dict[str, type[ClientFurnizor]] = {
     ClientFurnizorApaCanal.cheie_furnizor: ClientFurnizorApaCanal,
     ClientFurnizorApaBrasov.cheie_furnizor: ClientFurnizorApaBrasov,
     ClientFurnizorApaOradea.cheie_furnizor: ClientFurnizorApaOradea,
+    ClientFurnizorApaNovaBucuresti.cheie_furnizor: ClientFurnizorApaNovaBucuresti,
     ClientFurnizorApaGalati.cheie_furnizor: ClientFurnizorApaGalati,
     ClientFurnizorAparegio.cheie_furnizor: ClientFurnizorAparegio,
     ClientFurnizorHidroelectrica.cheie_furnizor: ClientFurnizorHidroelectrica,
