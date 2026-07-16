@@ -60,7 +60,7 @@ from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licent
 
 _LOGGER = logging.getLogger(__name__)
 
-_FRONTEND_VERSION = "1.16.0"
+_FRONTEND_VERSION = "1.16.1"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -75,6 +75,16 @@ _ADMIN_PLATFORME = [Platform.SENSOR, Platform.BUTTON, Platform.TEXT, Platform.SE
 async def _websocket_distribution_supplier_links(hass, connection, msg):
     links = await async_incarca_asocieri_distributie(hass)
     connection.send_result(msg["id"], {"links": links})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "utilitati_romania/dashboard_payload"})
+@websocket_api.async_response
+async def _websocket_dashboard_payload(hass, connection, msg):
+    domain_data = hass.data.get(DOMENIU, {})
+    payload = domain_data.get("dashboard_facturi_payload")
+    if not isinstance(payload, dict):
+        payload = {"locatii": []}
+    connection.send_result(msg["id"], payload)
 
 def _slug_legacy(text: str | None) -> str:
     value = str(text or "cont").lower()
@@ -932,6 +942,7 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMENIU, SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY, _async_handle_set_consumption_point_visibility)
     hass.services.async_register(DOMENIU, SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS, _async_handle_set_distribution_supplier_links)
     websocket_api.async_register_command(hass, _websocket_distribution_supplier_links)
+    websocket_api.async_register_command(hass, _websocket_dashboard_payload)
     hass.data[DOMENIU]["_services_registered"] = True
 
 
@@ -1234,6 +1245,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # deoarece asta redenumește greșit grupul furnizorului și poate produce duplicate
     # în device registry după mai multe beta-uri.
     await _migrare_unique_ids(hass, entry, coordonator)
+    await _async_normalize_retele_electrice_entity_ids(hass, entry)
     hass.data[DOMENIU][entry.entry_id] = coordonator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORME)
 
@@ -1510,6 +1522,50 @@ def _migrare_senzori_nova(entry_id: str, data) -> dict[str, tuple[str, str]]:
         mapping[new_unique] = (new_unique, new_object_id)
     return mapping
 
+
+
+async def _async_normalize_retele_electrice_entity_ids(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Normalizează la lowercase entity_id-urile existente Rețele Electrice."""
+    if entry.data.get(CONF_FURNIZOR) != "retele_electrice":
+        return
+
+    registry = er.async_get(hass)
+    entries = list(er.async_entries_for_config_entry(registry, entry.entry_id))
+    occupied_ids = {item.entity_id for item in entries}
+
+    for entity_entry in entries:
+        if entity_entry.platform != DOMENIU:
+            continue
+        if "_retele_electrice_" not in str(entity_entry.unique_id or ""):
+            continue
+
+        desired_entity_id = entity_entry.entity_id.lower()
+        if desired_entity_id == entity_entry.entity_id:
+            continue
+        if desired_entity_id in occupied_ids:
+            _LOGGER.warning(
+                "Nu pot normaliza entity_id-ul Rețele Electrice %s deoarece %s există deja",
+                entity_entry.entity_id,
+                desired_entity_id,
+            )
+            continue
+
+        try:
+            registry.async_update_entity(
+                entity_entry.entity_id,
+                new_entity_id=desired_entity_id,
+            )
+            occupied_ids.discard(entity_entry.entity_id)
+            occupied_ids.add(desired_entity_id)
+        except Exception:
+            _LOGGER.debug(
+                "Nu am putut normaliza entity_id-ul Rețele Electrice %s",
+                entity_entry.entity_id,
+                exc_info=True,
+            )
 
 
 async def _async_force_migrare_entity_ids_ebloc(

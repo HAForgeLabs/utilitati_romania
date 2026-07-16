@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
+import logging
 import re
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
@@ -46,6 +47,7 @@ from .facturi_agregate import colecteaza_facturi_agregate, colecteaza_locuri_con
 from .storage_citiri import async_incarca_cache_citiri, obtine_citire_cache
 
 
+_LOGGER = logging.getLogger(__name__)
 def _cheie_provider_sumar(provider: dict[str, Any] | None) -> tuple[str, str, str, str, str]:
     if not isinstance(provider, dict):
         return ("", "", "", "", "")
@@ -218,6 +220,7 @@ class SenzorAdminBaza(SensorEntity):
             "contact": "contact_dezvoltator",
             "support": "suport",
             "facturi_agregate": "facturi_utilitati",
+            "locuri_consum_administrare": "locuri_consum_utilitati",
         }
         object_id = object_map.get(key, key)
 
@@ -226,6 +229,8 @@ class SenzorAdminBaza(SensorEntity):
 
         if key == "facturi_agregate":
             self.entity_id = "sensor.administrare_integrare_facturi_utilitati"
+        elif key == "locuri_consum_administrare":
+            self.entity_id = "sensor.administrare_integrare_locuri_consum_utilitati"
         else:
             self.entity_id = f"sensor.{DOMENIU}_{object_id}"
 
@@ -298,6 +303,7 @@ class SenzorAdminFacturiAgregate(SenzorAdminBaza):
         self._attr_entity_category = None
         self._sumar: dict[str, Any] = {}
         self._unsub_interval = None
+        self._payload_revision = 0
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -319,6 +325,9 @@ class SenzorAdminFacturiAgregate(SenzorAdminBaza):
             self._sumar = sumar_facturi(facturi)
             self._sumar["locuri_consum"] = locuri_consum
             self._sumar = _completeaza_sumar_cu_locuri_fara_facturi(self._sumar, locuri_consum)
+            self._payload_revision += 1
+            domain_data = self.hass.data.setdefault(DOMENIU, {})
+            domain_data["dashboard_facturi_payload"] = self._sumar
             self._attr_native_value = self._sumar.get("numar_facturi", 0)
             self._ultima_eroare = None
             self._attr_available = True
@@ -333,8 +342,7 @@ class SenzorAdminFacturiAgregate(SenzorAdminBaza):
     def available(self) -> bool:
         return True
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
+    def _build_state_attributes(self) -> dict[str, Any]:
         return {
             "numar_facturi": self._sumar.get("numar_facturi", 0),
             "numar_platite": self._sumar.get("numar_platite", 0),
@@ -344,12 +352,65 @@ class SenzorAdminFacturiAgregate(SenzorAdminBaza):
             "total_neplatit": self._sumar.get("total_neplatit", 0),
             "total_neplatit_formatat": self._sumar.get("total_neplatit_formatat", "0.00 RON"),
             "moneda": self._sumar.get("moneda", "RON"),
-            "locatii": self._sumar.get("locatii", []),
-            "locuri_consum": self._sumar.get("locuri_consum", []),
-            "locuri_consum_ignorate": [item for item in self._sumar.get("locuri_consum", []) if item.get("ignored")],
+            "transport_payload": "websocket",
+            "revizie_payload": self._payload_revision,
             "ultima_eroare": getattr(self, "_ultima_eroare", None),
         }
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self._build_state_attributes()
+
+
+
+class SenzorAdminLocuriConsum(SenzorAdminBaza):
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(entry, "locuri_consum_administrare", "Locuri de consum utilități")
+        self.hass = hass
+        self._attr_icon = "mdi:map-marker-multiple-outline"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._locuri_consum: list[dict[str, Any]] = []
+        self._unsub_interval = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._unsub_interval = async_track_time_interval(
+            self.hass, self._async_handle_interval, timedelta(minutes=1)
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_interval is not None:
+            self._unsub_interval()
+            self._unsub_interval = None
+
+    async def _async_handle_interval(self, _now) -> None:
+        await self._async_refresh_value()
+        self.async_write_ha_state()
+
+    async def _async_refresh_value(self) -> None:
+        try:
+            self._locuri_consum = colecteaza_locuri_consum(self.hass)
+            self._attr_native_value = len(self._locuri_consum)
+            self._ultima_eroare = None
+            self._attr_available = True
+        except Exception as err:
+            self._attr_native_value = len(self._locuri_consum)
+            self._ultima_eroare = str(err)
+            self._attr_available = True
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "locuri_consum": self._locuri_consum,
+            "locuri_consum_ignorate": [
+                item for item in self._locuri_consum if item.get("ignored")
+            ],
+            "ultima_eroare": getattr(self, "_ultima_eroare", None),
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1941,6 +2002,7 @@ async def async_setup_entry(
             SenzorAdminStatic(entry, "contact", "Contact dezvoltator", "GitHub: @HAForgeLabs"),
             SenzorAdminStatic(entry, "support", "Suport", "github.com/HAForgeLabs/utilitati_romania/issues"),
             SenzorAdminFacturiAgregate(hass, entry),
+            SenzorAdminLocuriConsum(hass, entry),
         ])
         return
 
@@ -2920,8 +2982,9 @@ class SenzorContReteleElectrice(EntitateUtilitatiRomania, SensorEntity):
         slug = slug_loc_retele_electrice(cont.id_cont, alias, cont.adresa)
         self._attr_unique_id = f"{coordonator.intrare.entry_id}_retele_electrice_{cont.id_cont}_{descriere.key}"
         self._attr_name = descriere.name
-        self._attr_suggested_object_id = f"retele_electrice_{cont.id_cont}_{slug}_{descriere.key}"
-        self.entity_id = f"sensor.retele_electrice_{cont.id_cont}_{slug}_{descriere.key}"
+        pod_object_id = str(cont.id_cont or "").strip().lower()
+        self._attr_suggested_object_id = f"retele_electrice_{pod_object_id}_{slug}_{descriere.key}"
+        self.entity_id = f"sensor.retele_electrice_{pod_object_id}_{slug}_{descriere.key}"
         self._attr_device_info = info_device_retele_electrice(coordonator.intrare.entry_id, cont)
 
     @property

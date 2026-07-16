@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.0";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.1";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -24,12 +24,16 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._distributionSupplierDrafts = new Map();
     this._distributionSupplierLinksRemote = null;
     this._distributionSupplierLinksLoading = false;
+    this._dashboardPayload = null;
+    this._dashboardPayloadRevision = null;
+    this._dashboardPayloadLoading = false;
   }
 
   set hass(hass) {
     this._hass = hass;
     this._readingCache.clear();
     this._ensureDistributionSupplierLinksLoaded();
+    this._ensureDashboardPayloadLoaded();
     if (this._shouldDelayRenderForInteraction()) return;
     this._render();
   }
@@ -71,7 +75,6 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const isSummaryCandidate = (entityId) => {
       const attrs = states[entityId]?.attributes || {};
       return entityId.startsWith("sensor.")
-        && Array.isArray(attrs.locatii)
         && Object.prototype.hasOwnProperty.call(attrs, "numar_facturi")
         && Object.prototype.hasOwnProperty.call(attrs, "total_neplatit");
     };
@@ -86,7 +89,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const scoreCandidate = (entityId) => {
       const state = states[entityId] || {};
       const attrs = state.attributes || {};
-      const locations = Array.isArray(attrs.locatii) ? attrs.locatii : [];
+      const locations = Array.isArray(this._dashboardPayload?.locatii)
+        ? this._dashboardPayload.locatii
+        : (Array.isArray(attrs.locatii) ? attrs.locatii : []);
       const providers = locations.reduce((sum, location) => {
         const list = Array.isArray(location?.furnizori) ? location.furnizori : [];
         return sum + list.length;
@@ -114,15 +119,58 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return candidates[0] || null;
   }
 
+  _consumptionPointsState() {
+    const preferred = "sensor.administrare_integrare_locuri_consum_utilitati";
+    const states = this._hass?.states || {};
+    if (states[preferred]) return states[preferred];
+
+    return Object.values(states).find((state) => {
+      const attrs = state?.attributes || {};
+      return state?.entity_id?.startsWith("sensor.")
+        && Array.isArray(attrs.locuri_consum)
+        && !Array.isArray(attrs.locatii);
+    }) || null;
+  }
+
+  _ensureDashboardPayloadLoaded() {
+    const entityId = this._summaryEntityId();
+    const state = entityId ? this._hass?.states?.[entityId] : null;
+    const revision = state?.attributes?.revizie_payload ?? null;
+    const usesWebsocket = state?.attributes?.transport_payload === "websocket";
+    if (!usesWebsocket || this._dashboardPayloadLoading) return;
+    if (this._dashboardPayload && this._dashboardPayloadRevision === revision) return;
+
+    this._dashboardPayloadLoading = true;
+    this._hass.callWS({ type: "utilitati_romania/dashboard_payload" })
+      .then((payload) => {
+        this._dashboardPayload = payload && typeof payload === "object" ? payload : { locatii: [] };
+        this._dashboardPayloadRevision = revision;
+      })
+      .catch(() => {
+        // Fallback-ul pe atribute rămâne activ pentru versiuni vechi sau în timpul pornirii.
+      })
+      .finally(() => {
+        this._dashboardPayloadLoading = false;
+        if (!this._shouldDelayRenderForInteraction()) this._render();
+      });
+  }
+
   _summary() {
     const entityId = this._summaryEntityId();
     const state = entityId ? this._hass?.states?.[entityId] : null;
+    const consumptionState = this._consumptionPointsState();
+    const legacyConsumptionPoints = state?.attributes?.locuri_consum;
+    const separateConsumptionPoints = consumptionState?.attributes?.locuri_consum;
     return {
       entityId,
       state,
       attrs: state?.attributes || {},
-      locations: Array.isArray(state?.attributes?.locatii) ? state.attributes.locatii : [],
-      consumptionPoints: Array.isArray(state?.attributes?.locuri_consum) ? state.attributes.locuri_consum : [],
+      locations: Array.isArray(this._dashboardPayload?.locatii)
+        ? this._dashboardPayload.locatii
+        : (Array.isArray(state?.attributes?.locatii) ? state.attributes.locatii : []),
+      consumptionPoints: Array.isArray(separateConsumptionPoints)
+        ? separateConsumptionPoints
+        : (Array.isArray(legacyConsumptionPoints) ? legacyConsumptionPoints : []),
     };
   }
 
@@ -1170,6 +1218,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       }
     } finally {
       this._distributionSupplierLinksLoading = false;
+    this._dashboardPayload = null;
+    this._dashboardPayloadRevision = null;
+    this._dashboardPayloadLoading = false;
     }
   }
 

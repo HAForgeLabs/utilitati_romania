@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.0";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.1";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -22,6 +22,9 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (!this._readingCache) this._readingCache = new Map();
     if (!this._lastHassStateVersion) this._lastHassStateVersion = 0;
     if (typeof this._invoiceGroupingSelectActive !== "boolean") this._invoiceGroupingSelectActive = false;
+    if (typeof this._dashboardPayloadLoading !== "boolean") this._dashboardPayloadLoading = false;
+    if (!this._dashboardPayload) this._dashboardPayload = null;
+    if (typeof this._dashboardPayloadRevision === "undefined") this._dashboardPayloadRevision = null;
 
     const configuredGrouping = Object.prototype.hasOwnProperty.call(rawConfig, "invoice_grouping")
       ? this._normalizeInvoiceGrouping(rawConfig.invoice_grouping)
@@ -37,6 +40,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._ensureDashboardPayloadLoaded();
     if ((this._isReadingInputActive() && !this._hasPendingReadingAction()) || this._isInvoiceGroupingSelectActive()) {
       return;
     }
@@ -66,10 +70,35 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       if (!entityId.startsWith("sensor.")) return false;
       const stateObj = this._hass.states[entityId];
       const attrs = stateObj?.attributes || {};
-      return Array.isArray(attrs.locatii);
+      return Array.isArray(attrs.locatii)
+        || (Object.prototype.hasOwnProperty.call(attrs, "numar_facturi")
+          && Object.prototype.hasOwnProperty.call(attrs, "total_neplatit"));
     });
 
     return candidates[0] || null;
+  }
+
+  _ensureDashboardPayloadLoaded() {
+    const entityId = this._findEntityId();
+    const state = entityId ? this._hass?.states?.[entityId] : null;
+    const revision = state?.attributes?.revizie_payload ?? null;
+    const usesWebsocket = state?.attributes?.transport_payload === "websocket";
+    if (!usesWebsocket || this._dashboardPayloadLoading) return;
+    if (this._dashboardPayload && this._dashboardPayloadRevision === revision) return;
+
+    this._dashboardPayloadLoading = true;
+    this._hass.callWS({ type: "utilitati_romania/dashboard_payload" })
+      .then((payload) => {
+        this._dashboardPayload = payload && typeof payload === "object" ? payload : { locatii: [] };
+        this._dashboardPayloadRevision = revision;
+      })
+      .catch(() => {
+        // Fallback pe atribute pentru compatibilitate cu versiunile vechi.
+      })
+      .finally(() => {
+        this._dashboardPayloadLoading = false;
+        this._render();
+      });
   }
 
   _normalizeStatus(value) {
@@ -2156,7 +2185,10 @@ _buildProviderRefreshButton(provider) {
     }
 
     const attrs = entity.attributes || {};
-    const locations = this._filterLocations(Array.isArray(attrs.locatii) ? attrs.locatii : []);
+    const rawLocations = Array.isArray(this._dashboardPayload?.locatii)
+      ? this._dashboardPayload.locatii
+      : (Array.isArray(attrs.locatii) ? attrs.locatii : []);
+    const locations = this._filterLocations(rawLocations);
     const invoiceEntries = this._collectInvoiceEntries(locations);
     const grouping = this._getInvoiceGrouping();
     const invoiceCount = invoiceEntries.length;

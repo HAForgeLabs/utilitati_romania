@@ -581,3 +581,57 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Pentru contul de test sunt afisate 3 facturi neachitate, cu total 640,12 RON.
 - [ ] Entitatile de plati folosesc ultima zi de plata, iar valoarea reprezinta suma documentelor din acea zi.
 - [ ] Versiunea din manifest, backend si frontend este `1.16.0`.
+
+
+## v1.16.1b1 local - Separare sigură date administrative
+
+- [ ] Senzorul `sensor.administrare_integrare_facturi_utilitati` nu mai publică `locuri_consum` și `locuri_consum_ignorate`.
+- [ ] Noul senzor `sensor.administrare_integrare_locuri_consum_utilitati` publică ambele liste administrative.
+- [ ] Dashboardul Facturi, Prezentare și Scadențe păstrează toate datele și acțiunile existente.
+- [ ] Setări afișează toate locurile de consum, inclusiv locațiile fără facturi și cele ignorate.
+- [ ] Ignorarea, reactivarea și redenumirea locațiilor funcționează neschimbat.
+- [ ] Frontendul păstrează fallback pentru instalările care încă au listele în senzorul vechi.
+- [ ] Logul local confirmă că fiecare entitate rămâne sub limita de 16.384 bytes.
+- [ ] Versiunea din manifest, backend și frontend este `1.16.1b1`.
+
+
+## v1.16.1b2 local - Compatibilitate entități și eliminare loguri
+
+- [ ] Senzorul agregat de facturi rămâne sub limita Home Assistant de 16.384 bytes după încărcarea tuturor furnizorilor.
+- [ ] Senzorul separat pentru administrarea locurilor de consum păstrează ignorarea, reactivarea și redenumirea locațiilor.
+- [ ] Nu mai apar mesajele `[AGREGARE LOCAL DIAG]` și `[AGREGARE LOCAL IMPACT]` în jurnal.
+- [ ] Entitățile noi Rețele Electrice folosesc exclusiv `entity_id` lowercase pentru POD.
+- [ ] Entitățile Rețele Electrice existente sunt migrate în entity registry la varianta lowercase, cu `unique_id` neschimbat.
+- [ ] Senzorii și butoanele Rețele Electrice rămân disponibili și funcționali după restart.
+- [ ] Nu mai apare avertismentul Home Assistant privind entity ID invalid pentru `sensor.retele_electrice_*` și `button.retele_electrice_*`.
+- [ ] Versiunea din manifest, backend și frontend este `1.16.1b2`.
+
+
+## v1.16.1b3 local - Payload facturi prin WebSocket
+
+- [ ] Senzorul `sensor.administrare_integrare_facturi_utilitati` nu mai expune atributul voluminos `locatii`.
+- [ ] Sumarul numeric al facturilor rămâne disponibil în atributele senzorului.
+- [ ] Panoul principal încarcă structura completă prin `utilitati_romania/dashboard_payload`.
+- [ ] Cardul Lovelace încarcă aceeași structură prin WebSocket.
+- [ ] Există fallback către atributul vechi `locatii` pentru compatibilitate.
+- [ ] Taburile Prezentare, Facturi, Indexuri și Setări se afișează corect.
+- [ ] Gruparea pe locație/furnizor, filtrarea, PDF și actualizarea manuală funcționează.
+- [ ] Senzorul separat pentru locuri de consum rămâne funcțional.
+- [ ] ID-urile Rețele Electrice rămân lowercase și stabile.
+- [ ] Logurile locale confirmă că atributele senzorului principal rămân sub 16 KB.
+- [ ] Versiunea din manifest, backend și frontend este `1.16.1b3`.
+
+## v1.16.1 - Compatibilitate Recorder și Rețele Electrice
+
+- [ ] Payloadul complet al facturilor este furnizat panoului și cardului prin WebSocket, fără atributul voluminos `locatii` în senzorul agregat.
+- [ ] `sensor.administrare_integrare_facturi_utilitati` rămâne sub limita Recorder de 16384 bytes și păstrează doar sumarul.
+- [ ] `sensor.administrare_integrare_locuri_consum_utilitati` furnizează lista administrativă și locațiile ignorate pentru Setări.
+- [ ] Panoul Prezentare afișează totalurile, scadențele și sumarul pe locații.
+- [ ] Tabul Facturi afișează facturile, stările, PDF-ul și actualizarea manuală.
+- [ ] Tabul Setări permite ignorarea și reactivarea locurilor de consum.
+- [ ] Cardul Lovelace preia payloadul prin WebSocket și păstrează fallback-ul compatibil.
+- [ ] ID-urile entităților Rețele Electrice sunt normalizate lowercase, fără modificarea `unique_id`, POD-ului sau apelurilor API.
+- [ ] Nu mai apar avertismente pentru ID-uri invalide Rețele Electrice.
+- [ ] Nu mai apar logurile locale `[AGREGARE LOCAL DIAG]` și `[AGREGARE LOCAL ADMIN]`.
+- [ ] Versiunea din manifest, backend și frontend este `1.16.1`.
+

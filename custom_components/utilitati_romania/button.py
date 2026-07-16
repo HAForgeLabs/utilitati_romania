@@ -449,8 +449,9 @@ class _ButonContorReteleBaza(EntitateUtilitatiRomania, ButtonEntity):
         self._attr_name = nume
         self._attr_icon = icon
         self._attr_device_info = info_device_retele_electrice(coordonator.intrare.entry_id, cont)
-        self._attr_suggested_object_id = f"retele_electrice_{cont.id_cont}_{slug}_{actiune}"
-        self.entity_id = f"button.retele_electrice_{cont.id_cont}_{slug}_{actiune}"
+        pod_object_id = str(cont.id_cont or "").strip().lower()
+        self._attr_suggested_object_id = f"retele_electrice_{pod_object_id}_{slug}_{actiune}"
+        self.entity_id = f"button.retele_electrice_{pod_object_id}_{slug}_{actiune}"
 
     @property
     def available(self) -> bool:
