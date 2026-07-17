@@ -583,25 +583,43 @@ def _aloca_restante_din_sold_total_hidroelectrica(
     # documente istorice de tip „Report energie produsă” cu scadențe la 1-2 ani,
     # care altfel pot primi eronat soldul curent al contului.
     factura_curenta_text = str(factura_curenta_id or "").strip()
-    if factura_curenta_text:
+    factura_curenta_normalizata = _normalizare_identificator_hidroelectrica(
+        factura_curenta_text
+    )
+    if factura_curenta_normalizata:
         potrivire = next(
             (
                 factura
                 for factura in facturi_consum
-                if str(factura.id_factura or "").strip() == factura_curenta_text
+                if _normalizare_identificator_hidroelectrica(factura.id_factura)
+                == factura_curenta_normalizata
             ),
             None,
         )
         if potrivire is not None:
             for factura in facturi_consum:
                 factura.date_brute['rest_plata'] = 0.0
+                factura.date_brute.pop('rest_plata_alocat_din_sold_total', None)
+                factura.date_brute.pop('rest_plata_alocat_din_bill_id', None)
+                factura.date_brute.pop('selectie_restanta', None)
                 if factura is not potrivire:
                     factura.stare = None
-            rest_curent = round(min(float(potrivire.valoare or sold_total), float(sold_total)), 2)
+            rest_curent = round(
+                min(float(potrivire.valoare or sold_total), float(sold_total)),
+                2,
+            )
             potrivire.date_brute['rest_plata'] = rest_curent
             potrivire.date_brute['sold_total_cont'] = round(float(sold_total), 2)
             potrivire.date_brute['rest_plata_alocat_din_bill_id'] = True
+            potrivire.date_brute['selectie_restanta'] = 'bill_id_normalizat'
             potrivire.stare = 'neplatita'
+            _LOGGER.warning(
+                "[HIDRO AGG TRACE] selectie=bill_id_normalizat bill_id=%s factura=%s valoare=%s rest_plata=%s",
+                _mascheaza_id_hidro(factura_curenta_text),
+                _mascheaza_id_hidro(potrivire.id_factura),
+                potrivire.valoare,
+                rest_curent,
+            )
             return
 
     # Dacă istoricul are deja resturi explicite, nu suprascriem datele certe.

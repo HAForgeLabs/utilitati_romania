@@ -648,7 +648,7 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Versiunea este sincronizată la `1.16.2b1`.
 
 
-## v1.16.2b2 - Orange / Hidroelectrica
+## v1.16.2b3 - Orange / Hidroelectrica
 - [ ] Orange: soldul comun al serviciilor nu este multiplicat pe fiecare abonament.
 - [ ] Orange: ratele sunt afisate separat, iar totalul agregat coincide cu totalul profilului.
 - [ ] Hidroelectrica: soldul curent este asociat facturii indicate de bill_id, nu documentelor istorice cu scadenta indepartata.
