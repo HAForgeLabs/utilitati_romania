@@ -635,3 +635,14 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Nu mai apar logurile locale `[AGREGARE LOCAL DIAG]` și `[AGREGARE LOCAL ADMIN]`.
 - [ ] Versiunea din manifest, backend și frontend este `1.16.1`.
 
+
+
+## v1.16.2b1 local - Diagnostic Orange și Hidroelectrica
+
+- [ ] Beta pornește fără a bloca inițializarea Home Assistant.
+- [ ] Nu schimbă logica facturilor sau totalurilor; adaugă doar diagnostic.
+- [ ] Logurile `[ORANGE AGG TRACE]` și `[ORANGE DASH TRACE]` apar după actualizare.
+- [ ] Logurile `[HIDRO AGG TRACE]` și `[HIDRO DASH TRACE]` apar după actualizare.
+- [ ] Logurile nu conțin tokenuri, parole, adrese complete sau identificatori compleți.
+- [ ] Dashboardul, PDF-urile și actualizarea manuală funcționează identic cu v1.16.1.
+- [ ] Versiunea este sincronizată la `1.16.2b1`.

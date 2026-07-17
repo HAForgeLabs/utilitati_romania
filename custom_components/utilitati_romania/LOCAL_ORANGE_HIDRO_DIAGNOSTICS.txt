@@ -1,0 +1,9 @@
+Utilități România v1.16.2b1 - diagnostic local Orange/Hidroelectrica
+
+Această versiune nu modifică logica de calcul. După instalare și restart, așteptați încărcarea furnizorilor și trimiteți toate liniile care încep cu:
+- [ORANGE AGG TRACE]
+- [ORANGE DASH TRACE]
+- [HIDRO AGG TRACE]
+- [HIDRO DASH TRACE]
+
+Logurile maschează identificatorii și nu includ parole sau tokenuri.
