@@ -555,6 +555,8 @@ def _rezumat_debug_hidroelectrica(payload: dict[str, Any] | None) -> dict[str, A
 def _aloca_restante_din_sold_total_hidroelectrica(
     facturi: list[FacturaUtilitate],
     sold_total: float | None,
+    *,
+    factura_curenta_id: str | None = None,
 ) -> None:
     """Marchează facturile neachitate folosind soldul total Hidroelectrica.
 
@@ -575,6 +577,32 @@ def _aloca_restante_din_sold_total_hidroelectrica(
     ]
     if not facturi_consum:
         return
+
+    # Când GetBill indică explicit numărul facturii curente, această asociere
+    # este mai sigură decât ordonarea după scadență. La prosumatori există
+    # documente istorice de tip „Report energie produsă” cu scadențe la 1-2 ani,
+    # care altfel pot primi eronat soldul curent al contului.
+    factura_curenta_text = str(factura_curenta_id or "").strip()
+    if factura_curenta_text:
+        potrivire = next(
+            (
+                factura
+                for factura in facturi_consum
+                if str(factura.id_factura or "").strip() == factura_curenta_text
+            ),
+            None,
+        )
+        if potrivire is not None:
+            for factura in facturi_consum:
+                factura.date_brute['rest_plata'] = 0.0
+                if factura is not potrivire:
+                    factura.stare = None
+            rest_curent = round(min(float(potrivire.valoare or sold_total), float(sold_total)), 2)
+            potrivire.date_brute['rest_plata'] = rest_curent
+            potrivire.date_brute['sold_total_cont'] = round(float(sold_total), 2)
+            potrivire.date_brute['rest_plata_alocat_din_bill_id'] = True
+            potrivire.stare = 'neplatita'
+            return
 
     # Dacă istoricul are deja resturi explicite, nu suprascriem datele certe.
     total_explicit = 0.0
@@ -820,7 +848,12 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
                     facturi_cont_ids.add(factura.id_factura)
 
             rembalance = _float_ro(bill.get('rembalance'))
-            _aloca_restante_din_sold_total_hidroelectrica(facturi_cont, rembalance)
+            bill_id_curent = _extrage_numar_factura_lizibil(bill)
+            _aloca_restante_din_sold_total_hidroelectrica(
+                facturi_cont,
+                rembalance,
+                factura_curenta_id=str(bill_id_curent or ''),
+            )
 
             # GetBill expune uneori `rembalance` ca sold total al contului, nu ca
             # factură individuală. Dacă istoricul conține deja facturi neachitate

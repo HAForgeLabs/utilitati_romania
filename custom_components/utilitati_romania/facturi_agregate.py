@@ -1143,15 +1143,18 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
     # Unii furnizori pot avea mai multe contracte/servicii pe aceeași locație.
     # Dacă am grupa doar după locație + furnizor, facturile se suprascriu între ele.
     if furnizor in {"eon", "orange"}:
-        identificator_serviciu = (
-            item.get("id_cont")
-            or item.get("id_contract")
-            or item.get("tip_utilitate")
-            or item.get("tip_serviciu")
-            or item.get("invoice_id")
-            or item.get("invoice_title")
-            or ""
-        )
+        if furnizor == "orange" and normalize_text(item.get("tip_serviciu")).lower() == "rate":
+            identificator_serviciu = item.get("invoice_id") or item.get("invoice_title") or "rate"
+        else:
+            identificator_serviciu = (
+                item.get("id_cont")
+                or item.get("id_contract")
+                or item.get("tip_utilitate")
+                or item.get("tip_serviciu")
+                or item.get("invoice_id")
+                or item.get("invoice_title")
+                or ""
+            )
         return (locatie, furnizor, normalize_text(identificator_serviciu).lower())
 
     if furnizor == "digi":

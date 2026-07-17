@@ -840,26 +840,72 @@ def _reconciliaza_solduri_facturi_orange(facturi: list[FacturaUtilitate]) -> Non
                 and all(abs(sold - solduri_valide[0]) <= 0.01 for sold in solduri_valide[1:])
                 and totaluri_profil
                 and all(abs(total - totaluri_profil[0]) <= 0.01 for total in totaluri_profil[1:])
-                and abs(solduri_valide[0] - totaluri_profil[0]) <= 0.01
             ):
+                sold_servicii = solduri_valide[0]
+                total_profil = totaluri_profil[0]
                 suma_facturi = sum(max(factura.valoare or 0.0, 0.0) for factura in grup)
-                if abs(suma_facturi - totaluri_profil[0]) <= 0.02:
+
+                # Orange poate repeta soldul comun al serviciilor pe fiecare
+                # abonament. Soldul total de profil poate fi mai mare atunci
+                # când există rate pentru terminale, deci reconcilierea nu
+                # trebuie condiționată de egalitatea sold_servicii=total_profil.
+                if abs(suma_facturi - sold_servicii) <= 0.02:
                     for factura in grup:
                         sold = round(max(factura.valoare or 0.0, 0.0), 2)
                         factura.date_brute["rest_plata"] = sold
                         factura.date_brute["amount_remaining"] = sold
-                        factura.date_brute["sold_source"] = "factura_curenta_sold_profil_duplicat"
+                        factura.date_brute["sold_source"] = "factura_curenta_sold_servicii_duplicat"
                         factura.stare = _stare_factura(
                             sold,
                             factura.data_scadenta,
                             factura.date_brute.get("history_item"),
                         )
+
+                    diferenta_rate = round(max(total_profil - sold_servicii, 0.0), 2)
+                    if diferenta_rate > 0.01:
+                        factura_baza = max(
+                            grup,
+                            key=lambda factura: (
+                                factura.data_emitere or date.min,
+                                factura.data_scadenta or date.min,
+                                str(factura.id_factura or ""),
+                            ),
+                        )
+                        profil = str(factura_baza.id_contract or factura_baza.id_cont or "profil")
+                        data_referinta = factura_baza.data_emitere or date.today()
+                        factura_rate = FacturaUtilitate(
+                            id_factura=f"orange_rate_{profil}_{data_referinta.isoformat()}",
+                            titlu="Rate Orange",
+                            valoare=diferenta_rate,
+                            moneda="RON",
+                            data_emitere=factura_baza.data_emitere,
+                            data_scadenta=factura_baza.data_scadenta,
+                            stare="neplatita",
+                            categorie="consum",
+                            id_cont=factura_baza.id_cont,
+                            id_contract=factura_baza.id_contract,
+                            tip_utilitate="telecom",
+                            tip_serviciu="rate",
+                            date_brute={
+                                "rest_plata": diferenta_rate,
+                                "amount_remaining": diferenta_rate,
+                                "sold_source": "diferenta_rate_total_profil",
+                                "orange_installment": True,
+                                "subscriber": factura_baza.date_brute.get("subscriber", {}),
+                                "total_profil": total_profil,
+                                "sold_servicii": sold_servicii,
+                            },
+                        )
+                        facturi.append(factura_rate)
+
                     _orange_diag(
-                        "sold_profil_duplicat_distribuit",
+                        "sold_servicii_duplicat_distribuit",
                         {
                             "numar_servicii": len(grup),
-                            "total_profil": totaluri_profil[0],
+                            "sold_servicii": sold_servicii,
+                            "total_profil": total_profil,
                             "suma_facturi_curente": suma_facturi,
+                            "diferenta_rate": diferenta_rate,
                         },
                     )
 
