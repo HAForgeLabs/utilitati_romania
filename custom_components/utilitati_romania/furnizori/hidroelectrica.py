@@ -15,41 +15,6 @@ _LOGGER = logging.getLogger(__name__)
 
 
 
-def _mascheaza_id_hidro(valoare: Any) -> str | None:
-    text = str(valoare or "").strip()
-    if not text:
-        return None
-    return f"***{text[-4:]}" if len(text) > 4 else "***"
-
-
-def _rezumat_factura_hidro_trace(factura: FacturaUtilitate) -> dict[str, Any]:
-    raw = factura.date_brute if isinstance(factura.date_brute, dict) else {}
-    return {
-        "factura": _mascheaza_id_hidro(factura.id_factura),
-        "tip": factura.titlu,
-        "categorie": factura.categorie,
-        "valoare": factura.valoare,
-        "rest_plata": _float_ro(raw.get("rest_plata")),
-        "status": factura.stare,
-        "emitere": factura.data_emitere.isoformat() if factura.data_emitere else None,
-        "scadenta": factura.data_scadenta.isoformat() if factura.data_scadenta else None,
-        "prosumator": bool(factura.este_prosumator),
-    }
-
-
-def _hidro_trace_cont(*, cont_id: str, rembalance: float | None, billamount: float | None, bill_id: str | None, facturi: list[FacturaUtilitate]) -> None:
-    try:
-        _LOGGER.warning(
-            "[HIDRO AGG TRACE] cont=%s rembalance=%s billamount=%s bill_id=%s facturi=%s randuri=%s",
-            _mascheaza_id_hidro(cont_id),
-            rembalance,
-            billamount,
-            _mascheaza_id_hidro(bill_id),
-            len(facturi),
-            [_rezumat_factura_hidro_trace(f) for f in facturi],
-        )
-    except Exception as err:
-        _LOGGER.warning("[HIDRO AGG TRACE] diagnostic indisponibil: %s", type(err).__name__)
 
 def _parseaza_data(text: str | None) -> date | None:
     if not text:
@@ -574,6 +539,8 @@ def _aloca_restante_din_sold_total_hidroelectrica(
         if factura.categorie == 'consum'
         and factura.valoare is not None
         and factura.valoare > 0
+        and 'report energie produsa' not in str(factura.titlu or '').strip().lower()
+        and 'report energie produsă' not in str(factura.titlu or '').strip().lower()
     ]
     if not facturi_consum:
         return
@@ -614,9 +581,8 @@ def _aloca_restante_din_sold_total_hidroelectrica(
             potrivire.date_brute['selectie_restanta'] = 'bill_id_normalizat'
             potrivire.stare = 'neplatita'
             _LOGGER.warning(
-                "[HIDRO AGG TRACE] selectie=bill_id_normalizat bill_id=%s factura=%s valoare=%s rest_plata=%s",
-                _mascheaza_id_hidro(factura_curenta_text),
-                _mascheaza_id_hidro(potrivire.id_factura),
+                "[HIDRO FIX TRACE] selectie=bill_id sold_total=%s valoare_factura=%s rest_plata=%s",
+                round(float(sold_total), 2),
                 potrivire.valoare,
                 rest_curent,
             )
@@ -927,14 +893,6 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
                     sursa_numar_factura = 'istoric_factura_sortata'
             if numar_factura:
                 consumuri.append(ConsumUtilitate(cheie='id_ultima_factura', valoare=numar_factura, unitate=None, id_cont=id_cont_unic, tip_utilitate='curent', tip_serviciu='curent'))
-
-            _hidro_trace_cont(
-                cont_id=id_cont_unic,
-                rembalance=rembalance,
-                billamount=billamount,
-                bill_id=numar_factura,
-                facturi=facturi_cont,
-            )
 
             # consum curent / index / citire / factura restanta
             if lista_usage:

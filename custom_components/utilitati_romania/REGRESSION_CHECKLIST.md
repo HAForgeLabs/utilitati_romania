@@ -653,3 +653,12 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Orange: ratele sunt afisate separat, iar totalul agregat coincide cu totalul profilului.
 - [ ] Hidroelectrica: soldul curent este asociat facturii indicate de bill_id, nu documentelor istorice cu scadenta indepartata.
 - [ ] Logurile ORANGE/HIDRO TRACE confirma randurile si totalurile finale.
+
+## v1.16.2b4 - Asociere sold Hidroelectrica
+
+- [ ] Soldul curent este asociat prioritar facturii indicate de `GetBill` prin numărul facturii.
+- [ ] Documentele istorice „Report energie produsă” nu pot primi soldul curent al facturii de consum.
+- [ ] Pentru contul de test, factura curentă de 3,40 RON este afișată în locul documentului istoric de 38,39 RON.
+- [ ] Rămâne activ doar logul local concis `[HIDRO FIX TRACE]`, fără lista completă a facturilor.
+- [ ] Comportamentul Orange din v1.16.2b3 rămâne neschimbat.
+

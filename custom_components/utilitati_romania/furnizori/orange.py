@@ -81,36 +81,6 @@ def _orange_diag(etapa: str, date: dict[str, Any]) -> None:
 
 
 
-def _orange_factura_trace(factura: FacturaUtilitate) -> dict[str, Any]:
-    raw = factura.date_brute if isinstance(factura.date_brute, dict) else {}
-    balance = raw.get("balance_data") if isinstance(raw.get("balance_data"), dict) else {}
-    return {
-        "cont": _mascheaza_msisdn(factura.id_cont),
-        "factura": _diag_preview_value(factura.id_factura),
-        "valoare": factura.valoare,
-        "rest_plata": _float_sigur(raw.get("rest_plata")),
-        "total_profil": _float_sigur(balance.get("totalBalanceAmount")),
-        "sold_serviciu": _float_sigur(balance.get("serviceBalanceAmount")),
-        "status": factura.stare,
-        "emitere": factura.data_emitere.isoformat() if factura.data_emitere else None,
-        "scadenta": factura.data_scadenta.isoformat() if factura.data_scadenta else None,
-        "sold_source": raw.get("sold_source"),
-    }
-
-
-def _orange_trace_rezultat(facturi: list[FacturaUtilitate]) -> None:
-    try:
-        total_rest = round(sum(max(_float_sigur((f.date_brute or {}).get("rest_plata")) or 0.0, 0.0) for f in facturi), 2)
-        total_valori = round(sum(max(f.valoare or 0.0, 0.0) for f in facturi), 2)
-        _LOGGER.warning(
-            "[ORANGE AGG TRACE] facturi=%s total_valori=%s total_rest=%s randuri=%s",
-            len(facturi),
-            total_valori,
-            total_rest,
-            [_orange_factura_trace(f) for f in facturi],
-        )
-    except Exception as err:
-        _LOGGER.warning("[ORANGE AGG TRACE] diagnostic indisponibil: %s", type(err).__name__)
 
 def _diag_preview_value(value: Any) -> Any:
     if value is None:
@@ -708,7 +678,6 @@ class ClientFurnizorOrange(ClientFurnizor):
 
         _reconciliaza_solduri_facturi_orange(facturi)
         facturi.sort(key=lambda item: item.data_emitere or date.min, reverse=True)
-        _orange_trace_rezultat(facturi)
         return facturi
 
     def _mapeaza_consumuri(

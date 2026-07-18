@@ -1610,28 +1610,6 @@ def colecteaza_locuri_consum(hass) -> list[dict[str, Any]]:
     return rezultat
 
 
-def _trace_agregare_furnizori(items: list[dict[str, Any]]) -> None:
-    for furnizor, prefix in (("orange", "ORANGE DASH TRACE"), ("hidroelectrica", "HIDRO DASH TRACE")):
-        randuri = [item for item in items if normalize_text(item.get("furnizor")).lower() == furnizor]
-        if not randuri:
-            continue
-        rezumat = []
-        for item in randuri:
-            invoice_id = str(item.get("invoice_id") or item.get("invoice_number") or "").strip()
-            invoice_masked = f"***{invoice_id[-4:]}" if len(invoice_id) > 4 else ("***" if invoice_id else None)
-            rezumat.append({
-                "factura": invoice_masked,
-                "titlu": normalize_text(item.get("invoice_title"))[:60],
-                "valoare": item.get("amount"),
-                "neplatit": item.get("unpaid_amount"),
-                "status": item.get("status"),
-                "status_raw": normalize_text(item.get("status_raw"))[:30],
-                "emitere": item.get("issue_date"),
-                "scadenta": item.get("due_date"),
-                "grup": normalize_text(item.get("eticheta_locatie"))[:40],
-            })
-        total = round(sum(max(_to_float(item.get("unpaid_amount")) or 0.0, 0.0) for item in randuri if item.get("status") == "unpaid"), 2)
-        _LOGGER.warning("[%s] randuri=%s total_neplatit=%s date=%s", prefix, len(randuri), total, rezumat)
 
 def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, ...], dict[str, Any]] = {}
@@ -1819,7 +1797,6 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             normalize_text(item.get("furnizor_label")).lower(),
         )
     )
-    _trace_agregare_furnizori(items)
     return items
 
 
