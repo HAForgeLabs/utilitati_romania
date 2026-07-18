@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.2b4";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.2b5";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -167,10 +167,15 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
   _providerDisplayAmount(provider) {
     const invoiceAmount = this._toNumber(this._providerInvoiceAmount(provider));
+    const status = this._providerEffectiveStatus(provider);
+    const unpaidAmount = this._toNumber(provider?.unpaid_amount);
     const unpaidTotal = this._providerUnpaidTotalValue(provider);
 
-    // Dacă totalul de plată este mai mare decât ultima factură, afișăm totalul restant.
-    if (this._isRerVestProvider(provider) && this._providerEffectiveStatus(provider) === "unpaid" && unpaidTotal > invoiceAmount) {
+    if (status === "unpaid" && unpaidAmount > 0) {
+      return unpaidAmount;
+    }
+
+    if (this._isRerVestProvider(provider) && status === "unpaid" && unpaidTotal > invoiceAmount) {
       return unpaidTotal;
     }
 

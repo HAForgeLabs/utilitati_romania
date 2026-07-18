@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.2b4";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.2b5";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -913,12 +913,15 @@ class UtilitatiRomaniaPanel extends HTMLElement {
 
   _providerAmount(provider) {
     const invoiceAmount = this._num(this._providerInvoiceAmount(provider));
+    const status = this._status(provider);
+    const unpaidAmount = this._num(provider?.unpaid_amount);
     const unpaidTotal = this._providerUnpaidTotal(provider);
 
-    // RER Vest poate avea mai multe facturi neachitate pentru același loc de consum,
-    // dar rândul principal rămâne ultima factură. În acest caz afișăm totalul de plată,
-    // nu doar valoarea ultimei facturi.
-    if (this._isRerVestProvider(provider) && this._status(provider) === "unpaid" && unpaidTotal > invoiceAmount) {
+    if (status === "unpaid" && unpaidAmount > 0) {
+      return unpaidAmount;
+    }
+
+    if (this._isRerVestProvider(provider) && status === "unpaid" && unpaidTotal > invoiceAmount) {
       return unpaidTotal;
     }
 

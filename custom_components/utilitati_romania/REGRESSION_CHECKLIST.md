@@ -661,4 +661,10 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Pentru contul de test, factura curentă de 3,40 RON este afișată în locul documentului istoric de 38,39 RON.
 - [ ] Rămâne activ doar logul local concis `[HIDRO FIX TRACE]`, fără lista completă a facturilor.
 - [ ] Comportamentul Orange din v1.16.2b3 rămâne neschimbat.
+## v1.16.2b5 - Afisare rest real de plata
+
+- Pentru randurile cu status neplatit, cardul si panelul afiseaza prioritar `unpaid_amount` atunci cand este pozitiv.
+- Valoarea nominala a facturii ramane fallback atunci cand restul real nu este disponibil.
+- Exceptia RER Vest pentru totaluri mai mari decat ultima factura ramane activa.
+- Nu se modifica parsarea furnizorilor sau structura payloadului agregat.
 
