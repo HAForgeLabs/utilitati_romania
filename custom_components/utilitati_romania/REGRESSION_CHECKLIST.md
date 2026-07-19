@@ -668,3 +668,13 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - Exceptia RER Vest pentru totaluri mai mari decat ultima factura ramane activa.
 - Nu se modifica parsarea furnizorilor sau structura payloadului agregat.
 
+## v1.16.2 - Corecții facturi prosumatori și totaluri
+
+- [ ] Orange: soldul total nu este multiplicat între serviciile aceluiași profil.
+- [ ] Orange: ratele și facturile de servicii sunt agregate fără dublarea totalului de plată.
+- [ ] Hidroelectrica: soldul curent este asociat prioritar facturii indicate de `GetBill`.
+- [ ] Hidroelectrica: documentele istorice „Report energie produsă” nu preiau soldul curent al facturii de consum.
+- [ ] Pentru facturile neplătite, cardul și panelul afișează prioritar restul real de plată (`unpaid_amount`) când este disponibil.
+- [ ] Cazul RER Vest pentru total neachitat mai mare decât ultima factură rămâne funcțional.
+- [ ] Nu mai există loguri locale `[HIDRO FIX TRACE]`, `[HIDRO AGG TRACE]` sau `[ORANGE AGG TRACE]` în codul public.
+- [ ] Versiunea este sincronizată la `1.16.2` în manifest, backend, panel și card.

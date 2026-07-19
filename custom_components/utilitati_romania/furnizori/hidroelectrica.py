@@ -580,12 +580,6 @@ def _aloca_restante_din_sold_total_hidroelectrica(
             potrivire.date_brute['rest_plata_alocat_din_bill_id'] = True
             potrivire.date_brute['selectie_restanta'] = 'bill_id_normalizat'
             potrivire.stare = 'neplatita'
-            _LOGGER.warning(
-                "[HIDRO FIX TRACE] selectie=bill_id sold_total=%s valoare_factura=%s rest_plata=%s",
-                round(float(sold_total), 2),
-                potrivire.valoare,
-                rest_curent,
-            )
             return
 
     # Dacă istoricul are deja resturi explicite, nu suprascriem datele certe.
