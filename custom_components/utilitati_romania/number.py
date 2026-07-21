@@ -23,6 +23,17 @@ from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .naming import build_provider_slug
 
 
+
+def _registre_eon(cont) -> list[dict]:
+    raw = getattr(cont, "date_brute", None) or {}
+    meter_index = raw.get("meter_index") or {}
+    devices = ((meter_index.get("indexDetails") or {}).get("devices") or [])
+    return [registru for device in devices for registru in (device.get("indexes") or []) if isinstance(registru, dict) and registru.get("ablbelnr")]
+
+
+def _rol_registru_eon(registru: dict) -> str:
+    return "injectie" if str(registru.get("code") or "").upper() == "P" else "consum"
+
 def _valoare_consum_curent(coordonator: CoordonatorUtilitatiRomania, id_cont: str, cheie: str) -> float | None:
     data = getattr(coordonator, 'data', None)
     consumuri = getattr(data, 'consumuri', None) or []
@@ -161,7 +172,12 @@ async def async_setup_entry(
 
         elif coordonator.data.furnizor == "eon":
             for cont in coordonator.data.conturi:
-                entitati.append(NumarIndexEon(coordonator, cont))
+                registre = _registre_eon(cont)
+                if not registre:
+                    entitati.append(NumarIndexEon(coordonator, cont))
+                    continue
+                for registru in registre:
+                    entitati.append(NumarIndexEon(coordonator, cont, registru))
 
         elif coordonator.data.furnizor == "myelectrica":
             for cont in coordonator.data.conturi:
@@ -286,24 +302,27 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
     _attr_icon = "mdi:counter"
     _attr_mode = "box"
 
-    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, registru: dict | None = None) -> None:
         super().__init__(coordonator)
         self.cont = cont
+        self.registru = registru or {}
+        self.rol_registru = _rol_registru_eon(self.registru)
 
         alias = alias_loc_eon(cont.nume, cont.adresa, cont.id_cont)
         slug = slug_serviciu_loc_eon(cont)
         identificator = id_unic_eon(cont)
         tip = tip_serviciu_eon(cont)
-        cheie_serviciu = cheie_serviciu_eon(cont)
+        este_injectie = self.rol_registru == "injectie"
+        sufix = "_injectie" if este_injectie else ""
+        eticheta = "energie livrată" if este_injectie else ("gaz" if tip == "gaz" else "energie electrică")
 
         self._attr_native_unit_of_measurement = "m³" if tip == "gaz" else "kWh"
-        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_index"
-        self._attr_name = (
-            f"Index {'gaz' if tip == 'gaz' else 'energie electrică'} {alias}"
-        )
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_index{sufix}"
+        self._attr_name = f"Index {eticheta} {alias}"
+        self._attr_icon = "mdi:transmission-tower-export" if este_injectie else "mdi:counter"
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
-        self._attr_suggested_object_id = f"{slug}_index"
-        self.entity_id = f"number.{slug}_index"
+        self._attr_suggested_object_id = f"{slug}_index{sufix}"
+        self.entity_id = f"number.{slug}_index{sufix}"
         self._attr_native_value = 0
 
     async def async_added_to_hass(self) -> None:
@@ -311,10 +330,25 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
         ultima_stare = await self.async_get_last_number_data()
         if ultima_stare and ultima_stare.native_value is not None:
             self._attr_native_value = int(float(ultima_stare.native_value))
+            return
+        for cheie in ("currentValue", "oldSelfIndexValue", "oldValue"):
+            if self.registru.get(cheie) is not None:
+                self._attr_native_value = int(float(self.registru[cheie]))
+                break
 
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = int(float(value))
         self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        return {
+            "furnizor": "eon",
+            "id_cont": self.cont.id_cont,
+            "rol_registru": self.rol_registru,
+            "cod_registru": str(self.registru.get("code") or ""),
+            "ablbelnr": str(self.registru.get("ablbelnr") or ""),
+        }
 
 
 class NumarIndexMyElectrica(EntitateUtilitatiRomania, RestoreNumber):

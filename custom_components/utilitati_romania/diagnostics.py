@@ -31,6 +31,26 @@ def _mascheaza_cookies(cookies: list[dict[str, Any]] | None) -> list[dict[str, A
     return rezultat
 
 
+CAMPURI_SENSIBILE = {
+    "access_token", "refresh_token", "id_token", "web_token", "token", "authorization",
+    "password", "parola", "secret", "cookie", "cookies",
+    "email", "phone", "phonenumber", "firstname", "lastname", "fiscalnumber",
+}
+
+
+def _sanitizeaza_diagnostic(value: Any, cheie: str = "") -> Any:
+    cheie_norm = str(cheie or "").replace("_", "").lower()
+    if cheie_norm in {item.replace("_", "") for item in CAMPURI_SENSIBILE}:
+        if cheie_norm == "cookies":
+            return "***"
+        return "***"
+    if isinstance(value, dict):
+        return {k: _sanitizeaza_diagnostic(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitizeaza_diagnostic(item, cheie) for item in value]
+    return _valoare_serializabila(value)
+
+
 def _valoare_serializabila(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         try:
@@ -152,4 +172,4 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     if isinstance(runtime, dict) and runtime.get("admin"):
         rezultat["intrari_runtime"] = _rezuma_intrari_runtime(hass)
 
-    return rezultat
+    return _sanitizeaza_diagnostic(rezultat)

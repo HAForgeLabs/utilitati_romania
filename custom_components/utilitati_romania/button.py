@@ -40,6 +40,17 @@ from .storage_citiri import async_salveaza_citire
 _LOGGER = logging.getLogger(__name__)
 
 
+
+def _registre_eon(cont) -> list[dict]:
+    raw = getattr(cont, "date_brute", None) or {}
+    meter_index = raw.get("meter_index") or {}
+    devices = ((meter_index.get("indexDetails") or {}).get("devices") or [])
+    return [registru for device in devices for registru in (device.get("indexes") or []) if isinstance(registru, dict) and registru.get("ablbelnr")]
+
+
+def _rol_registru_eon(registru: dict) -> str:
+    return "injectie" if str(registru.get("code") or "").upper() == "P" else "consum"
+
 def _cont_curent_dupa_id(coordonator: CoordonatorUtilitatiRomania, id_cont: str | None):
     data = getattr(coordonator, "data", None)
     conturi = getattr(data, "conturi", None) or []
@@ -264,7 +275,12 @@ async def async_setup_entry(
             entitati.append(ButonTrimiteIndexHidro(coordonator, cont))
     elif coordonator.data and coordonator.data.furnizor == "eon":
         for cont in coordonator.data.conturi:
-            entitati.append(ButonTrimiteIndexEon(coordonator, cont))
+            registre = _registre_eon(cont)
+            if not registre:
+                entitati.append(ButonTrimiteIndexEon(coordonator, cont))
+                continue
+            for registru in registre:
+                entitati.append(ButonTrimiteIndexEon(coordonator, cont, registru))
     elif coordonator.data and coordonator.data.furnizor == "myelectrica":
         for cont in coordonator.data.conturi:
             raw = getattr(cont, "date_brute", None) or {}
@@ -618,120 +634,79 @@ class ButonTrimiteIndexHidro(EntitateUtilitatiRomania, ButtonEntity):
 
 
 class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
-    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, registru: dict | None = None) -> None:
         super().__init__(coordonator)
         self.cont = cont
+        self.registru = registru or {}
         alias = alias_loc_eon(cont.nume, cont.adresa, cont.id_cont)
         slug = slug_serviciu_loc_eon(cont)
         identificator = id_unic_eon(cont)
         tip = tip_serviciu_eon(cont)
+        self._rol = _rol_registru_eon(self.registru)
+        self._este_injectie = self._rol == "injectie"
+        sufix = "_injectie" if self._este_injectie else ""
 
         self._alias = alias
         self._tip = tip
-        self._number_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_index"
-
-        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_trimite_index"
-        self._attr_name = f"Trimite index {'gaz' if tip == 'gaz' else 'energie electrică'} {alias}"
-        self._attr_suggested_object_id = f"{slug}_trimite_index"
-        self.entity_id = f"button.{slug}_trimite_index"
-        self._attr_icon = "mdi:send-circle"
+        self._number_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_index{sufix}"
+        eticheta = "energie livrată" if self._este_injectie else ("gaz" if tip == "gaz" else "energie electrică")
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_eon_{identificator}_trimite_index{sufix}"
+        self._attr_name = f"Trimite index {eticheta} {alias}"
+        self._attr_suggested_object_id = f"{slug}_trimite_index{sufix}"
+        self.entity_id = f"button.{slug}_trimite_index{sufix}"
+        self._attr_icon = "mdi:transmission-tower-export" if self._este_injectie else "mdi:send-circle"
         self._attr_device_info = info_device_eon(coordonator.intrare.entry_id, cont)
 
-    async def async_press(self) -> None:
-        tip_label = "gaz" if self._tip == "gaz" else "energie electrică"
-        notif_id = f"utilitati_romania_eon_trimite_index_{self.cont.id_cont}"
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        return {
+            "furnizor": "eon",
+            "id_cont": str(self.cont.id_cont),
+            "rol_registru": self._rol,
+        }
 
+    async def async_press(self) -> None:
+        tip_label = "energie livrată" if self._este_injectie else ("gaz" if self._tip == "gaz" else "energie electrică")
+        notif_id = f"utilitati_romania_eon_trimite_index_{self.cont.id_cont}_{self._rol}"
         try:
             registru_entitati = er.async_get(self.hass)
             number_entity_id = registru_entitati.async_get_entity_id("number", DOMENIU, self._number_unique_id)
             numar = self.hass.states.get(number_entity_id) if number_entity_id else None
-
             if not numar:
-                text_cautat = "index gaz" if self._tip == "gaz" else "index energie electrică"
-                numar = next(
-                    (
-                        state
-                        for state in self.hass.states.async_all("number")
-                        if text_cautat in str(state.attributes.get("friendly_name", "")).lower()
-                        and self._alias.lower() in str(state.attributes.get("friendly_name", "")).lower()
-                    ),
-                    None,
-                )
-
-            if not numar:
-                raise ValueError(
-                    f"Nu am găsit entitatea number pentru indexul de {tip_label} aferentă locației „{self._alias}”."
-                )
-
+                raise ValueError(f"Nu am găsit câmpul pentru indexul de {tip_label} aferent locației „{self._alias}”.")
             try:
                 index_value = int(float(numar.state))
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"Valoarea indexului introdusă pentru „{self._alias}” nu este validă: {numar.state}"
-                )
+            except (TypeError, ValueError) as err:
+                raise ValueError(f"Valoarea indexului introdusă nu este validă: {numar.state}") from err
 
-            meta = self.cont.date_brute or {}
-            meter_index = meta.get("meter_index") or {}
-            devices = ((meter_index.get("indexDetails") or {}).get("devices") or [])
-
-            ablbelnr = None
-            for dev in devices:
-                for idx in (dev.get("indexes") or []):
-                    ablbelnr = idx.get("ablbelnr")
-                    if ablbelnr:
-                        break
-                if ablbelnr:
-                    break
-
+            ablbelnr = self.registru.get("ablbelnr")
             if not ablbelnr:
-                raise ValueError(
-                    f"Nu s-a putut identifica ID-ul intern al contorului (ablbelnr) pentru „{self._alias}”."
-                )
-
-            indexes_payload = [
-                {
-                    "ablbelnr": ablbelnr,
-                    "indexValue": index_value,
-                }
-            ]
+                registre = _registre_eon(self.cont)
+                registru = next((item for item in registre if _rol_registru_eon(item) == self._rol), None)
+                ablbelnr = (registru or {}).get("ablbelnr")
+            if not ablbelnr:
+                raise ValueError(f"Nu s-a putut identifica registrul E.ON pentru {tip_label}.")
 
             rezultat = await self.coordinator.client.api.async_submit_meter_index(
                 self.cont.id_cont,
-                indexes_payload,
+                [{"ablbelnr": ablbelnr, "indexValue": index_value}],
             )
-
             if rezultat is None:
-                raise ValueError(
-                    f"Transmiterea indexului de {tip_label} pentru „{self._alias}” a eșuat. "
-                    "API-ul E.ON nu a returnat un răspuns valid."
-                )
-
+                raise ValueError("API-ul E.ON nu a returnat un răspuns valid.")
             if isinstance(rezultat, dict) and rezultat.get("success") is False:
-                raise ValueError(f"E.ON a refuzat transmiterea indexului: {rezultat}")
+                raise ValueError(f"E.ON a refuzat transmiterea: {rezultat}")
 
             persistent_notification.async_create(
                 self.hass,
-                (
-                    f"Indexul de **{tip_label}** pentru **{self._alias}** a fost confirmat de E.ON.\n\n"
-                    f"- Contract: `{self.cont.id_cont}`\n"
-                    f"- Valoare transmisă: **{index_value}**\n"
-                    f"- ID contor intern: `{ablbelnr}`\n"
-                    f"- Răspuns E.ON: `{rezultat}`"
-                ),
+                f"Indexul de **{tip_label}** pentru **{self._alias}** a fost confirmat de E.ON.\n\n- Valoare transmisă: **{index_value}**",
                 title="Utilități România – E.ON",
                 notification_id=notif_id,
             )
-
             await self.coordinator.async_request_refresh()
-
         except Exception as err:
             persistent_notification.async_create(
                 self.hass,
-                (
-                    f"Transmiterea indexului de **{tip_label}** pentru **{self._alias}** a eșuat.\n\n"
-                    f"Motiv: **{err}**\n\n"
-                    f"- Contract: `{self.cont.id_cont}`"
-                ),
+                f"Transmiterea indexului de **{tip_label}** pentru **{self._alias}** a eșuat.\n\nMotiv: **{err}**",
                 title="Utilități România – E.ON",
                 notification_id=notif_id,
             )

@@ -1510,6 +1510,7 @@ SENZORI_CONT_EON: tuple[DescriereSenzorCont, ...] = (
     DescriereSenzorCont(key="valoare_ultima_factura", name="Valoare ultima factură", icon="mdi:cash", native_unit_of_measurement="RON", functie_valoare=lambda i, c: _eon_valoare_ultima_factura(c)),
     DescriereSenzorCont(key="cost_mediu_unitate_ultima_factura", name="Cost mediu unitate ultima factură", icon="mdi:cash-check", native_unit_of_measurement="RON/unitate", functie_valoare=lambda i, c: _cost_mediu_unitate_ultima_factura(i, c)),
     DescriereSenzorCont(key="index_contor", name="Index contor", icon="mdi:meter-gas", functie_valoare=lambda i, c: _valoare_consum_eon(i, "index_gaz", c) if _tip_eon(c) == "gaz" else _valoare_consum_eon(i, "index_energie_electrica", c)),
+    DescriereSenzorCont(key="index_injectie", name="Index energie livrată", icon="mdi:transmission-tower-export", native_unit_of_measurement="kWh", functie_valoare=lambda i, c: _valoare_consum_eon(i, "index_injectie", c)),
 )
 
 SENZORI_CONT_EON_EXTINS: tuple[DescriereSenzorContEonExtins, ...] = (

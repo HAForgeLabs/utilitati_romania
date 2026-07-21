@@ -236,36 +236,55 @@ def _citeste_sold_factura(invoice_balance: dict | None) -> float:
     return 0.0
 
 
-def _citeste_index_curent(meter_index: dict | None) -> int:
+def _registre_index(meter_index: dict | None) -> list[dict]:
     if not isinstance(meter_index, dict):
-        return 0
-
+        return []
+    rezultat: list[dict] = []
     devices = (((meter_index.get("indexDetails") or {}).get("devices")) or [])
-    for dev in devices:
-        indexes = dev.get("indexes") or []
-        if not indexes:
-            continue
-        primul = indexes[0]
-        for cheie in ("currentValue", "value", "oldValue"):
-            if primul.get(cheie) is not None:
-                return _to_int(primul.get(cheie), 0)
+    for device in devices:
+        for registru in device.get("indexes") or []:
+            if isinstance(registru, dict):
+                rezultat.append(registru)
+    return rezultat
 
-    return 0
+
+def _registru_dupa_cod(meter_index: dict | None, cod: str) -> dict | None:
+    cod_normalizat = _safe_str(cod).upper()
+    for registru in _registre_index(meter_index):
+        if _safe_str(registru.get("code")).upper() == cod_normalizat:
+            return registru
+    return None
+
+
+def _registru_consum(meter_index: dict | None) -> dict | None:
+    return _registru_dupa_cod(meter_index, "R") or (_registre_index(meter_index) or [None])[0]
+
+
+def _valoare_registru(registru: dict | None) -> int | None:
+    if not isinstance(registru, dict):
+        return None
+    for cheie in ("currentValue", "oldSelfIndexValue", "value", "oldValue"):
+        if registru.get(cheie) is not None:
+            return _to_int(registru.get(cheie), 0)
+    return None
+
+
+def _citeste_index_curent(meter_index: dict | None) -> int:
+    valoare = _valoare_registru(_registru_consum(meter_index))
+    return valoare if valoare is not None else 0
+
+
+def _citeste_index_injectie(meter_index: dict | None) -> int | None:
+    return _valoare_registru(_registru_dupa_cod(meter_index, "P"))
 
 
 def _citeste_index_anterior(meter_index: dict | None) -> int:
     if not isinstance(meter_index, dict):
         return 0
 
-    devices = (((meter_index.get("indexDetails") or {}).get("devices")) or [])
-    for dev in devices:
-        indexes = dev.get("indexes") or []
-        if not indexes:
-            continue
-        primul = indexes[0]
-        if primul.get("oldValue") is not None:
-            return _to_int(primul.get("oldValue"), 0)
-
+    registru = _registru_consum(meter_index)
+    if registru and registru.get("oldValue") is not None:
+        return _to_int(registru.get("oldValue"), 0)
     return 0
 
 
@@ -306,7 +325,8 @@ def _data_ultimului_index(meter_index: dict | None) -> str | None:
         indexes = dev.get("indexes") or []
         if not indexes:
             continue
-        sent_at = indexes[0].get("sentAt")
+        registru = _registru_consum(meter_index)
+        sent_at = registru.get("sentAt") if registru else None
         if sent_at:
             return _safe_str(sent_at)
 
@@ -805,7 +825,9 @@ class ClientFurnizorEon(ClientFurnizor):
                     "ultima_plata_data": _safe_str((ultima_plata or {}).get("data")) or None,
                     "ultima_plata_valoare": round(_to_float((ultima_plata or {}).get("valoare"), 0.0), 2),
                     "index_curent": _citeste_index_curent(meter_index),
+                    "index_injectie": _citeste_index_injectie(meter_index),
                     "index_anterior": _citeste_index_anterior(meter_index),
+                    "registre_index": _registre_index(meter_index),
                     "citire_permisa": _citire_permisa(meter_index),
                     "fereastra_citire_start": _fereastra_citire(meter_index)[0],
                     "fereastra_citire_end": _fereastra_citire(meter_index)[1],
@@ -817,7 +839,9 @@ class ClientFurnizorEon(ClientFurnizor):
                     "istoric_plati": istoric_plati,
                     "istoric_index": _istoric_index(meter_history),
                     "este_prosumator": bool(
-                        (isinstance(invoices_prosum, list) and len(invoices_prosum) > 0)
+                        (isinstance(contract_details, dict) and contract_details.get("isProsum") is True)
+                        or _registru_dupa_cod(meter_index, "P") is not None
+                        or (isinstance(invoices_prosum, list) and len(invoices_prosum) > 0)
                         or sold_prosumator != 0
                     ),
                     "sold_prosumator": sold_prosumator,
@@ -932,6 +956,19 @@ class ClientFurnizorEon(ClientFurnizor):
                         cheie_index,
                         index_curent,
                         unitate_index,
+                        id_cont=id_cont,
+                        tip_serviciu=tip_serviciu,
+                        tip_utilitate=loc.get("tip_utilitate_cod"),
+                        date_brute=loc,
+                    )
+                )
+
+            if loc.get("index_injectie") is not None:
+                consumuri.append(
+                    ConsumUtilitate(
+                        "index_injectie",
+                        _to_float(loc.get("index_injectie"), 0.0),
+                        "kWh",
                         id_cont=id_cont,
                         tip_serviciu=tip_serviciu,
                         tip_utilitate=loc.get("tip_utilitate_cod"),
