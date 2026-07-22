@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.16.2";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b2";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2254,9 +2254,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}`, providerKey, label: wantsGas ? "Index gaz" : "Index consum", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
       if (wantsElectric) {
         const injectionNumber = states[`number.${base}_index_injectie`] || Object.values(states).find((stateObj) => stateObj?.entity_id?.startsWith("number.") && String(stateObj.attributes?.id_cont ?? "") === idCont && String(stateObj.attributes?.rol_registru ?? "") === "injectie");
-        const injectionButton = states[`button.${base}_trimite_index_injectie`] || Object.values(states).find((stateObj) => stateObj?.entity_id?.startsWith("button.") && String(stateObj.attributes?.id_cont ?? "") === idCont && (stateObj.entity_id.includes("injectie") || this._entityFriendlyText(stateObj).includes("energie livrata") || this._entityFriendlyText(stateObj).includes("energie livrată")));
         const injectionCurrent = states[`sensor.${base}_index_injectie`] || Object.values(states).find((stateObj) => stateObj?.entity_id?.startsWith("sensor.") && String(stateObj.attributes?.id_cont ?? "") === idCont && (stateObj.entity_id.includes("index_injectie") || this._entityFriendlyText(stateObj).includes("energie livrata") || this._entityFriendlyText(stateObj).includes("energie livrată")));
-        if (injectionNumber && injectionButton) controls.push({ key: `${providerKey}_${provider.id_cont || base}_injectie`, providerKey, label: "Index energie livrată", numberEntityId: injectionNumber.entity_id, buttonEntityId: injectionButton.entity_id, currentEntityId: injectionCurrent?.entity_id || null });
+        if (injectionNumber && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}_injectie`, providerKey, label: "Index energie livrată", numberEntityId: injectionNumber.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: injectionCurrent?.entity_id || null });
       }
       return controls;
     }
@@ -2459,7 +2458,10 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const controls = data.controls || [];
     const current = controls.map((control) => control.currentValue !== null && control.currentValue !== undefined ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}` : null).filter(Boolean).join(" / ") || "—";
     const tone = data.isOpen ? "open" : data.available ? "closed" : "missing";
-    const submitControls = data.isOpen && controls.length ? `<div class="reading-controls">${controls.map((control) => this._renderReadingControl(location, provider, control)).join("")}</div>` : "";
+    const isGroupedEon = this._providerKey(provider) === "eon" && controls.length > 1;
+    const submitControls = data.isOpen && controls.length
+      ? (isGroupedEon ? this._renderGroupedEonControls(location, provider, controls) : `<div class="reading-controls">${controls.map((control) => this._renderReadingControl(location, provider, control)).join("")}</div>`)
+      : "";
     return `
       <article class="reading-row ${tone}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
@@ -2470,6 +2472,70 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         ${submitControls}
       </article>
     `;
+  }
+
+  _renderGroupedEonControls(location, provider, controls) {
+    const buttonEntityId = controls.find((control) => control.buttonEntityId)?.buttonEntityId || "";
+    const actionKey = `reading_group__${buttonEntityId || provider?.id_cont || "eon"}`;
+    const action = this._actions.get(actionKey);
+    const fields = controls.map((control) => {
+      const draftKey = control.numberEntityId || control.key;
+      const draft = this._readingDrafts.get(draftKey) || "";
+      const unit = control.unit || "";
+      return `<div class="reading-control grouped-field" data-reading-group-field data-number-entity="${this._escape(control.numberEntityId || "")}" data-current-value="${this._escape(control.currentValue ?? "")}">
+        <label>${this._escape(control.label || "Index de transmis")}</label>
+        <input class="reading-input" type="number" inputmode="decimal" step="any" placeholder="Index nou${unit ? ` (${unit})` : ""}" value="${this._escape(draft)}">
+      </div>`;
+    }).join("");
+    return `<div class="reading-controls grouped-eon" data-reading-group data-provider="eon" data-button-entity="${this._escape(buttonEntityId)}">
+      ${fields}
+      <button class="primary dark reading-submit grouped-submit" data-reading-group-submit ${action?.status === "busy" ? "disabled" : ""}>${action?.status === "busy" ? "Se trimit..." : "Trimite indexurile"}</button>
+      ${action?.message ? `<div class="action-message ${action.status === "error" ? "error" : "ok"}">${this._escape(action.message)}</div>` : ""}
+    </div>`;
+  }
+
+  async _submitGroupedEonReadings(wrapper) {
+    const buttonEntityId = wrapper?.getAttribute("data-button-entity") || "";
+    const actionKey = `reading_group__${buttonEntityId || "eon"}`;
+    const fields = [...wrapper.querySelectorAll("[data-reading-group-field]")];
+    if (!buttonEntityId || fields.length < 2) {
+      this._actions.set(actionKey, { status: "error", message: "Entitățile necesare pentru cele două indexuri E.ON nu sunt disponibile." });
+      this._render();
+      return;
+    }
+    const values = [];
+    for (const field of fields) {
+      const numberEntityId = field.getAttribute("data-number-entity") || "";
+      const input = field.querySelector(".reading-input");
+      const numericValue = this._parsePositiveNumber(String(input?.value || "").trim());
+      const currentNumeric = this._parsePositiveNumber(field.getAttribute("data-current-value") || "");
+      if (!numberEntityId || !Number.isFinite(numericValue) || numericValue <= 0) {
+        this._actions.set(actionKey, { status: "error", message: "Completează valori numerice valide pentru ambele indexuri." });
+        this._render();
+        return;
+      }
+      if (Number.isFinite(currentNumeric) && currentNumeric > 0 && numericValue < currentNumeric) {
+        this._actions.set(actionKey, { status: "error", message: `Una dintre valorile introduse este mai mică decât indexul curent (${currentNumeric}).` });
+        this._render();
+        return;
+      }
+      values.push({ numberEntityId, numericValue });
+    }
+    this._actions.set(actionKey, { status: "busy", message: "" });
+    this._render();
+    try {
+      for (const item of values) {
+        await this._hass.callService("number", "set_value", { entity_id: item.numberEntityId, value: item.numericValue });
+        const synced = await this._waitForNumberState(item.numberEntityId, item.numericValue, 15000);
+        if (!synced) throw new Error(`Valoarea nu a fost confirmată de Home Assistant pentru ${item.numberEntityId}.`);
+      }
+      await this._hass.callService("button", "press", { entity_id: buttonEntityId });
+      for (const item of values) this._readingDrafts.delete(item.numberEntityId);
+      this._actions.set(actionKey, { status: "ok", message: "Cele două indexuri au fost trimise împreună către E.ON." });
+    } catch (err) {
+      this._actions.set(actionKey, { status: "error", message: err?.message || "Transmiterea indexurilor a eșuat." });
+    }
+    this._render();
   }
 
   _renderReadingControl(location, provider, control) {
@@ -4024,6 +4090,19 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         this._render();
       });
     }
+    this.shadowRoot.querySelectorAll("[data-reading-group]").forEach((wrapper) => {
+      wrapper.querySelectorAll("[data-reading-group-field]").forEach((field) => {
+        const input = field.querySelector(".reading-input");
+        const numberEntityId = field.getAttribute("data-number-entity") || "";
+        if (input && numberEntityId) {
+          input.addEventListener("focus", () => this._holdRenderBriefly(4500));
+          input.addEventListener("input", (event) => { this._holdRenderBriefly(4500); this._readingDrafts.set(numberEntityId, event.target.value || ""); });
+          input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); this._submitGroupedEonReadings(wrapper); } });
+        }
+      });
+      const submit = wrapper.querySelector("[data-reading-group-submit]");
+      if (submit) submit.addEventListener("click", (event) => { event.stopPropagation(); this._submitGroupedEonReadings(wrapper); });
+    });
     this.shadowRoot.querySelectorAll("[data-reading-control]").forEach((wrapper) => {
       const input = wrapper.querySelector(".reading-input");
       const buttonEntityId = wrapper.getAttribute("data-button-entity") || wrapper.getAttribute("data-number-entity") || "";

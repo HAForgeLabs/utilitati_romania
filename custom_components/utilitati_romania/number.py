@@ -327,14 +327,18 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        ultima_stare = await self.async_get_last_number_data()
-        if ultima_stare and ultima_stare.native_value is not None:
-            self._attr_native_value = int(float(ultima_stare.native_value))
-            return
+        valoare_registru = None
         for cheie in ("currentValue", "oldSelfIndexValue", "oldValue"):
             if self.registru.get(cheie) is not None:
-                self._attr_native_value = int(float(self.registru[cheie]))
+                valoare_registru = int(float(self.registru[cheie]))
                 break
+
+        ultima_stare = await self.async_get_last_number_data()
+        if ultima_stare and ultima_stare.native_value is not None:
+            valoare_restaurata = int(float(ultima_stare.native_value))
+            self._attr_native_value = valoare_registru if valoare_restaurata <= 0 and valoare_registru is not None else valoare_restaurata
+        elif valoare_registru is not None:
+            self._attr_native_value = valoare_registru
 
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = int(float(value))
