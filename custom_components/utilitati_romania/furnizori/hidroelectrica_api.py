@@ -55,6 +55,11 @@ from .hidroelectrica_const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _log_temporar(*_args, **_kwargs) -> None:
+    return None
+
+
 # SSL bypass — serverul SEW Hidroelectrica are certificat problematic
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -144,7 +149,7 @@ class ClientApiHidroelectrica:
         self._session_token = token_data.get("session_token")
         self._token_obtained_at = time.monotonic()
         self._token_generation += 1
-        _LOGGER.debug(
+        _log_temporar(
             "Token injectat (user_id=%s, gen=%s).",
             self._user_id,
             self._token_generation,
@@ -169,7 +174,7 @@ class ClientApiHidroelectrica:
             EroareAutentificareHidroelectrica: Dacă credențialele sunt invalide.
             EroareApiHidroelectrica: Dacă un pas tehnic eșuează.
         """
-        _LOGGER.debug("[LOGIN] Pornire autentificare pentru '%s'.", self._username)
+        _log_temporar("[LOGIN] Pornire autentificare pentru '%s'.", self._username)
 
         # ── Pas 1: GetId ──
         resp_id = await self._post(
@@ -188,7 +193,7 @@ class ClientApiHidroelectrica:
                 "GetId nu a returnat key/tokenId."
             )
 
-        _LOGGER.debug(
+        _log_temporar(
             "[LOGIN] Pas 1 OK: key=%s, tokenId=%s.",
             self._key[:8] if self._key else "?",
             self._token_id[:8] if self._token_id else "?",
@@ -247,7 +252,7 @@ class ClientApiHidroelectrica:
         self._token_obtained_at = time.monotonic()
         self._token_generation += 1
 
-        _LOGGER.debug(
+        _log_temporar(
             "[LOGIN] Pas 2 OK: UserID=%s, gen=%s.",
             self._user_id,
             self._token_generation,
@@ -294,7 +299,7 @@ class ClientApiHidroelectrica:
         """POST brut (fără retry pe 401). Returnează JSON-ul decodat."""
         url = f"{API_BASE}{endpoint}"
 
-        _LOGGER.debug("[%s] POST %s", label, url)
+        _log_temporar("[%s] POST %s", label, url)
 
         try:
             async with self._session.post(
@@ -341,7 +346,7 @@ class ClientApiHidroelectrica:
         gen_before = self._token_generation
         url = f"{API_BASE}{endpoint}"
 
-        _LOGGER.debug("[%s] POST auth %s", label, url)
+        _log_temporar("[%s] POST auth %s", label, url)
 
         try:
             async with self._session.post(
@@ -371,7 +376,7 @@ class ClientApiHidroelectrica:
 
         # ── Retry pe 401 ──
         if self._token_generation != gen_before:
-            _LOGGER.debug(
+            _log_temporar(
                 "[%s] Token deja reînnoit de alt apel (gen %s→%s).",
                 label, gen_before, self._token_generation,
             )

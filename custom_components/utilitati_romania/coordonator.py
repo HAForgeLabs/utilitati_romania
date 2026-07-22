@@ -43,6 +43,11 @@ from .storage_citiri import async_salveaza_citire, obtine_citire_cache
 _LOGGER = logging.getLogger(__name__)
 
 
+def _log_temporar(*_args, **_kwargs) -> None:
+    return None
+
+
+
 
 
 
@@ -475,6 +480,8 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             self._task_refresh_initial_deer = None
 
     async def _async_update_data(self) -> InstantaneuFurnizor:
+        pornire_actualizare = time.monotonic()
+        _log_temporar("[UR UPDATE DIAG] start entry=%s furnizor=%s initial=%s", self.intrare.entry_id, self.cheie_furnizor, self.data is None)
         if not self._notificari_incarcate:
             try:
                 await self._manager_notificari.async_incarca()
@@ -488,7 +495,9 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                 self._notificari_incarcate = True
 
         try:
+            etapa = time.monotonic()
             rezultat_licenta = await async_verifica_licenta(self.hass, self.intrare)
+            _log_temporar("[UR UPDATE DIAG] licenta entry=%s durata=%.3fs", self.intrare.entry_id, time.monotonic() - etapa)
 
             # Salvăm rezultatul verificării înainte de validarea strictă, astfel încât
             # senzorii globali de licență să reflecte corect și statusurile negative
@@ -513,7 +522,9 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                 self._porneste_refresh_initial_deer_in_fundal()
                 return instantaneu
 
+            etapa = time.monotonic()
             instantaneu = await self.client.async_obtine_instantaneu()
+            _log_temporar("[UR UPDATE DIAG] furnizor entry=%s furnizor=%s durata=%.3fs", self.intrare.entry_id, self.cheie_furnizor, time.monotonic() - etapa)
 
             try:
                 snapshot = self._construieste_snapshot_notificari(instantaneu)
@@ -531,6 +542,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             if self.cheie_furnizor == "retele_electrice" and self.data is None:
                 self._porneste_incarcare_initiala_contor_retele_in_fundal(instantaneu)
 
+            _log_temporar("[UR UPDATE DIAG] final entry=%s furnizor=%s durata_totala=%.3fs", self.intrare.entry_id, self.cheie_furnizor, time.monotonic() - pornire_actualizare)
             return instantaneu
 
         except EroareAutentificare as err:

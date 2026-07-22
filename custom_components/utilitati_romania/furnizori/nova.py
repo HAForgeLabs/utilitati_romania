@@ -17,6 +17,11 @@ from .baza import ClientFurnizor
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _log_temporar(*_args, **_kwargs) -> None:
+    return None
+
+
 URL_BAZA = "https://backend.nova-energy.ro/api"
 URL_BAZA_PORTAL = "https://myaccount-admin.nova-energy.ro/api/v1"
 ENDPOINT_LOGIN = "/accounts/login/client"
@@ -132,7 +137,7 @@ class ClientApiNova:
                         json_invalid = True
 
                 if diagnostic_label:
-                    _LOGGER.debug(
+                    _log_temporar(
                         "[NOVA DIAG] %s: %s",
                         diagnostic_label,
                         json.dumps(
@@ -216,7 +221,7 @@ class ClientApiNova:
                         json_invalid = True
 
                 if diagnostic_label:
-                    _LOGGER.debug(
+                    _log_temporar(
                         "[NOVA DIAG] %s: %s",
                         diagnostic_label,
                         json.dumps(
@@ -398,7 +403,7 @@ class ClientApiNova:
         self.cont_vizualizat = data.get("viewedAccount", {}) or {}
         asociate = self.cont.get("associatedAccounts") if isinstance(self.cont, dict) else []
         self.conturi_asociate = [cont for cont in asociate if isinstance(cont, dict)] if isinstance(asociate, list) else []
-        _LOGGER.debug(
+        _log_temporar(
             "[NOVA DIAG] backend_login_success: %s",
             json.dumps(
                 {
@@ -417,7 +422,7 @@ class ClientApiNova:
         try:
             portal = await self.async_login_portal()
         except Exception as portal_err:  # noqa: BLE001
-            _LOGGER.debug(
+            _log_temporar(
                 "[NOVA DIAG] backend_login_failed_portal_failed: %s",
                 json.dumps(
                     {
@@ -429,7 +434,7 @@ class ClientApiNova:
             )
             return None
 
-        _LOGGER.debug(
+        _log_temporar(
             "[NOVA DIAG] backend_login_failed_portal_success: %s",
             json.dumps(
                 {
@@ -767,7 +772,7 @@ class ClientApiNova:
                 data_balanta = raspuns_balanta.get("data") if isinstance(raspuns_balanta, dict) else {}
                 balanta_portal = data_balanta if isinstance(data_balanta, dict) else {}
             except EroareApiNova as err:
-                _LOGGER.debug(
+                _log_temporar(
                     "[NOVA DIAG] portal_fallback_balance_failed: %s",
                     json.dumps(
                         {
@@ -788,7 +793,7 @@ class ClientApiNova:
                 data_sumar = raspuns_sumar.get("data") if isinstance(raspuns_sumar, dict) else {}
                 sumar_portal = data_sumar if isinstance(data_sumar, dict) else {}
             except EroareApiNova as err:
-                _LOGGER.debug(
+                _log_temporar(
                     "[NOVA DIAG] portal_fallback_summary_failed: %s",
                     json.dumps(
                         {
@@ -810,7 +815,7 @@ class ClientApiNova:
                 facturi=facturi_cont,
                 balanta=balanta_portal,
             ):
-                _LOGGER.debug(
+                _log_temporar(
                     "[NOVA DIAG] portal_fallback_account_skipped: %s",
                     json.dumps(
                         {

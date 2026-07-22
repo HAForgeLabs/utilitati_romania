@@ -357,7 +357,9 @@ def _derive_payment_status(
     category = normalize_text(getattr(factura, "categorie", None)).lower()
     status_text = normalize_text(getattr(factura, "stare", None)).lower()
 
-    if category == "injectie" or (amount_value is not None and amount_value < 0):
+    if category in {"injectie", "credit", "nota de credit", "storno"} or (
+        amount_value is not None and amount_value < 0
+    ):
         return "credit", True, 0.0
 
     # Semnalele financiare concrete bat tokenii textuali ambigui.
@@ -366,6 +368,8 @@ def _derive_payment_status(
     # generică a câmpului "stare".
     unpaid_amount = _extract_unpaid_amount(instantaneu, factura, cont)
     if unpaid_amount is not None:
+        if unpaid_amount < 0:
+            return "credit", True, 0.0
         if unpaid_amount > 0:
             return "unpaid", False, unpaid_amount
         if _status_in(status_text, _NORMALIZED_STATUS_PAID_TOKENS):

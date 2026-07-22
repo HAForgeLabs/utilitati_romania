@@ -5,6 +5,8 @@ import json
 import logging
 import re
 import time
+from dataclasses import asdict
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,6 +18,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 
 from .const import (
     CONF_FURNIZOR,
@@ -35,6 +38,7 @@ from .const import (
     SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS,
 )
 from .coordonator import CoordonatorUtilitatiRomania
+from .modele import ConsumUtilitate, ContUtilitate, FacturaUtilitate, InstantaneuFurnizor
 from .grupare_facturi import async_incarca_grupari_facturi
 from .locuri_ignorate import (
     async_incarca_locuri_ignorate,
@@ -60,13 +64,158 @@ from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licent
 
 _LOGGER = logging.getLogger(__name__)
 
-_FRONTEND_VERSION = "1.17.1b2"
+
+def _log_temporar(*_args, **_kwargs) -> None:
+    return None
+
+
+_FRONTEND_VERSION = "1.17.1b10"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
 _PANEL_RESOURCE_URL = f"{_PANEL_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
 _LOVELACE_NOTIFICATION_ID = "utilitati_romania_card_resource"
 _ADMIN_PLATFORME = [Platform.SENSOR, Platform.BUTTON, Platform.TEXT, Platform.SELECT]
+
+_STARTUP_SNAPSHOT_STORAGE_VERSION = 1
+_STARTUP_SNAPSHOT_STORAGE_KEY = f"{DOMENIU}.startup_snapshots"
+_STARTUP_REFRESH_STAGGER_SECONDS = 8
+
+
+def _startup_snapshot_store(hass: HomeAssistant) -> Store:
+    return Store(hass, _STARTUP_SNAPSHOT_STORAGE_VERSION, _STARTUP_SNAPSHOT_STORAGE_KEY)
+
+
+def _json_safe_snapshot_value(value):
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_safe_snapshot_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_snapshot_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _parse_snapshot_date(value):
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _serialize_startup_snapshot(snapshot: InstantaneuFurnizor) -> dict:
+    return _json_safe_snapshot_value(asdict(snapshot))
+
+
+def _deserialize_startup_snapshot(payload: dict | None) -> InstantaneuFurnizor | None:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        conturi = [ContUtilitate(**item) for item in payload.get("conturi", []) if isinstance(item, dict)]
+        facturi = []
+        for item in payload.get("facturi", []):
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            item["data_emitere"] = _parse_snapshot_date(item.get("data_emitere"))
+            item["data_scadenta"] = _parse_snapshot_date(item.get("data_scadenta"))
+            facturi.append(FacturaUtilitate(**item))
+        consumuri = [ConsumUtilitate(**item) for item in payload.get("consumuri", []) if isinstance(item, dict)]
+        return InstantaneuFurnizor(
+            furnizor=str(payload.get("furnizor") or ""),
+            titlu=str(payload.get("titlu") or payload.get("furnizor") or ""),
+            conturi=conturi,
+            facturi=facturi,
+            consumuri=consumuri,
+            extra=payload.get("extra") if isinstance(payload.get("extra"), dict) else {},
+        )
+    except (TypeError, ValueError):
+        _LOGGER.debug("Snapshot de pornire invalid", exc_info=True)
+        return None
+
+
+async def _async_load_startup_snapshot(hass: HomeAssistant, entry_id: str) -> InstantaneuFurnizor | None:
+    snapshots = hass.data[DOMENIU].get("_startup_snapshots")
+    if snapshots is None:
+        raw = await _startup_snapshot_store(hass).async_load()
+        snapshots = raw if isinstance(raw, dict) else {}
+        hass.data[DOMENIU]["_startup_snapshots"] = snapshots
+    return _deserialize_startup_snapshot(snapshots.get(entry_id))
+
+
+async def _async_save_startup_snapshot(
+    hass: HomeAssistant, entry_id: str, snapshot: InstantaneuFurnizor
+) -> None:
+    snapshots = hass.data[DOMENIU].setdefault("_startup_snapshots", {})
+    snapshots[entry_id] = _serialize_startup_snapshot(snapshot)
+    await _startup_snapshot_store(hass).async_save(snapshots)
+
+
+def _async_schedule_startup_refresh(
+    hass: HomeAssistant, entry: ConfigEntry, coordonator: CoordonatorUtilitatiRomania,
+    *, snapshot_loaded: bool, furnizor: str,
+) -> None:
+    refreshed = hass.data[DOMENIU].setdefault("_startup_refreshed_entries", set())
+    if entry.entry_id in refreshed:
+        return
+    refreshed.add(entry.entry_id)
+
+    sequence = hass.data[DOMENIU].setdefault("_startup_refresh_sequence", 0)
+    hass.data[DOMENIU]["_startup_refresh_sequence"] = sequence + 1
+    delay = sequence * _STARTUP_REFRESH_STAGGER_SECONDS
+
+    async def _run_refresh() -> None:
+        if delay:
+            await asyncio.sleep(delay)
+        if hass.data.get(DOMENIU, {}).get(entry.entry_id) is not coordonator:
+            return
+        started = time.monotonic()
+        _log_temporar(
+            "[UR STARTUP DIAG] background_refresh_start entry=%s furnizor=%s delay=%ss",
+            entry.entry_id, furnizor, delay,
+        )
+        try:
+            await coordonator.async_refresh()
+            if not coordonator.last_update_success or coordonator.data is None:
+                _log_temporar(
+                    "[UR STARTUP DIAG] background_refresh_failed entry=%s furnizor=%s durata=%.3fs eroare=%s",
+                    entry.entry_id, furnizor, time.monotonic() - started, coordonator.last_exception,
+                )
+                return
+            await _async_save_startup_snapshot(hass, entry.entry_id, coordonator.data)
+            needs_initial_reload = not snapshot_loaded
+            _log_temporar(
+                "[UR STARTUP DIAG] background_refresh_done entry=%s furnizor=%s durata=%.3fs initial_reload=%s",
+                entry.entry_id, furnizor, time.monotonic() - started, needs_initial_reload,
+            )
+            if needs_initial_reload and hass.data.get(DOMENIU, {}).get(entry.entry_id) is coordonator:
+                await hass.config_entries.async_reload(entry.entry_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            _log_temporar(
+                "[UR STARTUP DIAG] background_refresh_exception entry=%s furnizor=%s durata=%.3fs eroare=%s",
+                entry.entry_id, furnizor, time.monotonic() - started, err,
+            )
+
+    def _create_refresh_task() -> None:
+        hass.async_create_background_task(
+            _run_refresh(), f"utilitati_romania_initial_refresh_{entry.entry_id}"
+        )
+
+    async def _launch_after_started(_event) -> None:
+        _create_refresh_task()
+
+    if hass.is_running:
+        _create_refresh_task()
+    else:
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, _launch_after_started
+        )
 
 
 
@@ -1213,16 +1362,23 @@ async def _async_curata_intrare_apa_brasov(hass: HomeAssistant, entry: ConfigEnt
             _LOGGER.debug("Nu am putut actualiza numele device-ului Apă Brașov", exc_info=True)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    pornire = time.monotonic()
+    furnizor = str(entry.data.get(CONF_FURNIZOR) or "necunoscut")
+    _log_temporar("[UR STARTUP DIAG] start entry=%s furnizor=%s", entry.entry_id, furnizor)
     hass.data.setdefault(DOMENIU, {})
 
+    etapa = time.monotonic()
     _async_ensure_services(hass)
     await async_incarca_grupari_facturi(hass)
     await async_incarca_statusuri_facturi_manuale(hass)
     await async_incarca_locuri_ignorate(hass)
+    _log_temporar("[UR STARTUP DIAG] storage entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)
 
+    etapa = time.monotonic()
     await _async_register_static_paths(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
+    _log_temporar("[UR STARTUP DIAG] frontend entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)
 
     if entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:
         hass.data[DOMENIU][entry.entry_id] = {"admin": True}
@@ -1231,23 +1387,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await _async_cleanup_admin_registry_links(hass)
         return True
 
+    etapa = time.monotonic()
     await _async_ensure_admin_entry(hass, entry)
+    _log_temporar("[UR STARTUP DIAG] admin entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)
 
     coordonator = CoordonatorUtilitatiRomania(hass, entry)
-    try:
-        await coordonator.async_config_entry_first_refresh()
-    except Exception:
-        await coordonator.async_inchide()
-        raise
+    instantaneu_cache = await _async_load_startup_snapshot(hass, entry.entry_id)
+    pornire_din_cache = instantaneu_cache is not None
+
+    if pornire_din_cache:
+        coordonator.async_set_updated_data(instantaneu_cache)
+        _log_temporar(
+            "[UR STARTUP DIAG] snapshot_persistent entry=%s furnizor=%s",
+            entry.entry_id,
+            furnizor,
+        )
+    else:
+        coordonator.async_set_updated_data(
+            InstantaneuFurnizor(
+                furnizor=furnizor,
+                titlu=entry.title or furnizor,
+                conturi=[],
+                facturi=[],
+                consumuri=[],
+                extra={"incarcare_initiala_in_fundal": True},
+            )
+        )
 
     # Apă Brașov are separat un device de furnizor și device-uri pentru locații.
     # Nu modificăm automat titlul config entry-ului după datele primei locații,
     # deoarece asta redenumește greșit grupul furnizorului și poate produce duplicate
     # în device registry după mai multe beta-uri.
+    etapa = time.monotonic()
     await _migrare_unique_ids(hass, entry, coordonator)
     await _async_normalize_retele_electrice_entity_ids(hass, entry)
+    _log_temporar("[UR STARTUP DIAG] migrari entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)
     hass.data[DOMENIU][entry.entry_id] = coordonator
+    etapa = time.monotonic()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORME)
+    _log_temporar("[UR STARTUP DIAG] platforme entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)
 
     # Entitățile pentru „Grupare facturi” aparțin intrării globale de administrare.
     # Dacă un furnizor este adăugat după ce administrarea era deja încărcată,
@@ -1265,6 +1443,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.data.get(CONF_FURNIZOR) == "ebloc":
         await _async_force_migrare_entity_ids_ebloc(hass, entry, coordonator)
     await _async_cleanup_admin_registry_links(hass)
+
+    _async_schedule_startup_refresh(
+        hass,
+        entry,
+        coordonator,
+        snapshot_loaded=pornire_din_cache,
+        furnizor=furnizor,
+    )
+
+    _log_temporar("[UR STARTUP DIAG] final entry=%s furnizor=%s durata_totala=%.3fs", entry.entry_id, furnizor, time.monotonic() - pornire)
     return True
 
 

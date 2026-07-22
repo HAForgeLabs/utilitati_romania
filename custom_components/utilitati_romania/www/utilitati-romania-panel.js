@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b2";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b3";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2253,8 +2253,25 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const buttonEntity = exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120);
       if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}`, providerKey, label: wantsGas ? "Index gaz" : "Index consum", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
       if (wantsElectric) {
-        const injectionNumber = states[`number.${base}_index_injectie`] || Object.values(states).find((stateObj) => stateObj?.entity_id?.startsWith("number.") && String(stateObj.attributes?.id_cont ?? "") === idCont && String(stateObj.attributes?.rol_registru ?? "") === "injectie");
-        const injectionCurrent = states[`sensor.${base}_index_injectie`] || Object.values(states).find((stateObj) => stateObj?.entity_id?.startsWith("sensor.") && String(stateObj.attributes?.id_cont ?? "") === idCont && (stateObj.entity_id.includes("index_injectie") || this._entityFriendlyText(stateObj).includes("energie livrata") || this._entityFriendlyText(stateObj).includes("energie livrată")));
+        const injectionNumber = states[`number.${base}_index_injectie`] || Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith("number.")) return false;
+          const attrs = stateObj.attributes || {};
+          if (String(attrs.rol_registru ?? "") !== "injectie") return false;
+          const stateIdCont = String(attrs.id_cont ?? "").trim();
+          if (idCont && stateIdCont && stateIdCont === idCont) return true;
+          const text = this._entityFriendlyText(stateObj);
+          return stateObj.entity_id.includes(base) || this._textMatchesAny(text, terms) || text.includes("energie livrata") || text.includes("energie livrată");
+        });
+        const injectionCurrent = states[`sensor.${base}_index_injectie`] || Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
+          const attrs = stateObj.attributes || {};
+          const stateIdCont = String(attrs.id_cont ?? "").trim();
+          const text = this._entityFriendlyText(stateObj);
+          const isInjection = stateObj.entity_id.includes("index_injectie") || text.includes("energie livrata") || text.includes("energie livrată");
+          if (!isInjection) return false;
+          if (idCont && stateIdCont && stateIdCont === idCont) return true;
+          return stateObj.entity_id.includes(base) || this._textMatchesAny(text, terms);
+        });
         if (injectionNumber && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}_injectie`, providerKey, label: "Index energie livrată", numberEntityId: injectionNumber.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: injectionCurrent?.entity_id || null });
       }
       return controls;

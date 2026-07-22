@@ -16,6 +16,11 @@ from .baza import ClientFurnizor
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _log_temporar(*_args, **_kwargs) -> None:
+    return None
+
+
 URL_BAZA = "https://datemasura.distributie-energie.ro/date_ee/do"
 HEADERS_BROWSER = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -339,7 +344,7 @@ class ClientFurnizorDeer(ClientFurnizor):
             allow_redirects=False,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        _LOGGER.debug("[DEER] login status=%s location=%s", status, location)
+        _log_temporar("[DEER] login status=%s location=%s", status, location)
 
         if status not in (302, 303):
             mesaj = _safe_text(text)
@@ -351,7 +356,7 @@ class ClientFurnizorDeer(ClientFurnizor):
             raise EroareAutentificare("Portalul DEER nu a confirmat autentificarea")
 
         status, text, _ = await self._request(action="checkSelectPODAndPartner")
-        _LOGGER.debug("[DEER] checkSelectPODAndPartner status=%s", status)
+        _log_temporar("[DEER] checkSelectPODAndPartner status=%s", status)
         if status >= 400:
             raise EroareConectare(f"Nu s-a putut deschide pagina principală DEER (HTTP {status})")
         if "loginForm" in text or "action=login" in text:
@@ -375,7 +380,7 @@ class ClientFurnizorDeer(ClientFurnizor):
             },
             headers={"Accept": "application/xml, text/xml, */*; q=0.01"},
         )
-        _LOGGER.debug("[DEER] loadPODDataAction status=%s", status)
+        _log_temporar("[DEER] loadPODDataAction status=%s", status)
         if status >= 400:
             raise EroareConectare(f"Nu s-a putut încărca lista de POD-uri DEER (HTTP {status})")
         pods = _extract_selected_pods(text)
@@ -385,7 +390,7 @@ class ClientFurnizorDeer(ClientFurnizor):
 
     async def _obtine_html_pagina(self, action: str, params: dict[str, Any] | None = None) -> str:
         status, text, _ = await self._request(action=action, params=params)
-        _LOGGER.debug("[DEER] %s status=%s", action, status)
+        _log_temporar("[DEER] %s status=%s", action, status)
         if status >= 400:
             raise EroareConectare(f"Pagina DEER {action} a răspuns cu HTTP {status}")
         if "loginForm" in text or "action=login" in text:
@@ -410,7 +415,7 @@ class ClientFurnizorDeer(ClientFurnizor):
                     "Accept": "text/html, */*; q=0.01",
                 },
             )
-            _LOGGER.debug("[DEER] encryptPodId status=%s selectedPOD=%s expected=%s", status, candidate, expected_pod)
+            _log_temporar("[DEER] encryptPodId status=%s selectedPOD=%s expected=%s", status, candidate, expected_pod)
             if status >= 400:
                 continue
 
@@ -423,7 +428,7 @@ class ClientFurnizorDeer(ClientFurnizor):
                     "Accept": "text/html, */*; q=0.01",
                 },
             )
-            _LOGGER.debug("[DEER] setSelectedPOD status=%s selectedPOD=%s expected=%s", status, candidate, expected_pod)
+            _log_temporar("[DEER] setSelectedPOD status=%s selectedPOD=%s expected=%s", status, candidate, expected_pod)
             if status >= 400:
                 continue
 
@@ -432,7 +437,7 @@ class ClientFurnizorDeer(ClientFurnizor):
             if pod_activ != expected_pod:
                 html_pod = await self._obtine_html_pagina("editInfoPodClient")
                 pod_activ = _extract_current_pod(html_pod) or pod_activ
-            _LOGGER.debug("[DEER] POD activ după selectare=%s expected=%s", pod_activ, expected_pod)
+            _log_temporar("[DEER] POD activ după selectare=%s expected=%s", pod_activ, expected_pod)
             if not expected_pod or pod_activ == expected_pod:
                 return html_cont
 

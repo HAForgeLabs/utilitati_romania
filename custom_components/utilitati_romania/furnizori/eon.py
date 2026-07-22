@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime
 from typing import Any
 
@@ -12,6 +13,11 @@ from .baza import ClientFurnizor
 from .eon_api import EonApiClient
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _log_temporar(*_args, **_kwargs) -> None:
+    return None
+
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -648,18 +654,22 @@ class ClientFurnizorEon(ClientFurnizor):
         return self.utilizator.lower()
 
     async def async_colecteaza_date(self) -> dict[str, Any]:
+        pornire_colectare = time.monotonic()
+        _log_temporar("[EON STARTUP DIAG] colectare_start")
         if not self._api.is_token_likely_valid():
             ok = await self._api.async_ensure_authenticated()
             if not ok:
                 raise EroareAutentificare("Nu s-a putut autentifica la E.ON")
 
+        etapa = time.monotonic()
         contracte = await self._api.async_fetch_contracts_list()
+        _log_temporar("[EON STARTUP DIAG] lista_contracte durata=%.3fs", time.monotonic() - etapa)
         if getattr(self._api, "reauth_required", False):
             raise EroareAutentificare("Reautentificare E.ON necesara")
         if not isinstance(contracte, list):
             contracte = []
 
-        _LOGGER.debug("[EON DIAG] colectare contracte=%s", len(contracte))
+        _log_temporar("[EON DIAG] colectare contracte=%s", len(contracte))
 
         locuri_consum: list[dict[str, Any]] = []
         toate_intrari: list[dict[str, Any]] = []
@@ -684,9 +694,11 @@ class ClientFurnizorEon(ClientFurnizor):
                 )
                 continue
 
+            etapa = time.monotonic()
             raw_subs = await self._api.async_fetch_contracts_list(
                 collective_contract=_safe_str(contract.get("accountContract"))
             )
+            _log_temporar("[EON STARTUP DIAG] sub_contracte contract=***%s durata=%.3fs", _safe_str(contract.get("accountContract"))[-4:], time.monotonic() - etapa)
             if isinstance(raw_subs, list):
                 for sub in raw_subs:
                     toate_intrari.append(
@@ -704,6 +716,8 @@ class ClientFurnizorEon(ClientFurnizor):
             utility_type = intrare.get("utility_type")
             tip_serviciu = _tip_utilitate_din_cod(utility_type)
 
+            etapa = time.monotonic()
+            _log_temporar("[EON STARTUP DIAG] date_contract_start contract=***%s", cod_contract[-4:])
             taskuri = await asyncio_gather_eon(
                 self._api.async_fetch_contract_details(cod_contract),
                 self._api.async_fetch_invoice_balance(cod_contract),
@@ -718,6 +732,8 @@ class ClientFurnizorEon(ClientFurnizor):
                 self._api.async_fetch_invoices_prosum(cod_contract, max_pages=3),
                 self._api.async_fetch_rescheduling_plans(cod_contract),
             )
+
+            _log_temporar("[EON STARTUP DIAG] date_contract_done contract=***%s durata=%.3fs", cod_contract[-4:], time.monotonic() - etapa)
 
             (
                 contract_details,
@@ -764,7 +780,9 @@ class ClientFurnizorEon(ClientFurnizor):
             detalii_contor_factura: dict[str, Any] = {}
             if id_ultima_factura:
                 try:
+                    etapa_factura = time.monotonic()
                     detalii_raw = await self._api.async_fetch_invoice_meter_details(id_ultima_factura)
+                    _log_temporar("[EON STARTUP DIAG] detalii_factura contract=***%s durata=%.3fs", cod_contract[-4:], time.monotonic() - etapa_factura)
                     detalii_contor_factura = _detalii_consum_factura_eon(detalii_raw)
                 except Exception:
                     _LOGGER.debug(
@@ -860,6 +878,7 @@ class ClientFurnizorEon(ClientFurnizor):
         total_sold_factura = round(sum(_to_float(x.get("sold_factura"), 0.0) for x in locuri_consum), 2)
         numar_facturi = sum(len(x.get("invoices_unpaid_raw", [])) + len(x.get("invoices_paid_raw", [])) for x in locuri_consum)
 
+        _log_temporar("[EON STARTUP DIAG] colectare_final durata_totala=%.3fs locuri=%s", time.monotonic() - pornire_colectare, len(locuri_consum))
         return {
             "rezumat": {
                 "numar_locuri_consum": len(locuri_consum),
