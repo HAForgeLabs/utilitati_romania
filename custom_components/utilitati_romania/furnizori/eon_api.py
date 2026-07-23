@@ -868,19 +868,35 @@ class EonApiClient:
         )
 
 
-    async def async_fetch_invoices_paid(self, account_contract: str, max_pages: int | None = None):
+    async def async_fetch_invoices_paid(
+        self,
+        account_contract: str,
+        max_pages: int | None = None,
+        include_subcontracts: bool = False,
+    ):
+        params = {"accountContract": account_contract, "status": "paid"}
+        if include_subcontracts:
+            params["includeSubcontracts"] = "true"
         return await self._paginated_request(
             base_url=URL_INVOICES_PAID,
-            params={"accountContract": account_contract, "status": "paid"},
+            params=params,
             list_key="list",
             label=f"invoices_paid ({account_contract})",
             max_pages=max_pages,
         )
 
-    async def async_fetch_invoices_prosum(self, account_contract: str, max_pages: int | None = None):
+    async def async_fetch_invoices_prosum(
+        self,
+        account_contract: str,
+        max_pages: int | None = None,
+        include_subcontracts: bool = False,
+    ):
+        params = {"accountContract": account_contract}
+        if include_subcontracts:
+            params["includeSubcontracts"] = "true"
         return await self._paginated_request(
             base_url=URL_INVOICES_PROSUM,
-            params={"accountContract": account_contract},
+            params=params,
             list_key="list",
             label=f"invoices_prosum ({account_contract})",
             max_pages=max_pages,
@@ -908,6 +924,20 @@ class EonApiClient:
             "GET",
             f"{URL_INVOICE_BALANCE}{params}",
             f"invoice_balance ({account_contract})",
+        )
+
+    async def async_fetch_invoice_balance_details(
+        self,
+        account_contract: str,
+        include_subcontracts: bool = False,
+    ):
+        params = f"?accountContract={account_contract}"
+        if include_subcontracts:
+            params += "&includeSubcontracts=true"
+        return await self._request_with_token(
+            "GET",
+            f"{URL_INVOICE_BALANCE}{params}",
+            f"invoice_balance_details ({account_contract})",
         )
 
     async def async_fetch_invoice_balance_prosum(self, account_contract: str, include_subcontracts: bool = False):

@@ -584,6 +584,26 @@ def _detalii_consum_factura_eon(detalii: dict | None) -> dict[str, Any]:
     }
     return {k: v for k, v in rezultat.items() if v not in (None, "")}
 
+def _contract_duo(contract_details: dict | None, account_contract: str) -> str | None:
+    if not isinstance(contract_details, dict):
+        return None
+
+    collective = _safe_str(
+        contract_details.get("collectiveAccountContract")
+        or contract_details.get("collectiveContract")
+    )
+    if not collective or collective == _safe_str(account_contract):
+        return None
+
+    product_name = _safe_str(contract_details.get("productName")).upper()
+    contract_name = _safe_str(contract_details.get("contractName")).upper()
+    is_duo = "DUO" in product_name or "DUO" in contract_name
+    if not is_duo:
+        return None
+
+    return collective
+
+
 async def asyncio_gather_eon(*aws):
     rezultate = []
     for coro in aws:
@@ -673,6 +693,7 @@ class ClientFurnizorEon(ClientFurnizor):
 
         locuri_consum: list[dict[str, Any]] = []
         toate_intrari: list[dict[str, Any]] = []
+        date_financiare_duo: dict[str, dict[str, Any]] = {}
 
         for contract in contracte:
             if isinstance(contract, dict) and isinstance(contract.get("contractDetails"), dict):
@@ -753,6 +774,80 @@ class ClientFurnizorEon(ClientFurnizor):
             if getattr(self._api, "reauth_required", False):
                 raise EroareAutentificare("Reautentificare E.ON necesara")
 
+            contract_duo = _contract_duo(
+                contract_details if isinstance(contract_details, dict) else None,
+                cod_contract,
+            )
+            este_reprezentant_duo = bool(contract_duo and utility_type == "01")
+
+            if contract_duo:
+                if contract_duo not in date_financiare_duo:
+                    rezultate_duo = await asyncio_gather_eon(
+                        self._api.async_fetch_invoice_balance(contract_duo),
+                        self._api.async_fetch_invoice_balance_details(
+                            contract_duo,
+                            include_subcontracts=True,
+                        ),
+                        self._api.async_fetch_invoices_unpaid(
+                            contract_duo,
+                            include_subcontracts=True,
+                        ),
+                        self._api.async_fetch_invoices_paid(
+                            contract_duo,
+                            max_pages=6,
+                            include_subcontracts=True,
+                        ),
+                        self._api.async_fetch_invoice_balance_prosum(
+                            contract_duo,
+                            include_subcontracts=True,
+                        ),
+                        self._api.async_fetch_invoices_prosum(
+                            contract_duo,
+                            max_pages=3,
+                            include_subcontracts=True,
+                        ),
+                        self._api.async_fetch_rescheduling_plans(
+                            contract_duo,
+                            include_subcontracts=True,
+                        ),
+                    )
+                    (
+                        duo_dashboard,
+                        duo_balance,
+                        duo_unpaid,
+                        duo_paid,
+                        duo_balance_prosum,
+                        duo_prosum,
+                        duo_plans,
+                    ) = rezultate_duo
+                    date_financiare_duo[contract_duo] = {
+                        "dashboard": duo_dashboard if isinstance(duo_dashboard, dict) else {},
+                        "balance": duo_balance if isinstance(duo_balance, dict) else {},
+                        "unpaid": duo_unpaid if isinstance(duo_unpaid, list) else [],
+                        "paid": duo_paid if isinstance(duo_paid, list) else [],
+                        "balance_prosum": duo_balance_prosum if isinstance(duo_balance_prosum, dict) else {},
+                        "prosum": duo_prosum if isinstance(duo_prosum, list) else [],
+                        "plans": duo_plans if isinstance(duo_plans, list) else [],
+                    }
+
+                date_duo = date_financiare_duo[contract_duo]
+                if este_reprezentant_duo:
+                    invoice_balance = date_duo["dashboard"] or date_duo["balance"]
+                    invoices_unpaid = date_duo["unpaid"]
+                    invoices_paid = date_duo["paid"]
+                    invoice_balance_prosum = date_duo["balance_prosum"]
+                    invoices_prosum = date_duo["prosum"]
+                    rescheduling_plans = date_duo["plans"]
+                else:
+                    # Factura DUO aparține contractului colectiv și se publică o singură dată,
+                    # pe serviciul de energie electrică. Indexurile rămân separate pe fiecare serviciu.
+                    invoice_balance = {}
+                    invoices_unpaid = []
+                    invoices_paid = []
+                    invoice_balance_prosum = {}
+                    invoices_prosum = []
+                    rescheduling_plans = []
+
             address_obj = None
             if isinstance(contract_details, dict):
                 address_obj = contract_details.get("consumptionPointAddress")
@@ -791,8 +886,22 @@ class ClientFurnizorEon(ClientFurnizor):
                         exc_info=True,
                     )
 
+            numar_ultima_factura = _safe_str(
+                detalii_contor_factura.get("invoice_number")
+                or (ultima_factura or {}).get("fiscalInvoiceNumber")
+                or (ultima_factura or {}).get("documentNumber")
+                or (ultima_factura or {}).get("billingDocumentNumber")
+                or (ultima_factura or {}).get("invoiceNo")
+                or id_ultima_factura
+            ) or None
+
             if factura_restanta:
-                valoare_ultima_factura = round(sold_factura, 2)
+                valoare_document = _valoare_factura(ultima_factura)
+                valoare_ultima_factura = (
+                    round(valoare_document, 2)
+                    if este_reprezentant_duo and valoare_document != 0
+                    else round(sold_factura, 2)
+                )
                 tip_ultima_valoare = "factura"
             elif ultima_factura is not None:
                 valoare_ultima_factura = _valoare_factura(ultima_factura)
@@ -821,13 +930,17 @@ class ClientFurnizorEon(ClientFurnizor):
                     "tip_serviciu": tip_serviciu,
                     "tip_utilitate_cod": utility_type,
                     "este_colectiv": bool(intrare.get("is_collective")),
-                    "contract_parinte": intrare.get("parent_contract"),
+                    "contract_parinte": contract_duo or intrare.get("parent_contract"),
+                    "este_duo": bool(contract_duo),
+                    "contract_duo": contract_duo,
+                    "reprezentant_factura_duo": este_reprezentant_duo,
                     "date_contract": contract_details if isinstance(contract_details, dict) else {},
                     "de_plata": max(sold_factura, 0.0),
                     "sold_factura": sold_factura,
                     "sold_curent": sold_factura,
                     "factura_restanta": factura_restanta,
                     "id_ultima_factura": id_ultima_factura,
+                    "numar_ultima_factura": numar_ultima_factura,
                     "valoare_ultima_factura": valoare_ultima_factura,
                     "tip_ultima_valoare": tip_ultima_valoare,
                     "data_ultima_factura": data_ultima_factura,
@@ -999,15 +1112,37 @@ class ClientFurnizorEon(ClientFurnizor):
             sold_factura_loc = round(_to_float(loc.get("sold_factura"), 0.0), 2)
             factura_restanta_loc = bool(loc.get("factura_restanta"))
             valoare_factura_consum = round(_to_float(loc.get("valoare_ultima_factura"), 0.0), 2)
+
+            # Într-un grup DUO, factura comună este publicată doar pe reprezentantul
+            # electric. Contractul copil de gaz nu trebuie să genereze o factură
+            # placeholder de 0 RON din senzorii de tip „ultima factură”.
+            if bool(loc.get("este_duo")) and not bool(loc.get("reprezentant_factura_duo")):
+                factura_id = ""
+                factura_restanta_loc = False
+                valoare_factura_consum = 0.0
+
             if not factura_id and factura_restanta_loc and sold_factura_loc > 0:
                 factura_id = f"sold-{id_cont}"
                 valoare_factura_consum = round(sold_factura_loc, 2)
 
             if factura_id:
+                numar_factura_afisat = _safe_str(loc.get("numar_ultima_factura")) or factura_id
+                raw_factura = {}
+                if isinstance(loc.get("invoices_unpaid_raw"), list) and loc.get("invoices_unpaid_raw"):
+                    prima_factura = loc.get("invoices_unpaid_raw")[0]
+                    if isinstance(prima_factura, dict):
+                        raw_factura.update(prima_factura)
+                raw_factura.update(
+                    {
+                        "numar_factura": numar_factura_afisat,
+                        "invoice_id_internal": factura_id,
+                        "contract_duo": loc.get("contract_duo"),
+                    }
+                )
                 facturi.append(
                     FacturaUtilitate(
                         id_factura=factura_id,
-                        titlu=f"Factura {factura_id}",
+                        titlu=f"Factura {numar_factura_afisat}",
                         valoare=valoare_factura_consum,
                         moneda="RON",
                         data_emitere=_parse_date(loc.get("data_ultima_factura")),
@@ -1019,7 +1154,7 @@ class ClientFurnizorEon(ClientFurnizor):
                         tip_utilitate=tip_serviciu,
                         tip_serviciu=tip_serviciu,
                         este_prosumator=False,
-                        date_brute=loc.get("invoices_unpaid_raw", []) if isinstance(loc.get("invoices_unpaid_raw"), list) else loc,
+                        date_brute=raw_factura,
                     )
                 )
 

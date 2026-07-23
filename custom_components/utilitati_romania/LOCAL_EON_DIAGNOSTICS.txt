@@ -1,0 +1,9 @@
+VERSIUNE STRICT LOCALA - DIAGNOSTIC E.ON
+
+Nu modifica logica de autentificare, sesiunea, intervalul de refresh sau task-ul E.ON.
+Adauga doar loguri cu prefixul [EON LOCAL TRACE].
+Tokenurile sunt reprezentate exclusiv prin amprente SHA-256 scurte si lungime; valorile nu sunt scrise.
+Nu face apeluri de retea in __init__ si nu asteapta nimic la pornirea Home Assistant.
+Task-ul existent ramane task de fundal si primul refresh respecta intarzierea deja calculata.
+
+Pentru analiza sunt necesare toate liniile [EON LOCAL TRACE] de la autentificare/restart pana la primul cod 6047.

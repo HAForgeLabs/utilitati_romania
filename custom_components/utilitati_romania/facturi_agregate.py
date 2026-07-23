@@ -685,6 +685,12 @@ def _build_eon_fallback_item(
     hass = coordonator.hass
     cont_raw = cont.date_brute if isinstance(cont.date_brute, dict) else {}
 
+    # Factura comună DUO este publicată exclusiv pe contractul reprezentant
+    # (electricitate). Contractul copil de gaz nu trebuie să genereze fallbackul
+    # tehnic „eon_<contract>_ultima” cu valoare 0 RON.
+    if bool(cont_raw.get("este_duo")) and not bool(cont_raw.get("reprezentant_factura_duo")):
+        return None
+
     factura_id = (
         _consum_value(instantaneu, "id_ultima_factura", id_cont)
         or cont_raw.get("id_ultima_factura")

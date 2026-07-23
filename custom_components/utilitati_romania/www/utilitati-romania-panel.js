@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b3";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b13";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2197,7 +2197,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const idCont = String(provider?.id_cont || "").trim();
       const tipServiciu = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
       const wantsGas = tipServiciu.includes("gaz");
-      const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie");
+      const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie") || tipServiciu.includes("curent");
       const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
         const entityId = String(stateObj?.entity_id || "").toLowerCase();
