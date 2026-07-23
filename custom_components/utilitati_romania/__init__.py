@@ -69,7 +69,7 @@ def _log_temporar(*_args, **_kwargs) -> None:
     return None
 
 
-_FRONTEND_VERSION = "1.17.1b14"
+_FRONTEND_VERSION = "1.17.1b15"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"

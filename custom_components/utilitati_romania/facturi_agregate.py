@@ -1904,10 +1904,26 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
     grouped_locations: dict[str, dict[str, Any]] = {}
 
     for item in items:
-        if item.get("status") == "unpaid":
-            unpaid_amount = _to_float(item.get("unpaid_amount"))
-            if unpaid_amount is not None and unpaid_amount > 0:
-                total_unpaid += unpaid_amount
+        amount = _to_float(item.get("amount"))
+        unpaid_amount = _to_float(item.get("unpaid_amount"))
+
+        # Normalizare finală defensivă. Unele fluxuri furnizor pot construi rândul
+        # agregat fără să treacă prin clasificatorul generic al facturii.
+        # Un total negativ reprezintă credit/rectificare, nu restanță.
+        if (amount is not None and amount < 0) or (
+            unpaid_amount is not None and unpaid_amount < 0
+        ):
+            item["status"] = "credit"
+            item["payment_status"] = "credit"
+            item["is_paid"] = False
+            item["unpaid_amount"] = 0.0
+            item["unpaid_total"] = 0.0
+            item["unpaid_count"] = 0
+            item["unpaid_invoice_ids"] = []
+            unpaid_amount = 0.0
+
+        if item.get("status") == "unpaid" and unpaid_amount is not None and unpaid_amount > 0:
+            total_unpaid += unpaid_amount
 
         location = grouped_locations.setdefault(
             item.get("locatie_cheie") or "locatie",
@@ -1922,6 +1938,7 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
     total = 0
     paid = 0
     unpaid = 0
+    credits = 0
     unknown = 0
 
     for location in grouped_locations.values():
@@ -1929,8 +1946,10 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
             total += 1
 
             status = item.get("status")
-            if status in {"paid", "credit"}:
+            if status == "paid":
                 paid += 1
+            elif status == "credit":
+                credits += 1
             elif status == "unpaid":
                 unpaid += _numar_neplatite_item(item)
             else:
@@ -1962,6 +1981,7 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
         "numar_facturi": total,
         "numar_platite": paid,
         "numar_neplatite": unpaid,
+        "numar_credite": credits,
         "numar_necunoscute": unknown,
         "numar_status_necunoscut": unknown,
         "total_neplatit": total_unpaid,
