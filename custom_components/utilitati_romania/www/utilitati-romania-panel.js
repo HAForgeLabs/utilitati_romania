@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b13";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b14";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -888,6 +888,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
   _status(provider) {
+    const amount = this._num(provider?.amount ?? provider?.suma ?? provider?.valoare ?? provider?.total);
+    const unpaidAmount = this._num(provider?.unpaid_amount ?? provider?.rest_plata);
+    if ((amount !== null && amount < 0) || (unpaidAmount !== null && unpaidAmount < 0)) return "credit";
     const raw = String(provider?.status || provider?.payment_status || provider?.status_raw || "unknown").toLowerCase();
     if (["paid", "platita", "plătită", "credit"].includes(raw)) return raw === "credit" ? "credit" : "paid";
     if (["unpaid", "neplatita", "neplătită", "restanta", "restanță", "de_plata"].includes(raw)) return "unpaid";

@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b13";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b14";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -120,6 +120,11 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   _providerEffectiveStatus(provider) {
     if (provider?.manual_status_override === true) {
       return "paid";
+    }
+    const amount = this._toNumber(provider?.amount ?? provider?.suma ?? provider?.valoare ?? provider?.total);
+    const unpaidAmount = this._toNumber(provider?.unpaid_amount ?? provider?.rest_plata);
+    if ((amount !== null && amount < 0) || (unpaidAmount !== null && unpaidAmount < 0)) {
+      return "credit";
     }
     return this._normalizeStatus(provider?.status || provider?.payment_status || provider?.status_raw);
   }

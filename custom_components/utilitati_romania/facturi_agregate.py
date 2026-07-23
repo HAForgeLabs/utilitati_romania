@@ -348,18 +348,42 @@ def _extract_pdf_url(factura: FacturaUtilitate) -> str | None:
     return None
 
 
+def _invoice_has_negative_total(factura: FacturaUtilitate) -> bool:
+    """Detectează o factură cu total negativ, indiferent de furnizor sau categorie."""
+    amount_value = _to_float(getattr(factura, "valoare", None))
+    if amount_value is not None and amount_value < 0:
+        return True
+
+    raw = _raw_dict(factura)
+    for key in (
+        "issuedValue",
+        "invoiceValue",
+        "amount",
+        "value",
+        "total",
+        "totalValue",
+        "balanceValue",
+        "totalBalance",
+        "balance",
+        "rest_plata",
+        "remainingAmount",
+    ):
+        raw_value = _to_float(raw.get(key))
+        if raw_value is not None and raw_value < 0:
+            return True
+
+    return False
+
+
 def _derive_payment_status(
     instantaneu: InstantaneuFurnizor,
     factura: FacturaUtilitate,
     cont: ContUtilitate | None,
 ) -> tuple[str, bool | None, float | None]:
-    amount_value = _to_float(getattr(factura, "valoare", None))
     category = normalize_text(getattr(factura, "categorie", None)).lower()
     status_text = normalize_text(getattr(factura, "stare", None)).lower()
 
-    if category in {"injectie", "credit", "nota de credit", "storno"} or (
-        amount_value is not None and amount_value < 0
-    ):
+    if category in {"injectie", "credit", "nota de credit", "storno"} or _invoice_has_negative_total(factura):
         return "credit", True, 0.0
 
     # Semnalele financiare concrete bat tokenii textuali ambigui.
