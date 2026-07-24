@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1b15";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -289,6 +289,16 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       .trim();
   }
 
+  _providerKey(provider) {
+    return String(
+      provider?.furnizor ||
+      provider?.furnizor_key ||
+      provider?.provider ||
+      provider?.provider_key ||
+      ""
+    ).trim().toLowerCase();
+  }
+
   _makeKey(...parts) {
     return parts.map((part) => String(part ?? "")).join("__");
   }
@@ -471,10 +481,79 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     `;
   }
 
+  _shouldHideEmptyDuoEonRow(location, provider) {
+    const providerKey = String(provider?.furnizor || provider?.furnizor_key || "").trim().toLowerCase();
+    if (providerKey !== "eon") return false;
+
+    const title = this._normalizeText(provider?.invoice_title || provider?.invoice_id || "");
+    const amount = this._toNumber(this._providerDisplayAmount(provider));
+    const service = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
+
+    const isEmptyGasRow =
+      service.includes("gaz") &&
+      (!Number.isFinite(amount) || Math.abs(amount) < 0.005) &&
+      (title.includes("fara factura curenta") || !String(provider?.invoice_id || "").trim());
+
+    if (!isEmptyGasRow) return false;
+
+    const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
+    return providers.some((candidate) => {
+      if (candidate === provider) return false;
+      const candidateKey = String(candidate?.furnizor || candidate?.furnizor_key || "").trim().toLowerCase();
+      if (candidateKey !== "eon") return false;
+
+      const candidateService = this._normalizeText(candidate?.tip_serviciu || candidate?.tip_utilitate || "");
+      const candidateAmount = this._toNumber(this._providerDisplayAmount(candidate));
+      const candidateInvoice = String(candidate?.invoice_id || candidate?.invoice_number || candidate?.invoice_title || "").trim();
+
+      return (candidateService.includes("energie") || candidateService.includes("electric")) &&
+        !!candidateInvoice &&
+        Number.isFinite(candidateAmount) &&
+        Math.abs(candidateAmount) >= 0.005;
+    });
+  }
+
+  _visibleProvidersForLocation(location) {
+    const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
+
+    const hasRealEonElectricInvoice = providers.some((provider) => {
+      const providerKey = String(provider?.furnizor || provider?.furnizor_key || "").trim().toLowerCase();
+      if (providerKey !== "eon") return false;
+
+      const service = this._normalizeText(
+        provider?.tip_serviciu || provider?.tip_utilitate || provider?.serviciu || provider?.utility_type || ""
+      );
+      const isElectric = service.includes("energie") || service.includes("electric") || service.includes("curent");
+      if (!isElectric) return false;
+
+      const amount = this._toNumber(this._providerDisplayAmount(provider));
+      return Number.isFinite(amount) && Math.abs(amount) >= 0.005;
+    });
+
+    return providers.filter((provider) => {
+      if (this._shouldHideEmptyDuoEonRow(location, provider)) return false;
+      if (!hasRealEonElectricInvoice) return true;
+
+      const providerKey = String(provider?.furnizor || provider?.furnizor_key || "").trim().toLowerCase();
+      if (providerKey !== "eon") return true;
+
+      const service = this._normalizeText(
+        provider?.tip_serviciu || provider?.tip_utilitate || provider?.serviciu || provider?.utility_type || ""
+      );
+      const isGas = service.includes("gaz");
+      if (!isGas) return true;
+
+      const amount = this._toNumber(this._providerDisplayAmount(provider));
+      const title = this._normalizeText(this._providerCompactTitle(provider));
+      const hasNoInvoice = !Number.isFinite(amount) || Math.abs(amount) < 0.005 || title.includes("fara factura curenta");
+      return !hasNoInvoice;
+    });
+  }
+
   _collectInvoiceEntries(locations) {
     const entries = [];
     for (const location of locations || []) {
-      const providers = Array.isArray(location.furnizori) ? location.furnizori : [];
+      const providers = this._visibleProvidersForLocation(location);
       providers.forEach((provider, index) => {
         entries.push({
           location,
@@ -705,8 +784,10 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   _renderInvoicesByLocation(locations) {
     return (locations || [])
       .map((location) => {
-        const openReading = this._getAnyOpenReadingForLocation(location);
-        const hasUnpaid = (location.furnizori || []).some((p) => this._providerEffectiveStatus(p) === "unpaid");
+        const visibleProviders = this._visibleProvidersForLocation(location);
+        const visibleLocation = { ...location, furnizori: visibleProviders };
+        const openReading = this._getAnyOpenReadingForLocation(visibleLocation);
+        const hasUnpaid = visibleProviders.some((p) => this._providerEffectiveStatus(p) === "unpaid");
 
         return `
           <div class="location ${hasUnpaid ? 'location-unpaid' : ''}">
@@ -714,9 +795,9 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
               <div class="location-title">${this._escapeHtml(location.eticheta_locatie || location.locatie_cheie || "Locație")}</div>
               ${openReading?.badge ? this._buildReadingBadge(openReading.badge) : ""}
             </div>
-            <div class="location-meta">${this._escapeHtml(this._locationSummary(location))}</div>
+            <div class="location-meta">${this._escapeHtml(this._locationSummary(visibleLocation))}</div>
             <div class="invoice-list">
-              ${(location.furnizori || []).map((provider, index) => this._buildProviderRow(location, provider, index)).join("")}
+              ${visibleProviders.map((provider, index) => this._buildProviderRow(visibleLocation, provider, index)).join("")}
             </div>
           </div>
         `;
@@ -969,38 +1050,19 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       const idCont = String(provider?.id_cont || "").trim();
       const tipServiciu = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
       const wantsGas = tipServiciu.includes("gaz");
-      const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie");
-
+      const wantsElectric = tipServiciu.includes("electric") || tipServiciu.includes("energie") || tipServiciu.includes("curent");
       const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
         const entityId = String(stateObj?.entity_id || "").toLowerCase();
-        return (
-          entityId.includes("hidro") ||
-          entityId.includes("hidroelectrica") ||
-          entityId.includes("myelectrica") ||
-          entityId.includes("apa_canal") ||
-          entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("aparegio") || entityId.includes("polaris") || entityId.includes("hidro_prahova") ||
-          entityId.includes("apacanal") ||
-          entityId.includes("ebloc") ||
-          text.includes("hidro") ||
-          text.includes("hidroelectrica") ||
-          text.includes("myelectrica") ||
-          text.includes("apa canal") ||
-          text.includes("apa brasov") ||
-          text.includes("apă brașov") ||
-          text.includes("ebloc")
-        );
+        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("aparegio") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("aparegio") || text.includes("polaris") || text.includes("hidro prahova") || text.includes("ebloc");
       };
-
       const scoreEonEntity = (stateObj, kind) => {
         if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
         if (isOtherProviderEntity(stateObj)) return -1;
-
         const entityId = String(stateObj.entity_id || "").toLowerCase();
         const text = this._entityFriendlyText(stateObj);
         const attrs = stateObj.attributes || {};
         let score = 0;
-
         if (entityId.includes("eon")) score += 160;
         if (text.includes("eon")) score += 80;
         if (idCont && entityId.includes(idCont)) score += 160;
@@ -1008,61 +1070,62 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
         if (entityId.includes(base)) score += 120;
         if (this._textMatchesAny(text, terms)) score += 90;
         if (this._textMatchesAny(entityId, terms)) score += 50;
-
         if (kind === "number") {
           if (text.includes("index gaz") || entityId.includes("index_gaz")) score += wantsGas ? 120 : 40;
           if (text.includes("index energie") || entityId.includes("index_energie")) score += wantsElectric ? 120 : 40;
           if (text.includes("index") || entityId.includes("index")) score += 40;
         }
-
         if (kind === "button") {
           if (!text.includes("trimite index") && !entityId.includes("trimite_index")) return -1;
           if (text.includes("gaz") || entityId.includes("gaz")) score += wantsGas ? 120 : 30;
           if (text.includes("energie") || text.includes("electric") || entityId.includes("energie") || entityId.includes("electric")) score += wantsElectric ? 120 : 30;
           if (entityId.includes("eon")) score += 160;
         }
-
         if (kind === "sensor") {
           if (text.includes("index gaz") || entityId.includes("index_gaz")) score += wantsGas ? 90 : 30;
           if (text.includes("index energie") || entityId.includes("index_energie")) score += wantsElectric ? 90 : 30;
           if (text.includes("index") || entityId.includes("index")) score += 30;
         }
-
         return score;
       };
-
       const bestEntity = (kind, minimumScore) => {
         let best = null;
         let bestScore = -1;
         for (const stateObj of Object.values(states)) {
           const score = scoreEonEntity(stateObj, kind);
-          if (score > bestScore) {
-            best = stateObj;
-            bestScore = score;
-          }
+          if (score > bestScore) { best = stateObj; bestScore = score; }
         }
         return bestScore >= minimumScore ? best : null;
       };
-
       const exactNumber = states[`number.${base}_index`] || states[`number.${base}_index_gaz`] || states[`number.${base}_index_energie_electrica`] || null;
       const numberEntity = exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : bestEntity("number", 120);
-
       let currentEntity = states[`sensor.${base}_index_contor`] || states[`sensor.${base}_index_energie_electrica`] || states[`sensor.${base}_index_gaz`] || null;
       if (currentEntity && isOtherProviderEntity(currentEntity)) currentEntity = null;
       if (!currentEntity) currentEntity = bestEntity("sensor", 120);
-
       const exactButton = states[`button.${base}_trimite_index`] || states[`button.${base}_trimite_index_gaz`] || states[`button.${base}_trimite_index_energie_electrica`] || null;
       const buttonEntity = exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120);
-
-      if (numberEntity && buttonEntity) {
-        controls.push({
-          key: `${providerKey}_${provider.id_cont || base}`,
-          providerKey,
-          label: "Index de transmis",
-          numberEntityId: numberEntity.entity_id,
-          buttonEntityId: buttonEntity.entity_id,
-          currentEntityId: currentEntity?.entity_id || null,
+      if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}`, providerKey, label: wantsGas ? "Index gaz" : "Index consum", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
+      if (wantsElectric) {
+        const injectionNumber = states[`number.${base}_index_injectie`] || Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith("number.")) return false;
+          const attrs = stateObj.attributes || {};
+          if (String(attrs.rol_registru ?? "") !== "injectie") return false;
+          const stateIdCont = String(attrs.id_cont ?? "").trim();
+          if (idCont && stateIdCont && stateIdCont === idCont) return true;
+          const text = this._entityFriendlyText(stateObj);
+          return stateObj.entity_id.includes(base) || this._textMatchesAny(text, terms) || text.includes("energie livrata") || text.includes("energie livrată");
         });
+        const injectionCurrent = states[`sensor.${base}_index_injectie`] || Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
+          const attrs = stateObj.attributes || {};
+          const stateIdCont = String(attrs.id_cont ?? "").trim();
+          const text = this._entityFriendlyText(stateObj);
+          const isInjection = stateObj.entity_id.includes("index_injectie") || text.includes("energie livrata") || text.includes("energie livrată");
+          if (!isInjection) return false;
+          if (idCont && stateIdCont && stateIdCont === idCont) return true;
+          return stateObj.entity_id.includes(base) || this._textMatchesAny(text, terms);
+        });
+        if (injectionNumber && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}_injectie`, providerKey, label: "Index energie livrată", numberEntityId: injectionNumber.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: injectionCurrent?.entity_id || null });
       }
       return controls;
     }
@@ -1294,7 +1357,9 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   }
 
   async _refreshEntities(entityIds = []) {
-    const ids = Array.from(new Set((entityIds || []).filter(Boolean)));
+    const ids = Array.from(new Set((entityIds || []).filter((entityId) => {
+      return !!entityId && !!this._hass?.states?.[entityId];
+    })));
     if (!ids.length) return;
     try {
       await this._hass.callService("homeassistant", "update_entity", { entity_id: ids });
@@ -1310,6 +1375,11 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const periodText = data.start && data.end
       ? `Perioadă activă: ${this._formatDate(data.start)} – ${this._formatDate(data.end)}`
       : (data.end ? `Poți transmite până în ${this._formatDate(data.end)}` : "Perioada de transmitere este activă.");
+
+    const isGroupedEon = this._providerKey(provider) === "eon" && data.controls.length > 1;
+    if (isGroupedEon) {
+      return this._buildGroupedEonReadingControls(location, provider, data, periodText);
+    }
 
     const controlsHtml = data.controls
       .map((control) => {
@@ -1378,6 +1448,26 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
         ${controlsHtml}
       </div>
     `;
+  }
+
+  _buildGroupedEonReadingControls(location, provider, data, periodText) {
+    const controls = data.controls || [];
+    const buttonEntityId = controls.find((control) => control.buttonEntityId)?.buttonEntityId || "";
+    const actionKey = `reading_group__${buttonEntityId || provider?.id_cont || "eon"}`;
+    const action = this._getActionState("reading_group", actionKey);
+    const fields = controls.map((control) => {
+      const numberValue = control.numberState?.state && !["unknown", "unavailable"].includes(control.numberState.state) ? control.numberState.state : "";
+      const currentText = control.currentValue && !["unknown", "unavailable"].includes(control.currentValue) ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}` : "—";
+      return `<div class="reading-control grouped-field" data-reading-group-field data-number-entity="${this._escapeAttr(control.numberEntityId || "")}" data-current-value="${this._escapeAttr(String(control.currentValue ?? ""))}" data-unit="${this._escapeAttr(String(control.unit || ""))}">
+        <div class="reading-control-header"><div class="reading-control-title">${this._escapeHtml(control.label || "Index")}</div><div class="reading-control-current">Index curent: ${this._escapeHtml(currentText)}</div></div>
+        <input class="reading-input" type="number" step="any" inputmode="decimal" value="${this._escapeAttr(numberValue)}" placeholder="Introduceți indexul" ${action.status === "sending" ? "disabled" : ""}/>
+      </div>`;
+    }).join("");
+    return `<div class="reading-wrap grouped-eon" data-reading-group data-button-entity="${this._escapeAttr(buttonEntityId)}">
+      <div class="reading-title">Transmitere index</div><div class="reading-period">${this._escapeHtml(periodText)}</div>${fields}
+      <button class="reading-submit-btn grouped-reading-submit" ${action.status === "sending" ? "disabled" : ""}>${action.status === "sending" ? "Se trimit..." : "Trimite indexurile"}</button>
+      ${action.status === "success" ? `<div class="inline-status status-success">${this._escapeHtml(action.message || "Indexurile au fost trimise.")}</div>` : action.status === "error" ? `<div class="inline-status status-error">${this._escapeHtml(action.message || "Transmiterea a eșuat.")}</div>` : ""}
+    </div>`;
   }
 
   _getProviderRefreshEntityId(provider) {
@@ -2010,6 +2100,38 @@ _buildProviderRefreshButton(provider) {
       });
     }
 
+    root.querySelectorAll("[data-reading-group]").forEach((wrapper) => {
+      const submit = wrapper.querySelector(".grouped-reading-submit");
+      if (!submit) return;
+      submit.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const buttonEntityId = wrapper.getAttribute("data-button-entity") || "";
+        const actionKey = `reading_group__${buttonEntityId || "eon"}`;
+        const fields = [...wrapper.querySelectorAll("[data-reading-group-field]")];
+        const values = [];
+        for (const field of fields) {
+          const numberEntityId = field.getAttribute("data-number-entity") || "";
+          const input = field.querySelector(".reading-input");
+          const numericValue = this._toNumber(String(input?.value || "").trim());
+          const currentNumeric = this._toNumber(field.getAttribute("data-current-value") || "");
+          if (!numberEntityId || !Number.isFinite(numericValue) || numericValue <= 0) {
+            this._setActionState("reading_group", actionKey, { status: "error", message: "Completează valori numerice valide pentru ambele indexuri." }); this._render(); return;
+          }
+          if (Number.isFinite(currentNumeric) && currentNumeric > 0 && numericValue < currentNumeric) {
+            this._setActionState("reading_group", actionKey, { status: "error", message: `Una dintre valori este mai mică decât indexul curent (${currentNumeric}).` }); this._render(); return;
+          }
+          values.push({ numberEntityId, numericValue });
+        }
+        this._setActionState("reading_group", actionKey, { status: "sending", message: "" }); this._render();
+        try {
+          for (const item of values) await this._hass.callService("number", "set_value", { entity_id: item.numberEntityId, value: item.numericValue });
+          await this._hass.callService("button", "press", { entity_id: buttonEntityId });
+          this._setActionState("reading_group", actionKey, { status: "success", message: "Cele două indexuri au fost trimise împreună către E.ON." });
+        } catch (err) { this._setActionState("reading_group", actionKey, { status: "error", message: err?.message || "Transmiterea indexurilor a eșuat." }); }
+        this._render();
+      });
+    });
+
     root.querySelectorAll(".reading-input").forEach((input) => {
       input.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
@@ -2511,6 +2633,10 @@ _buildProviderRefreshButton(provider) {
         white-space: nowrap;
       }
 
+      ha-card {
+        container-type: inline-size;
+      }
+
       .invoice-list {
         display: flex;
         flex-direction: column;
@@ -2749,33 +2875,35 @@ _buildProviderRefreshButton(provider) {
 
       @media (max-width: 640px) {
         .invoice-row {
-          grid-template-columns: minmax(0, 1fr) auto;
+          grid-template-columns: minmax(0, 1fr);
+          gap: 10px;
         }
 
-        .row-main {
+        .row-main,
+        .row-amount-block,
+        .row-actions {
           grid-column: 1;
-          grid-row: 1;
+          min-width: 0;
+          width: 100%;
         }
 
+        .row-main { grid-row: 1; }
         .row-amount-block {
-          grid-column: 1;
           grid-row: 2;
           align-items: flex-start;
-          min-width: 0;
         }
-
         .row-actions {
-          grid-column: 2;
-          grid-row: 1 / span 2;
-          align-self: center;
+          grid-row: 3;
+          justify-content: flex-start;
         }
 
-        .row-amount {
-          font-size: 0.9rem;
-        }
-
+        .row-title,
+        .row-utility,
         .row-due {
           white-space: normal;
+          overflow: visible;
+          text-overflow: clip;
+          overflow-wrap: anywhere;
         }
 
         .license-header,
@@ -2794,6 +2922,41 @@ _buildProviderRefreshButton(provider) {
           text-align: left;
         }
       }
+
+      @container (max-width: 520px) {
+        .invoice-row {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 10px;
+        }
+
+        .row-main,
+        .row-amount-block,
+        .row-actions {
+          grid-column: 1;
+          min-width: 0;
+          width: 100%;
+        }
+
+        .row-main { grid-row: 1; }
+        .row-amount-block {
+          grid-row: 2;
+          align-items: flex-start;
+        }
+        .row-actions {
+          grid-row: 3;
+          justify-content: flex-start;
+        }
+
+        .row-title,
+        .row-utility,
+        .row-due {
+          white-space: normal;
+          overflow: visible;
+          text-overflow: clip;
+          overflow-wrap: anywhere;
+        }
+      }
+
     `;
   }
 
