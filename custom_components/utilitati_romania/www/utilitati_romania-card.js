@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.1";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.2";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -289,16 +289,6 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       .trim();
   }
 
-  _providerKey(provider) {
-    return String(
-      provider?.furnizor ||
-      provider?.furnizor_key ||
-      provider?.provider ||
-      provider?.provider_key ||
-      ""
-    ).trim().toLowerCase();
-  }
-
   _makeKey(...parts) {
     return parts.map((part) => String(part ?? "")).join("__");
   }
@@ -481,79 +471,10 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     `;
   }
 
-  _shouldHideEmptyDuoEonRow(location, provider) {
-    const providerKey = String(provider?.furnizor || provider?.furnizor_key || "").trim().toLowerCase();
-    if (providerKey !== "eon") return false;
-
-    const title = this._normalizeText(provider?.invoice_title || provider?.invoice_id || "");
-    const amount = this._toNumber(this._providerDisplayAmount(provider));
-    const service = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
-
-    const isEmptyGasRow =
-      service.includes("gaz") &&
-      (!Number.isFinite(amount) || Math.abs(amount) < 0.005) &&
-      (title.includes("fara factura curenta") || !String(provider?.invoice_id || "").trim());
-
-    if (!isEmptyGasRow) return false;
-
-    const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
-    return providers.some((candidate) => {
-      if (candidate === provider) return false;
-      const candidateKey = String(candidate?.furnizor || candidate?.furnizor_key || "").trim().toLowerCase();
-      if (candidateKey !== "eon") return false;
-
-      const candidateService = this._normalizeText(candidate?.tip_serviciu || candidate?.tip_utilitate || "");
-      const candidateAmount = this._toNumber(this._providerDisplayAmount(candidate));
-      const candidateInvoice = String(candidate?.invoice_id || candidate?.invoice_number || candidate?.invoice_title || "").trim();
-
-      return (candidateService.includes("energie") || candidateService.includes("electric")) &&
-        !!candidateInvoice &&
-        Number.isFinite(candidateAmount) &&
-        Math.abs(candidateAmount) >= 0.005;
-    });
-  }
-
-  _visibleProvidersForLocation(location) {
-    const providers = Array.isArray(location?.furnizori) ? location.furnizori : [];
-
-    const hasRealEonElectricInvoice = providers.some((provider) => {
-      const providerKey = String(provider?.furnizor || provider?.furnizor_key || "").trim().toLowerCase();
-      if (providerKey !== "eon") return false;
-
-      const service = this._normalizeText(
-        provider?.tip_serviciu || provider?.tip_utilitate || provider?.serviciu || provider?.utility_type || ""
-      );
-      const isElectric = service.includes("energie") || service.includes("electric") || service.includes("curent");
-      if (!isElectric) return false;
-
-      const amount = this._toNumber(this._providerDisplayAmount(provider));
-      return Number.isFinite(amount) && Math.abs(amount) >= 0.005;
-    });
-
-    return providers.filter((provider) => {
-      if (this._shouldHideEmptyDuoEonRow(location, provider)) return false;
-      if (!hasRealEonElectricInvoice) return true;
-
-      const providerKey = String(provider?.furnizor || provider?.furnizor_key || "").trim().toLowerCase();
-      if (providerKey !== "eon") return true;
-
-      const service = this._normalizeText(
-        provider?.tip_serviciu || provider?.tip_utilitate || provider?.serviciu || provider?.utility_type || ""
-      );
-      const isGas = service.includes("gaz");
-      if (!isGas) return true;
-
-      const amount = this._toNumber(this._providerDisplayAmount(provider));
-      const title = this._normalizeText(this._providerCompactTitle(provider));
-      const hasNoInvoice = !Number.isFinite(amount) || Math.abs(amount) < 0.005 || title.includes("fara factura curenta");
-      return !hasNoInvoice;
-    });
-  }
-
   _collectInvoiceEntries(locations) {
     const entries = [];
     for (const location of locations || []) {
-      const providers = this._visibleProvidersForLocation(location);
+      const providers = Array.isArray(location.furnizori) ? location.furnizori : [];
       providers.forEach((provider, index) => {
         entries.push({
           location,
@@ -784,10 +705,8 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   _renderInvoicesByLocation(locations) {
     return (locations || [])
       .map((location) => {
-        const visibleProviders = this._visibleProvidersForLocation(location);
-        const visibleLocation = { ...location, furnizori: visibleProviders };
-        const openReading = this._getAnyOpenReadingForLocation(visibleLocation);
-        const hasUnpaid = visibleProviders.some((p) => this._providerEffectiveStatus(p) === "unpaid");
+        const openReading = this._getAnyOpenReadingForLocation(location);
+        const hasUnpaid = (location.furnizori || []).some((p) => this._providerEffectiveStatus(p) === "unpaid");
 
         return `
           <div class="location ${hasUnpaid ? 'location-unpaid' : ''}">
@@ -795,9 +714,9 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
               <div class="location-title">${this._escapeHtml(location.eticheta_locatie || location.locatie_cheie || "Locație")}</div>
               ${openReading?.badge ? this._buildReadingBadge(openReading.badge) : ""}
             </div>
-            <div class="location-meta">${this._escapeHtml(this._locationSummary(visibleLocation))}</div>
+            <div class="location-meta">${this._escapeHtml(this._locationSummary(location))}</div>
             <div class="invoice-list">
-              ${visibleProviders.map((provider, index) => this._buildProviderRow(visibleLocation, provider, index)).join("")}
+              ${(location.furnizori || []).map((provider, index) => this._buildProviderRow(location, provider, index)).join("")}
             </div>
           </div>
         `;
@@ -1358,7 +1277,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
   async _refreshEntities(entityIds = []) {
     const ids = Array.from(new Set((entityIds || []).filter((entityId) => {
-      return !!entityId && !!this._hass?.states?.[entityId];
+      return Boolean(entityId && this._hass?.states?.[entityId]);
     })));
     if (!ids.length) return;
     try {
@@ -2633,10 +2552,6 @@ _buildProviderRefreshButton(provider) {
         white-space: nowrap;
       }
 
-      ha-card {
-        container-type: inline-size;
-      }
-
       .invoice-list {
         display: flex;
         flex-direction: column;
@@ -2875,35 +2790,33 @@ _buildProviderRefreshButton(provider) {
 
       @media (max-width: 640px) {
         .invoice-row {
-          grid-template-columns: minmax(0, 1fr);
-          gap: 10px;
+          grid-template-columns: minmax(0, 1fr) auto;
         }
 
-        .row-main,
-        .row-amount-block,
-        .row-actions {
+        .row-main {
           grid-column: 1;
-          min-width: 0;
-          width: 100%;
+          grid-row: 1;
         }
 
-        .row-main { grid-row: 1; }
         .row-amount-block {
+          grid-column: 1;
           grid-row: 2;
           align-items: flex-start;
-        }
-        .row-actions {
-          grid-row: 3;
-          justify-content: flex-start;
+          min-width: 0;
         }
 
-        .row-title,
-        .row-utility,
+        .row-actions {
+          grid-column: 2;
+          grid-row: 1 / span 2;
+          align-self: center;
+        }
+
+        .row-amount {
+          font-size: 0.9rem;
+        }
+
         .row-due {
           white-space: normal;
-          overflow: visible;
-          text-overflow: clip;
-          overflow-wrap: anywhere;
         }
 
         .license-header,
@@ -2922,41 +2835,6 @@ _buildProviderRefreshButton(provider) {
           text-align: left;
         }
       }
-
-      @container (max-width: 520px) {
-        .invoice-row {
-          grid-template-columns: minmax(0, 1fr);
-          gap: 10px;
-        }
-
-        .row-main,
-        .row-amount-block,
-        .row-actions {
-          grid-column: 1;
-          min-width: 0;
-          width: 100%;
-        }
-
-        .row-main { grid-row: 1; }
-        .row-amount-block {
-          grid-row: 2;
-          align-items: flex-start;
-        }
-        .row-actions {
-          grid-row: 3;
-          justify-content: flex-start;
-        }
-
-        .row-title,
-        .row-utility,
-        .row-due {
-          white-space: normal;
-          overflow: visible;
-          text-overflow: clip;
-          overflow-wrap: anywhere;
-        }
-      }
-
     `;
   }
 

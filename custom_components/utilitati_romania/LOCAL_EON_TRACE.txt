@@ -1,0 +1,6 @@
+BUILD LOCAL DE DIAGNOSTIC E.ON
+Versiune manifest: 1.17.1b17 (format valid Home Assistant/PEP 440)
+Identificare in jurnal: [EON LOCAL SESSION TRACE]
+Nu se publica si nu se incarca pe GitHub.
+
+Test local b17: loginul E.ON încearcă mai întâi rememberMe=true; fallback la false doar pentru răspunsul 6101.

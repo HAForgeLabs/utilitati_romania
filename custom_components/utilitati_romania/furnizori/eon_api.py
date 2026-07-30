@@ -336,12 +336,12 @@ class EonApiClient:
             {
                 "username": self._username,
                 "password": self._password,
-                "rememberMe": False,
+                "rememberMe": True,
             },
             {
                 "username": self._username,
                 "password": self._password,
-                "rememberMe": True,
+                "rememberMe": False,
             },
         )
 
