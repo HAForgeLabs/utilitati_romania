@@ -2279,7 +2279,14 @@ class SenzorContEon(EntitateUtilitatiRomania, SensorEntity):
 
     @property
     def native_value(self):
-        return None if self.coordinator.data is None else self.entity_description.functie_valoare(self.coordinator.data, self.cont)
+        if self.coordinator.data is None:
+            return None
+        if self.entity_description.key == "index_contor":
+            cont_curent = _cont_curent_din_instantaneu(self.coordinator.data, self.cont)
+            raw = _date_brute_cont(cont_curent)
+            if not raw.get("registre_index"):
+                return None
+        return self.entity_description.functie_valoare(self.coordinator.data, self.cont)
 
     @property
     def extra_state_attributes(self):
@@ -2295,6 +2302,16 @@ class SenzorContEon(EntitateUtilitatiRomania, SensorEntity):
         raw = _date_brute_cont(self.cont)
         if self.entity_description.key == "urmatoarea_scadenta":
             attrs["cod_contract"] = raw.get("cod_contract")
+        elif self.entity_description.key == "citire_permisa":
+            attrs["inceput_perioada"] = raw.get("fereastra_citire_start")
+            attrs["sfarsit_perioada"] = raw.get("fereastra_citire_end")
+            attrs["in_perioada"] = bool(raw.get("citire_permisa"))
+            attrs["index_curent"] = raw.get("index_curent")
+            attrs["index_anterior"] = raw.get("index_anterior")
+            attrs["data_ultimului_index"] = raw.get("data_ultimului_index")
+            attrs["poate_modifica_indexul"] = bool(
+                ((raw.get("meter_index") or {}).get("readingPeriod") or {}).get("allowChange")
+            )
         return attrs
 
 

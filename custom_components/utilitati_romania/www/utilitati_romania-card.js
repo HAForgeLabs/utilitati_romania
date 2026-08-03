@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.2";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.3";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -929,9 +929,10 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
     const stateText = this._normalizeText(sensorState.state);
     const truthyState = ["da", "yes", "true", "on", "activ", "disponibil", "permisa", "permis"].includes(stateText);
+    const explicitOpen = attrs.in_perioada === true || this._normalizeText(attrs.in_perioada) === "da" || this._normalizeText(attrs.in_perioada) === "true";
 
     return {
-      isOpen: openByRange || truthyState,
+      isOpen: explicitOpen || openByRange || truthyState,
       start: startRaw || null,
       end: endRaw || null,
     };
@@ -1309,7 +1310,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
           : "";
         const currentText = control.currentValue && !["unknown", "unavailable"].includes(control.currentValue)
           ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}`
-          : "—";
+          : "Indisponibil";
         const lastSent = this._getBackendReadingHistoryEntry(control);
         const lastSentHtml = lastSent
           ? `<div class="reading-last-sent">Ultima transmitere: <strong>${this._escapeHtml(String(lastSent.value))}${this._escapeHtml(lastSent.unit ? ` ${lastSent.unit}` : "")}</strong> — ${this._escapeHtml(this._formatDateTime(lastSent.timestamp))}</div>`
@@ -1376,7 +1377,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const action = this._getActionState("reading_group", actionKey);
     const fields = controls.map((control) => {
       const numberValue = control.numberState?.state && !["unknown", "unavailable"].includes(control.numberState.state) ? control.numberState.state : "";
-      const currentText = control.currentValue && !["unknown", "unavailable"].includes(control.currentValue) ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}` : "—";
+      const currentText = control.currentValue && !["unknown", "unavailable"].includes(control.currentValue) ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}` : "Indisponibil";
       return `<div class="reading-control grouped-field" data-reading-group-field data-number-entity="${this._escapeAttr(control.numberEntityId || "")}" data-current-value="${this._escapeAttr(String(control.currentValue ?? ""))}" data-unit="${this._escapeAttr(String(control.unit || ""))}">
         <div class="reading-control-header"><div class="reading-control-title">${this._escapeHtml(control.label || "Index")}</div><div class="reading-control-current">Index curent: ${this._escapeHtml(currentText)}</div></div>
         <input class="reading-input" type="number" step="any" inputmode="decimal" value="${this._escapeAttr(numberValue)}" placeholder="Introduceți indexul" ${action.status === "sending" ? "disabled" : ""}/>
@@ -1758,8 +1759,8 @@ _buildProviderRefreshButton(provider) {
     const statusText = data.status || "—";
     const statusClass = this._licenseStatusClass(data.status);
     const planText = data.plan || "—";
-    const expiresText = data.expires ? this._formatDate(data.expires) : "—";
-    const checkedText = data.checkedAt ? this._formatDateTime(data.checkedAt) : "—";
+    const expiresText = data.expires ? this._formatDate(data.expires) : "Indisponibil";
+    const checkedText = data.checkedAt ? this._formatDateTime(data.checkedAt) : "Indisponibil";
     const userText = data.user || "—";
     const messageText = data.message && data.message !== "-" ? data.message : null;
 

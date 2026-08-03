@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.2";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.3";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2130,7 +2130,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     }
     const stateText = this._normalizeText(sensorState.state);
     const truthyState = ["da", "yes", "true", "on", "activ", "disponibil", "permisa", "permis"].includes(stateText);
-    return { isOpen: openByRange || truthyState, start: startRaw || null, end: endRaw || null };
+    const explicitOpen = attrs.in_perioada === true || this._normalizeText(attrs.in_perioada) === "da" || this._normalizeText(attrs.in_perioada) === "true";
+    return { isOpen: explicitOpen || openByRange || truthyState, start: startRaw || null, end: endRaw || null };
   }
 
   _deriveControlsFromReadingSensor(location, provider, readingSensor) {
@@ -2473,19 +2474,35 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     `;
   }
 
+  _readingUtilityLabel(provider) {
+    if (this._providerKey(provider) !== "eon") return null;
+    const service = this._normalizeText(provider?.tip_serviciu || provider?.tip_utilitate || "");
+    if (service.includes("gaz")) return "Gaze naturale";
+    if (service.includes("electric") || service.includes("energie") || service.includes("curent")) return "Energie electrică";
+    return null;
+  }
+
   _readingRow(location, provider, data = null) {
     data = data || this._getReadingData(location, provider);
     const controls = data.controls || [];
-    const current = controls.map((control) => control.currentValue !== null && control.currentValue !== undefined ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}` : null).filter(Boolean).join(" / ") || "—";
+    const current = controls.map((control) => {
+      const value = control.currentValue;
+      return value !== null && value !== undefined && !["unknown", "unavailable", ""].includes(String(value).toLowerCase())
+        ? `${value}${control.unit ? ` ${control.unit}` : ""}`
+        : null;
+    }).filter(Boolean).join(" / ") || "Indisponibil";
     const tone = data.isOpen ? "open" : data.available ? "closed" : "missing";
     const isGroupedEon = this._providerKey(provider) === "eon" && controls.length > 1;
     const submitControls = data.isOpen && controls.length
       ? (isGroupedEon ? this._renderGroupedEonControls(location, provider, controls) : `<div class="reading-controls">${controls.map((control) => this._renderReadingControl(location, provider, control)).join("")}</div>`)
       : "";
+    const utilityLabel = this._readingUtilityLabel(provider);
+    const locationLabel = this._displayLocationName(location);
+    const subtitle = utilityLabel ? `${utilityLabel}${locationLabel ? ` · ${locationLabel}` : ""}` : locationLabel;
     return `
       <article class="reading-row ${tone}">
         <div class="provider-badge">${this._escape(this._providerName(provider).slice(0, 2).toUpperCase())}</div>
-        <div class="reading-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(this._displayLocationName(location))}</span></div>
+        <div class="reading-main"><strong>${this._escape(this._providerName(provider))}</strong><span>${this._escape(subtitle)}</span></div>
         <div class="reading-period"><span>Perioadă</span><strong>${this._escape(this._readingPeriodLabel(data))}</strong></div>
         <div class="reading-current"><span>Index curent</span><strong>${this._escape(current)}</strong></div>
         <span class="pill ${tone}">${this._escape(data.badge || (data.available ? "Închisă" : "Nedetectat"))}</span>
