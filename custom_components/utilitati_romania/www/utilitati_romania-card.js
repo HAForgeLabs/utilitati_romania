@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.3";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.5";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -287,6 +287,11 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
+  }
+
+  _providerKey(provider) {
+    const raw = provider?.furnizor || provider?.provider || provider?.furnizor_label || "";
+    return this._normalizeText(raw).replace(/\s+/g, "_");
   }
 
   _makeKey(...parts) {
@@ -1218,6 +1223,122 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     return result;
   }
 
+  _getEonReadingGroups(location, provider) {
+    const cacheKey = this._makeKey("eon_groups", location?.locatie_cheie, provider?.entry_id, provider?.adresa_originala, provider?.nume_cont);
+    if (this._readingCache.has(cacheKey)) return this._readingCache.get(cacheKey);
+
+    const states = this._hass?.states || {};
+    const terms = this._readingTerms(location, provider);
+    const targetAddress = this._normalizeText(provider?.adresa_originala || provider?.nume_cont || location?.eticheta_locatie || "");
+    const groups = [];
+
+    for (const sensorState of Object.values(states)) {
+      if (!sensorState?.entity_id?.startsWith("sensor.")) continue;
+      const entityId = String(sensorState.entity_id || "").toLowerCase();
+      const text = this._entityFriendlyText(sensorState);
+      const attrs = sensorState.attributes || {};
+      const isEonReading = (entityId.includes("eon") || text.includes("eon")) && (entityId.includes("citire_permisa") || text.includes("citire permisa"));
+      if (!isEonReading) continue;
+
+      const sensorAddress = this._normalizeText(attrs.adresa || attrs.nume_cont || "");
+      const contextMatches =
+        (targetAddress && sensorAddress && (targetAddress.includes(sensorAddress) || sensorAddress.includes(targetAddress))) ||
+        this._textMatchesAny(sensorAddress, terms) ||
+        this._textMatchesAny(text, terms);
+      if (!contextMatches) continue;
+
+      const idCont = String(attrs.id_cont || "").trim();
+      const tipServiciu = String(attrs.tip_serviciu || attrs.tip_utilitate || "").trim();
+      const normalizedType = this._normalizeText(tipServiciu);
+      const isGas = normalizedType.includes("gaz");
+      const virtualProvider = {
+        ...provider,
+        id_cont: idCont || provider?.id_cont,
+        id_contract: idCont || provider?.id_contract,
+        tip_serviciu: isGas ? "gaz" : "energie electrică",
+        tip_utilitate: isGas ? "gaz" : "energie electrică",
+        adresa_originala: attrs.adresa || provider?.adresa_originala,
+        nume_cont: attrs.nume_cont || provider?.nume_cont,
+      };
+
+      const windowInfo = this._extractWindowInfo(sensorState);
+      const controls = this._deriveControlsFromReadingSensor(location, virtualProvider, sensorState).map((control) => {
+        const numberState = control.numberEntityId ? states[control.numberEntityId] : null;
+        const currentState = control.currentEntityId ? states[control.currentEntityId] : null;
+        return {
+          ...control,
+          numberState,
+          currentState,
+          unit: numberState?.attributes?.unit_of_measurement || currentState?.attributes?.unit_of_measurement || (isGas ? "m³" : "kWh"),
+          currentValue: currentState ? currentState.state : null,
+        };
+      });
+
+      groups.push({
+        key: idCont || sensorState.entity_id,
+        provider: virtualProvider,
+        sensorState,
+        utilityLabel: isGas ? "Gaze naturale" : "Energie electrică",
+        address: attrs.adresa || provider?.adresa_originala || provider?.nume_cont || "",
+        isOpen: !!windowInfo.isOpen,
+        start: windowInfo.start,
+        end: windowInfo.end,
+        controls,
+      });
+    }
+
+    groups.sort((a, b) => {
+      if (a.utilityLabel === b.utilityLabel) return String(a.key).localeCompare(String(b.key));
+      return a.utilityLabel === "Gaze naturale" ? -1 : 1;
+    });
+    this._readingCache.set(cacheKey, groups);
+    return groups;
+  }
+
+  _buildEonReadingGroups(location, provider, groups) {
+    if (!Array.isArray(groups) || !groups.length) return "";
+
+    const cards = groups.map((group) => {
+      const period = group.start && group.end
+        ? `${this._formatDate(group.start)} – ${this._formatDate(group.end)}`
+        : "Perioadă indisponibilă";
+      const statusText = group.isOpen ? "Citire deschisă" : "În afara perioadei de transmitere";
+      const statusClass = group.isOpen ? "status-success" : "";
+      const controls = group.controls || [];
+
+      let controlsHtml = "";
+      if (group.isOpen && controls.length > 1) {
+        const periodText = `Perioadă activă: ${period}`;
+        controlsHtml = this._buildGroupedEonReadingControls(location, group.provider, { controls }, periodText);
+      } else if (group.isOpen && controls.length === 1) {
+        const control = controls[0];
+        const action = this._getActionState("reading", control.buttonEntityId);
+        const disabled = action.status === "sending";
+        const numberValue = control.numberState?.state && !["unknown", "unavailable"].includes(control.numberState.state) ? control.numberState.state : "";
+        const currentText = control.currentValue && !["unknown", "unavailable"].includes(control.currentValue)
+          ? `${control.currentValue}${control.unit ? ` ${control.unit}` : ""}`
+          : "Indisponibil";
+        controlsHtml = `<div class="reading-control" data-number-entity="${this._escapeAttr(control.numberEntityId || "")}" data-button-entity="${this._escapeAttr(control.buttonEntityId || "")}" data-provider="eon" data-entry-id="${this._escapeAttr(String(provider?.entry_id || ""))}" data-id-cont="${this._escapeAttr(String(group.provider?.id_cont || ""))}" data-id-contract="${this._escapeAttr(String(group.provider?.id_contract || ""))}" data-control-label="${this._escapeAttr(String(control.label || ""))}" data-current-value="${this._escapeAttr(String(control.currentValue ?? ""))}" data-current-entity="${this._escapeAttr(control.currentEntityId || "")}" data-unit="${this._escapeAttr(String(control.unit || ""))}">
+          <div class="reading-control-header"><div class="reading-control-title">${this._escapeHtml(control.label || "Index")}</div><div class="reading-control-current">Index curent: ${this._escapeHtml(currentText)}</div></div>
+          <div class="reading-control-editor"><input class="reading-input" type="number" step="any" inputmode="decimal" value="${this._escapeAttr(numberValue)}" placeholder="Introduceți indexul" ${disabled ? "disabled" : ""}/><button class="reading-submit-btn" ${disabled ? "disabled" : ""}>${disabled ? "Se trimite..." : "Trimite index"}</button></div>
+          ${action.status === "success" ? `<div class="inline-status status-success">${this._escapeHtml(action.message || "Index trimis cu succes.")}</div>` : action.status === "error" ? `<div class="inline-status status-error">${this._escapeHtml(action.message || "Transmiterea a eșuat.")}</div>` : ""}
+        </div>`;
+      } else {
+        const current = controls.find((control) => control.currentValue && !["unknown", "unavailable"].includes(control.currentValue));
+        const currentText = current ? `${current.currentValue}${current.unit ? ` ${current.unit}` : ""}` : "Indisponibil";
+        controlsHtml = `<div class="reading-control-current">Index curent: ${this._escapeHtml(currentText)}</div>`;
+      }
+
+      return `<div class="reading-control eon-utility-card">
+        <div class="reading-control-header"><div><div class="reading-control-title">${this._escapeHtml(group.utilityLabel)}</div>${group.address ? `<div class="reading-period">${this._escapeHtml(group.address)}</div>` : ""}</div><div class="${statusClass}">${this._escapeHtml(statusText)}</div></div>
+        <div class="reading-period">Perioadă: ${this._escapeHtml(period)}</div>
+        ${controlsHtml}
+      </div>`;
+    }).join("");
+
+    return `<div class="reading-wrap eon-reading-groups"><div class="reading-title">Transmitere index E.ON</div>${cards}</div>`;
+  }
+
   _getAnyOpenReadingForLocation(location) {
     const providers = Array.isArray(location.furnizori) ? location.furnizori : [];
     for (const provider of providers) {
@@ -1289,6 +1410,11 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
   }
 
   _buildReadingControls(location, provider) {
+    if (this._providerKey(provider) === "eon") {
+      const groups = this._getEonReadingGroups(location, provider);
+      if (groups.length) return this._buildEonReadingGroups(location, provider, groups);
+    }
+
     const data = this._getReadingData(location, provider);
     if (!data.isOpen || !data.controls.length) return "";
 
@@ -1514,6 +1640,8 @@ _buildProviderRefreshButton(provider) {
     const tipServiciu = utilityType || provider.tip_serviciu || "—";
     const numeCont = provider.nume_cont || "—";
     const readingData = this._getReadingData(location, provider);
+    const eonReadingGroups = this._providerKey(provider) === "eon" ? this._getEonReadingGroups(location, provider) : [];
+    const hasOpenReading = eonReadingGroups.length ? eonReadingGroups.some((group) => group.isOpen) : readingData.isOpen;
     const dueDateMeta = this._buildDueDateMeta(provider, status);
 
     const key = this._rowKey(location, provider, index);
@@ -1532,7 +1660,7 @@ _buildProviderRefreshButton(provider) {
             <div class="row-supplier">
               ${this._escapeHtml(supplier)}
               ${isUnpaid ? '<span class="badge-unpaid">DE PLATĂ</span>' : ''}
-              ${readingData.isOpen ? this._buildReadingBadge("Citire deschisă") : ""}
+              ${hasOpenReading ? this._buildReadingBadge("Citire deschisă") : ""}
             </div>
             <div class="row-title">${this._escapeHtml(title)}</div>
             ${utilityType ? `<div class="row-utility">${this._escapeHtml(utilityType)}</div>` : ""}
