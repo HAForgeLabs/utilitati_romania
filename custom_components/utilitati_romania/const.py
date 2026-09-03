@@ -70,6 +70,7 @@ FURNIZOR_RETIM = "retim"
 FURNIZOR_AQUATIM = "aquatim"
 FURNIZOR_COMPREST = "comprest"
 FURNIZOR_ENGIE = "engie"
+FURNIZOR_PPC = "ppc"
 
 CONF_DATE_TOKEN_EON = "date_token_eon"
 

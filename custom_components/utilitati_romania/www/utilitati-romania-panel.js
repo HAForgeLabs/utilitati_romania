@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.5";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.0";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2070,7 +2070,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) return null;
+    if (!providerKey || !["hidroelectrica", "ppc", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) return null;
 
     const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
       if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
@@ -2811,6 +2811,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       { slug: "e bloc ro", label: "e-bloc.ro" },
       { slug: "orange", label: "Orange" },
       { slug: "nova", label: "Nova" },
+      { slug: "ppc", label: "PPC Energie" },
       { slug: "myelectrica", label: "myElectrica" },
       { slug: "deer", label: "DEER" },
     ];

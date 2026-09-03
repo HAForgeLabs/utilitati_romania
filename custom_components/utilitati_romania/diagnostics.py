@@ -34,7 +34,7 @@ def _mascheaza_cookies(cookies: list[dict[str, Any]] | None) -> list[dict[str, A
 CAMPURI_SENSIBILE = {
     "access_token", "refresh_token", "id_token", "web_token", "token", "authorization",
     "password", "parola", "secret", "cookie", "cookies",
-    "email", "phone", "phonenumber", "firstname", "lastname", "fiscalnumber",
+    "email", "phone", "phonenumber", "firstname", "lastname", "fiscalnumber", "personalid", "enelid", "crosuser",
 }
 
 

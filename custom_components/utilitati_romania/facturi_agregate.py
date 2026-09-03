@@ -320,7 +320,7 @@ def _extract_unpaid_amount(
     # Unii furnizori expun soldul curent la nivel de locație, dar includ și
     # istoricul facturilor. Nu aplicăm soldul curent tuturor facturilor istorice,
     # altfel dashboardul multiplică artificial totalul neplătit.
-    if instantaneu.furnizor in {"apa_brasov", "hidroelectrica"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
+    if instantaneu.furnizor in {"apa_brasov", "hidroelectrica", "ppc"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
         return None
 
     for key in ("sold_factura", "de_plata", "total_neachitat", "sold_curent"):

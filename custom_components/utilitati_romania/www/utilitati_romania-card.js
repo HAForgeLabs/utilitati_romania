@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.17.5";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.0";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -839,7 +839,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) {
+    if (!providerKey || !["hidroelectrica", "ppc", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) {
       return null;
     }
 

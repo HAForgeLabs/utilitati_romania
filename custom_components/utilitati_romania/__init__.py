@@ -69,7 +69,7 @@ def _log_temporar(*_args, **_kwargs) -> None:
     return None
 
 
-_FRONTEND_VERSION = "1.17.5"
+_FRONTEND_VERSION = "1.18.0"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -1332,6 +1332,32 @@ def _nume_curat_apa_brasov_din_coordonator(entry: ConfigEntry, coordonator: Coor
     return f"Apă Brașov - {nume}"
 
 
+async def _async_curata_device_uri_ppc(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    device_registry = dr.async_get(hass)
+    prefix = f"{entry.entry_id}_ppc_"
+
+    for device in list(device_registry.devices.values()):
+        identifiers = set(device.identifiers or set())
+        este_device_ppc = any(
+            isinstance(identifier, tuple)
+            and len(identifier) >= 2
+            and identifier[0] == DOMENIU
+            and str(identifier[1]).startswith(prefix)
+            for identifier in identifiers
+        )
+        if not este_device_ppc or getattr(device, "serial_number", None) is None:
+            continue
+
+        try:
+            device_registry.async_update_device(device.id, serial_number=None)
+        except Exception:
+            _LOGGER.debug(
+                "Nu am putut elimina numărul de serie moștenit pentru device-ul PPC %s",
+                device.id,
+                exc_info=True,
+            )
+
+
 async def _async_curata_intrare_apa_brasov(hass: HomeAssistant, entry: ConfigEntry, coordonator: CoordonatorUtilitatiRomania) -> None:
     nume_curat = _nume_curat_apa_brasov_din_coordonator(entry, coordonator)
     if not nume_curat:
@@ -1403,16 +1429,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             furnizor,
         )
     else:
-        coordonator.async_set_updated_data(
-            InstantaneuFurnizor(
-                furnizor=furnizor,
-                titlu=entry.title or furnizor,
-                conturi=[],
-                facturi=[],
-                consumuri=[],
-                extra={"incarcare_initiala_in_fundal": True},
-            )
-        )
+        # La prima configurare nu există încă un snapshot persistent. Entitățile
+        # per loc de consum sunt create din topologia instantaneului, deci trebuie
+        # să avem date reale înainte de încărcarea platformelor. Restarturile
+        # ulterioare rămân rapide deoarece folosesc snapshotul persistent.
+        await coordonator.async_config_entry_first_refresh()
+        if coordonator.data is not None:
+            await _async_save_startup_snapshot(hass, entry.entry_id, coordonator.data)
 
     # Apă Brașov are separat un device de furnizor și device-uri pentru locații.
     # Nu modificăm automat titlul config entry-ului după datele primei locații,
@@ -1420,6 +1443,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # în device registry după mai multe beta-uri.
     etapa = time.monotonic()
     await _migrare_unique_ids(hass, entry, coordonator)
+    if furnizor == "ppc":
+        await _async_curata_device_uri_ppc(hass, entry)
     await _async_normalize_retele_electrice_entity_ids(hass, entry)
     _log_temporar("[UR STARTUP DIAG] migrari entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)
     hass.data[DOMENIU][entry.entry_id] = coordonator
@@ -1444,13 +1469,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await _async_force_migrare_entity_ids_ebloc(hass, entry, coordonator)
     await _async_cleanup_admin_registry_links(hass)
 
-    _async_schedule_startup_refresh(
-        hass,
-        entry,
-        coordonator,
-        snapshot_loaded=pornire_din_cache,
-        furnizor=furnizor,
-    )
+    if pornire_din_cache:
+        _async_schedule_startup_refresh(
+            hass,
+            entry,
+            coordonator,
+            snapshot_loaded=True,
+            furnizor=furnizor,
+        )
 
     _log_temporar("[UR STARTUP DIAG] final entry=%s furnizor=%s durata_totala=%.3fs", entry.entry_id, furnizor, time.monotonic() - pornire)
     return True
