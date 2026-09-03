@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.0";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.1";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -1436,7 +1436,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         <div class="distribution-chart-modes" role="group" aria-label="Mod afisare grafic">
           ${[["compare","Comparativ"],["consumption","Consum"],["injection","Injectie"]].map(([id,label]) => `<button type="button" class="${mode === id ? "active" : ""}" data-distribution-mode="${id}" data-distribution-key="${this._escape(chartKey)}">${label}</button>`).join("")}
         </div>
-        <div class="distribution-chart-shell">
+        <div class="distribution-chart-shell" data-distribution-scroll-key="${this._escape(chartKey)}">
           <div class="distribution-y-axis" aria-hidden="true">
             ${ticks.map((tick) => `<span>${this._escape(formatNumber(tick))}</span>`).join("")}
             <small>kWh</small>
@@ -4335,6 +4335,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
+    const distributionScroll = new Map();
+    this.shadowRoot.querySelectorAll?.('[data-distribution-scroll-key]').forEach((element) => {
+      const key = element.getAttribute('data-distribution-scroll-key');
+      if (key) distributionScroll.set(key, element.scrollLeft);
+    });
     if (!this._hass) {
       this.shadowRoot.innerHTML = `<style>${this._styles()}</style><div class="wrap"><section class="panel-card"><div class="empty">Se încarcă datele...</div></section></div>`;
       return;
@@ -4349,6 +4354,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         <main>${this._renderContent(summary)}</main>
       </div>
     `;
+    distributionScroll.forEach((scrollLeft, key) => {
+      const selectorKey = globalThis.CSS?.escape ? globalThis.CSS.escape(key) : key.replace(/[\"\\]/g, '\\$&');
+      const element = this.shadowRoot.querySelector(`[data-distribution-scroll-key="${selectorKey}"]`);
+      if (element) element.scrollLeft = scrollLeft;
+    });
     this._bindEvents();
   }
 }

@@ -890,15 +890,34 @@ class ClientFurnizorHidroelectrica(ClientFurnizor):
 
             # consum curent / index / citire / factura restanta
             if lista_usage:
-                for item in lista_usage:
-                    for cheie in ('UsageValue', 'Usage', 'usage', 'Consumption', 'consumption', 'Value', 'value', 'Amount'):
-                        val = _float_ro(item.get(cheie))
-                        if val is not None:
-                            consumuri.append(ConsumUtilitate(cheie='consum_lunar_curent', valoare=round(val, 3), unitate='kWh', id_cont=id_cont_unic, tip_utilitate='curent', tip_serviciu='curent', date_brute=item))
-                            break
-                    else:
-                        continue
-                    break
+                item_consum = lista_usage[-1]
+                val_consum = _float_ro(item_consum.get('value'))
+                if val_consum is None:
+                    val_consum = _float_ro(item_consum.get('Value'))
+                valoare_perioada = _float_ro(item_consum.get('UsageValue'))
+                if val_consum is not None:
+                    perioada_consum = str(item_consum.get('BilingDates') or '').strip() or None
+                    consumuri.append(ConsumUtilitate(
+                        cheie='consum_lunar_curent',
+                        valoare=round(val_consum, 3),
+                        unitate='kWh',
+                        id_cont=id_cont_unic,
+                        tip_utilitate='curent',
+                        tip_serviciu='curent',
+                        perioada=perioada_consum,
+                        date_brute=item_consum,
+                    ))
+                    if valoare_perioada is not None and val_consum > 0:
+                        consumuri.append(ConsumUtilitate(
+                            cheie='cost_mediu_unitate_ultima_factura',
+                            valoare=round(valoare_perioada / val_consum, 4),
+                            unitate='RON/kWh',
+                            id_cont=id_cont_unic,
+                            tip_utilitate='curent',
+                            tip_serviciu='curent',
+                            perioada=perioada_consum,
+                            date_brute=item_consum,
+                        ))
             index_curent = _index_din_istoric(history_payload, '1.8.0')
             if index_curent is None and not este_prosumator_cont:
                 index_curent = _index_din_istoric(history_payload)
