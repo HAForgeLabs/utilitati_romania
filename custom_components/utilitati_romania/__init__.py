@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     CONF_FURNIZOR,
@@ -36,6 +37,7 @@ from .const import (
     SERVICIU_SET_NOTIFICATION_PREFERENCES,
     SERVICIU_SET_CONSUMPTION_POINT_VISIBILITY,
     SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS,
+    SIGNAL_LICENTA_ACTUALIZATA,
 )
 from .coordonator import CoordonatorUtilitatiRomania
 from .modele import ConsumUtilitate, ContUtilitate, FacturaUtilitate, InstantaneuFurnizor
@@ -69,7 +71,7 @@ def _log_temporar(*_args, **_kwargs) -> None:
     return None
 
 
-_FRONTEND_VERSION = "1.18.2b1"
+_FRONTEND_VERSION = "1.18.2b2"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -1139,7 +1141,7 @@ async def _async_cleanup_admin_registry_links(hass: HomeAssistant) -> None:
     admin_device_ids: set[str] = set()
     grouping_device_ids: set[str] = set()
 
-    for device in list(device_registry.devices.values()):
+    for device in list(device_registry):
         identifiers = set(device.identifiers or set())
 
         for raw_identifier in identifiers:
@@ -1206,7 +1208,7 @@ async def _async_cleanup_admin_registry_links(hass: HomeAssistant) -> None:
             except Exception:
                 continue
 
-    for device in list(device_registry.devices.values()):
+    for device in list(device_registry):
         if device.id in protected_device_ids:
             continue
 
@@ -1263,33 +1265,8 @@ async def _async_cleanup_admin_registry_links(hass: HomeAssistant) -> None:
             continue
 
 
-def _senzori_licenta_admin() -> list[str]:
-    return [
-        f"sensor.{DOMENIU}_status_licenta",
-        f"sensor.{DOMENIU}_plan_licenta",
-        f"sensor.{DOMENIU}_valabila_pana_la",
-        f"sensor.{DOMENIU}_ultima_verificare_licenta",
-        f"sensor.{DOMENIU}_cont_licenta",
-        f"sensor.{DOMENIU}_cod_licenta_mascat",
-        f"sensor.{DOMENIU}_mesaj_licenta",
-    ]
-
-
-def _filtreaza_entitati_existente(hass: HomeAssistant, entity_ids: list[str]) -> list[str]:
-    return [entity_id for entity_id in entity_ids if hass.states.get(entity_id) is not None]
-
-
 async def _async_actualizeaza_senzorii_licentei(hass: HomeAssistant) -> None:
-    entity_ids = _filtreaza_entitati_existente(hass, _senzori_licenta_admin())
-    if not entity_ids:
-        return
-
-    await hass.services.async_call(
-        "homeassistant",
-        "update_entity",
-        {"entity_id": entity_ids},
-        blocking=False,
-    )
+    async_dispatcher_send(hass, SIGNAL_LICENTA_ACTUALIZATA)
 
 
 async def _async_verifica_licenta_la_pornire(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -1336,7 +1313,7 @@ async def _async_curata_device_uri_ppc(hass: HomeAssistant, entry: ConfigEntry) 
     device_registry = dr.async_get(hass)
     prefix = f"{entry.entry_id}_ppc_"
 
-    for device in list(device_registry.devices.values()):
+    for device in list(device_registry):
         identifiers = set(device.identifiers or set())
         este_device_ppc = any(
             isinstance(identifier, tuple)
@@ -1376,7 +1353,7 @@ async def _async_curata_intrare_apa_brasov(hass: HomeAssistant, entry: ConfigEnt
         hass.config_entries.async_update_entry(entry, title=nume_curat, data=date_noi)
 
     device_registry = dr.async_get(hass)
-    for device in list(device_registry.devices.values()):
+    for device in list(device_registry):
         if (DOMENIU, entry.entry_id) not in set(device.identifiers or set()):
             continue
         try:

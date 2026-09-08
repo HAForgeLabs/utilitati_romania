@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     CONF_DIGI_COOKIES,
@@ -25,6 +26,7 @@ from .const import (
     IMPLICIT_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
     MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
     MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+    SIGNAL_LICENTA_ACTUALIZATA,
 )
 from .exceptions import EroareAutentificare, EroareConectare, EroareLicenta
 from .furnizori.registru import obtine_clasa_furnizor
@@ -52,33 +54,8 @@ def _log_temporar(*_args, **_kwargs) -> None:
 
 
 
-def _senzori_licenta_admin() -> list[str]:
-    return [
-        f"sensor.{DOMENIU}_status_licenta",
-        f"sensor.{DOMENIU}_plan_licenta",
-        f"sensor.{DOMENIU}_valabila_pana_la",
-        f"sensor.{DOMENIU}_ultima_verificare_licenta",
-        f"sensor.{DOMENIU}_cont_licenta",
-        f"sensor.{DOMENIU}_cod_licenta_mascat",
-        f"sensor.{DOMENIU}_mesaj_licenta",
-    ]
-
-
-def _filtreaza_entitati_existente(hass: HomeAssistant, entity_ids: list[str]) -> list[str]:
-    return [entity_id for entity_id in entity_ids if hass.states.get(entity_id) is not None]
-
-
 async def _async_actualizeaza_senzorii_licentei(hass: HomeAssistant) -> None:
-    entity_ids = _filtreaza_entitati_existente(hass, _senzori_licenta_admin())
-    if not entity_ids:
-        return
-
-    await hass.services.async_call(
-        "homeassistant",
-        "update_entity",
-        {"entity_id": entity_ids},
-        blocking=False,
-    )
+    async_dispatcher_send(hass, SIGNAL_LICENTA_ACTUALIZATA)
 
 
 class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):

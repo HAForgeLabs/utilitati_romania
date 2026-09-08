@@ -14,11 +14,12 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.const import UnitOfVolume
 
 from .coordonator import CoordonatorUtilitatiRomania
 from .entitate import EntitateUtilitatiRomania
-from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL
+from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL, SIGNAL_LICENTA_ACTUALIZATA
 from .modele import FacturaUtilitate, InstantaneuFurnizor
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import (
@@ -253,6 +254,17 @@ class SenzorAdminLicenta(SenzorAdminBaza):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self._unsub_interval = async_track_time_interval(self.hass, self._async_handle_interval, timedelta(minutes=1))
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_LICENTA_ACTUALIZATA,
+                self._async_handle_license_update,
+            )
+        )
+
+    async def _async_handle_license_update(self) -> None:
+        await self._async_refresh_value()
+        self.async_write_ha_state()
 
     async def async_will_remove_from_hass(self) -> None:
         if getattr(self, "_unsub_interval", None) is not None:

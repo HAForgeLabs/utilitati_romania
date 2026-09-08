@@ -12,11 +12,12 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.components import persistent_notification
 
 from .coordonator import CoordonatorUtilitatiRomania
 from .entitate import EntitateUtilitatiRomania
-from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL, SERVICIU_RELOAD_ALL
+from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL, SERVICIU_RELOAD_ALL, SIGNAL_LICENTA_ACTUALIZATA
 from .licentiere import (
     async_obtine_context_licenta,
     async_salveaza_licenta_globala,
@@ -220,33 +221,8 @@ def _admin_license_text_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> st
     return registry.async_get_entity_id("text", DOMENIU, unique_id)
 
 
-def _senzori_licenta_admin() -> list[str]:
-    return [
-        f"sensor.{DOMENIU}_status_licenta",
-        f"sensor.{DOMENIU}_plan_licenta",
-        f"sensor.{DOMENIU}_valabila_pana_la",
-        f"sensor.{DOMENIU}_ultima_verificare_licenta",
-        f"sensor.{DOMENIU}_cont_licenta",
-        f"sensor.{DOMENIU}_cod_licenta_mascat",
-        f"sensor.{DOMENIU}_mesaj_licenta",
-    ]
-
-
-def _filtreaza_entitati_existente(hass: HomeAssistant, entity_ids: list[str]) -> list[str]:
-    return [entity_id for entity_id in entity_ids if hass.states.get(entity_id) is not None]
-
-
 async def _async_actualizeaza_senzorii_licentei(hass: HomeAssistant) -> None:
-    entity_ids = _filtreaza_entitati_existente(hass, _senzori_licenta_admin())
-    if not entity_ids:
-        return
-
-    await hass.services.async_call(
-        "homeassistant",
-        "update_entity",
-        {"entity_id": entity_ids},
-        blocking=False,
-    )
+    async_dispatcher_send(hass, SIGNAL_LICENTA_ACTUALIZATA)
 
 
 def _admin_device_info(entry: ConfigEntry) -> DeviceInfo:
