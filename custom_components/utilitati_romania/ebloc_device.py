@@ -5,6 +5,7 @@ import unicodedata
 from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers import device_registry as dr
 
 from .const import DOMENIU
 
@@ -135,7 +136,7 @@ def alias_loc_ebloc(nume: str | None, adresa: str | None, id_cont: str | None, c
     return f"Loc consum {id_curat}" if id_curat else "Loc consum"
 
 
-def info_device_ebloc(entry_id: str, cont) -> DeviceInfo:
+def info_device_ebloc(hass, entry_id: str, cont) -> DeviceInfo:
     ident = str(getattr(cont, "id_cont", None) or "ebloc")
     nume = alias_loc_ebloc(
         getattr(cont, "nume", None),
@@ -149,5 +150,7 @@ def info_device_ebloc(entry_id: str, cont) -> DeviceInfo:
         name=f"e-bloc.ro - {nume}",
         manufacturer="e-bloc.ro",
         model="Administrare bloc",
-        via_device=(DOMENIU, entry_id),
+        via_device_id=dr.async_get_device_id_by_identifier(
+            hass, (DOMENIU, entry_id), config_entry_id=entry_id
+        ),
     )

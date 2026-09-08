@@ -524,7 +524,7 @@ class NumarPersoaneEbloc(EntitateUtilitatiRomania, RestoreNumber):
         slug = slug_loc_ebloc(cont.id_cont, alias, cont.adresa, cont=cont)
         self._attr_unique_id = f"{coordonator.intrare.entry_id}_ebloc_{cont.id_cont}_numar_persoane_setare"
         self._attr_name = f"Număr persoane - {alias}"
-        self._attr_device_info = info_device_ebloc(coordonator.intrare.entry_id, cont)
+        self._attr_device_info = info_device_ebloc(coordonator.hass, coordonator.intrare.entry_id, cont)
         self._attr_suggested_object_id = f"{slug}_numar_persoane_setare"
         self.entity_id = f"number.{slug}_numar_persoane_setare"
         self._attr_native_value = 0

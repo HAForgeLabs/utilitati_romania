@@ -1011,7 +1011,7 @@ class ButonTrimiteNumarPersoaneEbloc(EntitateUtilitatiRomania, ButtonEntity):
         self._attr_unique_id = f"{coordonator.intrare.entry_id}_ebloc_{cont.id_cont}_trimite_numar_persoane"
         self._attr_name = f"Trimite număr persoane - {alias}"
         self._attr_icon = "mdi:account-arrow-up"
-        self._attr_device_info = info_device_ebloc(coordonator.intrare.entry_id, cont)
+        self._attr_device_info = info_device_ebloc(coordonator.hass, coordonator.intrare.entry_id, cont)
         self._attr_suggested_object_id = f"{slug}_trimite_numar_persoane"
         self.entity_id = f"button.{slug}_trimite_numar_persoane"
         self._entity_numar = f"number.{slug}_numar_persoane_setare"

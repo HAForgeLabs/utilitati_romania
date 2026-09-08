@@ -3861,7 +3861,7 @@ class SenzorContEbloc(EntitateUtilitatiRomania, SensorEntity):
         self._attr_name = f"{descriere.name} - {alias}"
         self._attr_suggested_object_id = f"{slug}_{descriere.key}"
         self.entity_id = f"sensor.{slug}_{descriere.key}"
-        self._attr_device_info = info_device_ebloc(coordonator.intrare.entry_id, cont)
+        self._attr_device_info = info_device_ebloc(coordonator.hass, coordonator.intrare.entry_id, cont)
 
     @property
     def available(self):

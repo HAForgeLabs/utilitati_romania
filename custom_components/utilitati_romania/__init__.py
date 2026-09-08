@@ -71,7 +71,7 @@ def _log_temporar(*_args, **_kwargs) -> None:
     return None
 
 
-_FRONTEND_VERSION = "1.18.2b2"
+_FRONTEND_VERSION = "1.18.2b3"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -1141,7 +1141,7 @@ async def _async_cleanup_admin_registry_links(hass: HomeAssistant) -> None:
     admin_device_ids: set[str] = set()
     grouping_device_ids: set[str] = set()
 
-    for device in list(device_registry):
+    for device in device_registry.async_get_devices():
         identifiers = set(device.identifiers or set())
 
         for raw_identifier in identifiers:
@@ -1208,7 +1208,7 @@ async def _async_cleanup_admin_registry_links(hass: HomeAssistant) -> None:
             except Exception:
                 continue
 
-    for device in list(device_registry):
+    for device in device_registry.async_get_devices():
         if device.id in protected_device_ids:
             continue
 
@@ -1313,7 +1313,7 @@ async def _async_curata_device_uri_ppc(hass: HomeAssistant, entry: ConfigEntry) 
     device_registry = dr.async_get(hass)
     prefix = f"{entry.entry_id}_ppc_"
 
-    for device in list(device_registry):
+    for device in device_registry.async_get_devices():
         identifiers = set(device.identifiers or set())
         este_device_ppc = any(
             isinstance(identifier, tuple)
@@ -1353,7 +1353,7 @@ async def _async_curata_intrare_apa_brasov(hass: HomeAssistant, entry: ConfigEnt
         hass.config_entries.async_update_entry(entry, title=nume_curat, data=date_noi)
 
     device_registry = dr.async_get(hass)
-    for device in list(device_registry):
+    for device in device_registry.async_get_devices():
         if (DOMENIU, entry.entry_id) not in set(device.identifiers or set()):
             continue
         try:
