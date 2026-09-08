@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.2b3";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.2b4";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -1091,7 +1091,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         <div class="hero-card ${statusClass}">
           <span class="hero-card-label">Total de plată</span>
           <strong>${this._escape(totalUnpaid)}</strong>
-          <small>${unpaid ? `${unpaid} facturi necesită atenție` : "Nu sunt facturi restante în datele agregate"}</small>
+          <small>${unpaid ? `${unpaid} facturi necesită atenție` : (Number(attrs.sold_nealocat_facturilor || 0) > 0 ? "Sold de plată raportat de furnizor, nealocat unei facturi" : "Nu sunt facturi restante în datele agregate")}</small>
         </div>
       </section>
     `;

@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.2b3";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.2b4";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -1689,6 +1689,7 @@ _buildProviderRefreshButton(provider) {
                 <div><span class="detail-label">Data scadenței:</span> <span class="detail-value">${this._escapeHtml(dueDate)}</span></div>
                 <div><span class="detail-label">Serviciu:</span> <span class="detail-value">${this._escapeHtml(tipServiciu)}</span></div>
                 <div><span class="detail-label">Cont:</span> <span class="detail-value">${this._escapeHtml(numeCont)}</span></div>
+                ${provider.account_balance_unallocated && this._toNumber(provider.account_balance_due) > 0 ? `<div><span class="detail-label">Sold de plată:</span> <span class="detail-value">${this._escapeHtml(provider.account_balance_due_formatted || this._formatMoney(provider.account_balance_due, provider.currency || "RON"))}</span></div><div><span class="detail-label">Observație:</span> <span class="detail-value">Sold raportat de furnizor, fără asociere explicită cu o factură.</span></div>` : ""}
                 ${this._buildProviderReadingDetails(readingData)}
                 <div class="detail-actions">
                   ${provider.pdf_url ? `<button class="pdf-btn" data-url="${this._escapeAttr(provider.pdf_url)}">Deschide PDF</button>` : ""}

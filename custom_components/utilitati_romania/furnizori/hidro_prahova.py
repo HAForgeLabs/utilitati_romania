@@ -915,7 +915,10 @@ class ClientApiHidroPrahova:
             sold = rezumat.get("sold_final")
             if sold is None:
                 sold = sum(float(item.get("restant") or 0.0) for item in facturi)
+
+            sold_de_plata = max(float(sold or 0.0), 0.0)
             restante = [item for item in facturi if (item.get("restant") or 0) > 0.01]
+
             ultima_factura = facturi[0] if facturi else None
             ultima_plata = _ultima_plata_din_facturi(facturi)
             cont = {

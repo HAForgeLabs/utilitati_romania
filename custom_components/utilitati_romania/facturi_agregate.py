@@ -319,10 +319,13 @@ def _extract_unpaid_amount(
 
     id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
 
+    if instantaneu.furnizor == "hidro_prahova":
+        return None
+
     # Unii furnizori expun soldul curent la nivel de locație, dar includ și
     # istoricul facturilor. Nu aplicăm soldul curent tuturor facturilor istorice,
     # altfel dashboardul multiplică artificial totalul neplătit.
-    if instantaneu.furnizor in {"apa_brasov", "hidroelectrica", "ppc"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
+    if instantaneu.furnizor in {"apa_brasov", "hidroelectrica", "ppc", "hidro_prahova"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
         return None
 
     for key in ("sold_factura", "de_plata", "total_neachitat", "sold_curent"):
@@ -1035,6 +1038,47 @@ def _ajusteaza_facturi_hidroelectrica(facturi: list[FacturaUtilitate]) -> list[F
 
 
 
+def _hidro_prahova_sold_nealocat(instantaneu: InstantaneuFurnizor, id_cont: str | None) -> float:
+    valori = (
+        _to_float(_consum_value(instantaneu, "total_neachitat", id_cont)),
+        _to_float(_consum_value(instantaneu, "de_plata", id_cont)),
+        _to_float(_consum_value(instantaneu, "sold_curent", id_cont)),
+        _to_float(_consum_value(instantaneu, "sold_final", id_cont)),
+    )
+    return round(max(next((valoare for valoare in valori if valoare is not None), 0.0), 0.0), 2)
+
+
+def _marcheaza_sold_hidro_prahova_nealocat(
+    grouped: dict[tuple[str, ...], dict[str, Any]],
+    instantaneu: InstantaneuFurnizor,
+) -> None:
+    for cont in instantaneu.conturi or []:
+        id_cont = str(getattr(cont, "id_cont", "") or "").strip()
+        sold = _hidro_prahova_sold_nealocat(instantaneu, id_cont)
+        if sold <= 0:
+            continue
+
+        are_factura_neachitata = False
+        candidat = None
+        for item in grouped.values():
+            if normalize_text(item.get("furnizor")).lower() != "hidro_prahova":
+                continue
+            if str(item.get("id_cont") or "").strip() != id_cont:
+                continue
+            candidat = item
+            if item.get("status") == "unpaid" and _valoare_neplatita_item(item) > 0:
+                are_factura_neachitata = True
+                break
+
+        if are_factura_neachitata or candidat is None:
+            continue
+
+        candidat["account_balance_due"] = sold
+        candidat["account_balance_due_formatted"] = f"{sold:.2f} RON"
+        candidat["account_balance_unallocated"] = True
+        candidat["account_balance_label"] = "Sold de plată raportat de furnizor"
+
+
 def _build_ebloc_fallback_item(
     coordonator: CoordonatorUtilitatiRomania,
     instantaneu: InstantaneuFurnizor,
@@ -1725,6 +1769,9 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             else:
                 grouped[group_key] = _combina_itemuri_grupate(current, item)
 
+        if instantaneu.furnizor == "hidro_prahova":
+            _marcheaza_sold_hidro_prahova_nealocat(grouped, instantaneu)
+
         # 2. Fallback e-bloc din consumuri/plati, pentru cazurile in care
         # portalul nu expune lista curenta ca factura reala, dar avem sold,
         # valoare lista sau ultima plata la nivel de apartament.
@@ -1926,6 +1973,10 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
 
         if item.get("status") == "unpaid" and unpaid_amount is not None and unpaid_amount > 0:
             total_unpaid += unpaid_amount
+        elif item.get("account_balance_unallocated"):
+            sold_nealocat = _to_float(item.get("account_balance_due"))
+            if sold_nealocat is not None and sold_nealocat > 0:
+                total_unpaid += sold_nealocat
 
         location = grouped_locations.setdefault(
             item.get("locatie_cheie") or "locatie",
@@ -1967,17 +2018,27 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
 
         location_total_unpaid = 0.0
         for item in location["furnizori"]:
-            if item.get("status") != "unpaid":
+            if item.get("status") == "unpaid":
+                unpaid_amount = _to_float(item.get("unpaid_amount"))
+                if unpaid_amount is not None and unpaid_amount > 0:
+                    location_total_unpaid += unpaid_amount
                 continue
-            unpaid_amount = _to_float(item.get("unpaid_amount"))
-            if unpaid_amount is not None and unpaid_amount > 0:
-                location_total_unpaid += unpaid_amount
+
+            if item.get("account_balance_unallocated"):
+                sold_nealocat = _to_float(item.get("account_balance_due"))
+                if sold_nealocat is not None and sold_nealocat > 0:
+                    location_total_unpaid += sold_nealocat
 
         location_total_unpaid = round(location_total_unpaid, 2)
         location["total_neplatit"] = location_total_unpaid
         location["total_neplatit_formatat"] = f"{location_total_unpaid:.2f} RON"
 
     total_unpaid = round(total_unpaid, 2)
+    total_sold_nealocat = round(sum(
+        max(_to_float(item.get("account_balance_due")) or 0.0, 0.0)
+        for item in items
+        if item.get("account_balance_unallocated")
+    ), 2)
 
     return {
         "numar_facturi": total,
@@ -1988,6 +2049,8 @@ def sumar_facturi(items: list[dict[str, Any]]) -> dict[str, Any]:
         "numar_status_necunoscut": unknown,
         "total_neplatit": total_unpaid,
         "total_neplatit_formatat": f"{total_unpaid:.2f} RON",
+        "sold_nealocat_facturilor": total_sold_nealocat,
+        "sold_nealocat_facturilor_formatat": f"{total_sold_nealocat:.2f} RON",
         "moneda": "RON",
         "locatii": locations,
     }
