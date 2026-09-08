@@ -162,6 +162,8 @@ def _status_in(value: Any, candidates: set[str]) -> bool:
 
 _UNPAID_RAW_KEYS = (
     "rest",
+    "restant",
+    "restanta",
     "rest_plata",
     "sold",
     "Sold",

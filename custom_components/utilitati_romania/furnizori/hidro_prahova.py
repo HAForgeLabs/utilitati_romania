@@ -1055,7 +1055,7 @@ class ClientFurnizorHidroPrahova(ClientFurnizor):
                 FacturaUtilitate(
                     id_factura=id_factura,
                     titlu=f"Factura {numar}",
-                    valoare=item.get("restant") if (item.get("restant") or 0) > 0.01 else item.get("valoare"),
+                    valoare=item.get("valoare"),
                     moneda="RON",
                     data_emitere=item.get("data_emitere"),
                     data_scadenta=_scadenta_estimativa(item),
