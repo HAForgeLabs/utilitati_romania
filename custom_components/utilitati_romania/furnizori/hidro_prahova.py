@@ -516,6 +516,54 @@ def _extrage_facturi_emise(pagina: str, id_cont: str) -> list[dict[str, Any]]:
     return facturi
 
 
+def _reconciliaza_facturi_hidro_prahova(
+    facturi_emise: list[dict[str, Any]],
+    facturi_fisa: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Îmbină cele două surse de facturi fără a pierde documentele curente.
+
+    Pagina "Facturi emise" este sursa autoritativă pentru starea curentă și
+    restul de plată. Fișa financiară poate rămâne temporar în urmă, dar poate
+    conține documente istorice care nu mai apar în lista curentă.
+    """
+
+    rezultat: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def cheie(factura: dict[str, Any]) -> tuple[str, str]:
+        id_factura = str(factura.get("id_factura") or "").strip()
+        numar_factura = str(factura.get("numar_factura") or "").strip()
+        if id_factura:
+            return ("id", id_factura)
+        if numar_factura:
+            return ("numar", numar_factura)
+        data_emitere = factura.get("data_emitere")
+        valoare = factura.get("valoare")
+        return ("fallback", f"{data_emitere!s}|{valoare!s}")
+
+    # Pornim de la fișa financiară pentru a păstra istoricul disponibil acolo.
+    for factura in facturi_fisa:
+        rezultat[cheie(factura)] = dict(factura)
+
+    # Facturile emise suprascriu câmpurile financiare curente pentru documentele
+    # comune și adaugă imediat facturile noi care încă nu au ajuns în fișă.
+    for factura in facturi_emise:
+        k = cheie(factura)
+        existent = rezultat.get(k, {})
+        combinata = dict(existent)
+        combinata.update(factura)
+        rezultat[k] = combinata
+
+    facturi = list(rezultat.values())
+    facturi.sort(
+        key=lambda item: (
+            item.get("data_emitere") or date.min,
+            str(item.get("numar_factura") or item.get("id_factura") or ""),
+        ),
+        reverse=True,
+    )
+    return facturi
+
+
 def _este_raspuns_facturi_valid(pagina: str) -> bool:
     text = _curata_text(pagina).lower()
     if not text:
@@ -885,7 +933,17 @@ class ClientApiHidroPrahova:
             except EroareApiHidroPrahova:
                 _LOGGER.debug("Nu s-a putut citi fisa financiara Hidro Prahova pentru clientul %s", id_client, exc_info=True)
 
-            facturi = facturi_fisa or facturi_emise
+            facturi = _reconciliaza_facturi_hidro_prahova(facturi_emise, facturi_fisa)
+            _debug_hph(
+                "facturi reconciliate",
+                id_client=id_client,
+                numar_facturi_emise=len(facturi_emise),
+                numar_facturi_fisa=len(facturi_fisa),
+                numar_facturi_reconciliate=len(facturi),
+                ultima_factura=(facturi[0].get("numar_factura") if facturi else None),
+                ultima_stare=(facturi[0].get("stare") if facturi else None),
+                ultima_restanta=(facturi[0].get("restant") if facturi else None),
+            )
             if not facturi and not rezumat:
                 continue
 
