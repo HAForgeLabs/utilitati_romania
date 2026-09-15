@@ -563,8 +563,7 @@ class EonApiClient:
                 return True
 
             raw_token = _raw_access_token(self._access_token, self._token_type)
-            authorization = _authorization_value(self._access_token, self._token_type)
-            if not raw_token or not authorization:
+            if not raw_token:
                 _LOGGER.debug(
                     "[REFRESH] Nu exista accessToken disponibil pentru refresh E.ON."
                 )
@@ -575,7 +574,6 @@ class EonApiClient:
                 **HEADERS,
                 "Origin": "https://www.eon.ro",
                 "Referer": "https://www.eon.ro/myline/dashboard",
-                "Authorization": authorization,
             }
             generation_before = self._token_generation
             try:

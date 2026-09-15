@@ -46,6 +46,7 @@ HEADERS = {
     "Origin": "https://www.eon.ro",
     "Referer": "https://www.eon.ro/myline/login",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "x-client-source": "mylineWeb",
 }
 
 # ──────────────────────────────────────────────
