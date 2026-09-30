@@ -145,14 +145,26 @@ def info_device_ebloc(hass, entry_id: str, cont) -> DeviceInfo:
         cont=cont,
     )
 
+    # Entitățile platformelor sunt inițializate în paralel de Home Assistant.
+    # La o configurare e-bloc nouă, device-ul părinte al config entry-ului poate
+    # să nu existe încă atunci când sunt construite primele entități per apartament.
+    # Îl asigurăm explicit înainte de a seta via_device_id, astfel încât setup-ul
+    # să nu depindă de ordinea în care sunt încărcate sensor/number/button.
+    registru = dr.async_get(hass)
+    device_parinte = registru.async_get_or_create(
+        config_entry_id=entry_id,
+        identifiers={(DOMENIU, entry_id)},
+        name="e-bloc.ro",
+        manufacturer="e-bloc.ro",
+        model="Administrare bloc",
+    )
+
     return DeviceInfo(
         identifiers={(DOMENIU, f"{entry_id}_ebloc_{ident}")},
         name=f"e-bloc.ro - {nume}",
         manufacturer="e-bloc.ro",
         model="Administrare bloc",
-        via_device_id=dr.async_get_device_id_by_identifier(
-            hass, (DOMENIU, entry_id), config_entry_id=entry_id
-        ),
+        via_device_id=device_parinte.id,
     )
 
 def contoare_ebloc(cont) -> list[dict[str, Any]]:
