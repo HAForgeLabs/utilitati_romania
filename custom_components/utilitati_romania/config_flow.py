@@ -147,6 +147,8 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         if user_input is not None:
             self._furnizor = str(user_input[CONF_FURNIZOR])
             self._cheie_licenta = str(user_input.get(CONF_CHEIE_LICENTA, cheie_globala or "TRIAL")).strip() or "TRIAL"
+            if self._furnizor == "aparegio":
+                return self.async_abort(reason="aparegio_login_indisponibil")
             return await self.async_step_credentiale_furnizor()
 
         schema_items: dict[Any, Any] = {
@@ -1009,6 +1011,8 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         self._furnizor = entry_data[CONF_FURNIZOR]
         self._cheie_licenta = entry_data.get(CONF_CHEIE_LICENTA, "TRIAL")
+        if self._furnizor == "aparegio":
+            return self.async_abort(reason="aparegio_login_indisponibil")
         return await self.async_step_confirmare_reautentificare()
 
     def _get_reauth_entry(self):

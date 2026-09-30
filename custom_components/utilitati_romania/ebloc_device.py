@@ -154,3 +154,42 @@ def info_device_ebloc(hass, entry_id: str, cont) -> DeviceInfo:
             hass, (DOMENIU, entry_id), config_entry_id=entry_id
         ),
     )
+
+def contoare_ebloc(cont) -> list[dict[str, Any]]:
+    data = _date_cont(cont).get("contoare")
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict) and str(item.get("id_contor") or "").strip()]
+
+
+def contor_ebloc_dupa_id(cont, id_contor: str | None) -> dict[str, Any] | None:
+    cautat = str(id_contor or "").strip()
+    for item in contoare_ebloc(cont):
+        if str(item.get("id_contor") or "").strip() == cautat:
+            return item
+    return None
+
+
+def slug_contor_ebloc(contor: dict[str, Any]) -> str:
+    baza = _normalizeaza_text(contor.get("nume")) or "contor"
+    identificator = _normalizeaza_text(contor.get("id_contor"))
+    if identificator and identificator not in baza:
+        baza = f"{baza}_{identificator}"
+    return baza
+
+
+def index_ebloc_pentru_afisare(valoare: Any) -> float | None:
+    if valoare in (None, ""):
+        return None
+    try:
+        return round(float(valoare) / 1000.0, 3)
+    except (TypeError, ValueError):
+        return None
+
+
+def index_ebloc_pentru_server(valoare: Any) -> int:
+    numeric = float(valoare)
+    if numeric < 0 or numeric > 999999.999:
+        raise ValueError("Indexul e-bloc.ro trebuie să fie între 0 și 999999,999.")
+    return int(round(numeric * 1000))
+

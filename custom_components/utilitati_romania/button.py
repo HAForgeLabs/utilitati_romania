@@ -28,7 +28,16 @@ from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_device_eon, slug_serviciu_loc_eon, tip_serviciu_eon
 from .furnizori.hidroelectrica_helper import build_usage_entity, safe_get
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
-from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
+from .ebloc_device import (
+    alias_loc_ebloc,
+    contor_ebloc_dupa_id,
+    contoare_ebloc,
+    index_ebloc_pentru_afisare,
+    index_ebloc_pentru_server,
+    info_device_ebloc,
+    slug_contor_ebloc,
+    slug_loc_ebloc,
+)
 from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .retele_electrice_device import alias_loc_retele_electrice, info_device_retele_electrice, slug_loc_retele_electrice
 from .naming import build_provider_slug
@@ -280,6 +289,35 @@ async def async_setup_entry(
         entitati.append(ButonCurataSesiuniEbloc(coordonator))
         for cont in coordonator.data.conturi:
             entitati.append(ButonTrimiteNumarPersoaneEbloc(coordonator, cont))
+
+        contoare_adaugate: set[tuple[str, str]] = set()
+
+        def _adauga_butoane_index_ebloc_descoperite() -> None:
+            data_curenta = coordonator.data
+            if not data_curenta or data_curenta.furnizor != "ebloc":
+                return
+
+            entitati_noi: list[ButtonEntity] = []
+            for cont in data_curenta.conturi:
+                for contor in contoare_ebloc(cont):
+                    id_contor = str(contor.get("id_contor") or "").strip()
+                    if not id_contor:
+                        continue
+                    cheie = (str(cont.id_cont), id_contor)
+                    if cheie in contoare_adaugate:
+                        continue
+                    contoare_adaugate.add(cheie)
+                    entitati_noi.append(ButonTrimiteIndexEbloc(coordonator, cont, contor))
+
+            if entitati_noi:
+                async_add_entities(entitati_noi)
+
+        async_add_entities(entitati)
+        _adauga_butoane_index_ebloc_descoperite()
+        entry.async_on_unload(
+            coordonator.async_add_listener(_adauga_butoane_index_ebloc_descoperite)
+        )
+        return
     async_add_entities(entitati)
 
 
@@ -927,6 +965,143 @@ class ButonTrimiteIndexEngie(EntitateUtilitatiRomania, ButtonEntity):
             notification_id=f"utilitati_romania_engie_trimite_index_{self.cont.id_cont}",
         )
         await self.coordinator.async_request_refresh()
+
+
+class ButonTrimiteIndexEbloc(EntitateUtilitatiRomania, ButtonEntity):
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, contor: dict) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self.contor = contor
+        self._id_contor = str(contor.get("id_contor") or "").strip()
+        self._nume_contor = str(contor.get("nume") or self._id_contor or "Contor").strip()
+        alias = alias_loc_ebloc(cont.nume, cont.adresa, cont.id_cont, cont=cont)
+        slug_locatie = slug_loc_ebloc(cont.id_cont, alias, cont.adresa, cont=cont)
+        slug_contor = slug_contor_ebloc(contor)
+        self._number_unique_id = f"{coordonator.intrare.entry_id}_ebloc_{cont.id_cont}_{self._id_contor}_index_de_transmis"
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_ebloc_{cont.id_cont}_{self._id_contor}_trimite_index"
+        self._attr_name = f"Trimite index {self._nume_contor} - {alias}"
+        self._attr_icon = "mdi:send-circle"
+        self._attr_device_info = info_device_ebloc(coordonator.hass, coordonator.intrare.entry_id, cont)
+        self._attr_suggested_object_id = f"{slug_locatie}_{slug_contor}_trimite_index"
+        self.entity_id = f"button.{slug_locatie}_{slug_contor}_trimite_index"
+
+    def _contor_actual(self) -> dict | None:
+        cont_actual = _cont_curent_dupa_id(self.coordinator, self.cont.id_cont)
+        if cont_actual is None:
+            return None
+        return contor_ebloc_dupa_id(cont_actual, self._id_contor)
+
+    @property
+    def available(self) -> bool:
+        return self._contor_actual() is not None and _citire_permisa_curenta(self.coordinator, self.cont.id_cont)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | bool | None]:
+        contor = self._contor_actual() or self.contor
+        try:
+            necesita_fotografie = (int(contor.get("flag") or 0) & 16) == 16
+        except (TypeError, ValueError):
+            necesita_fotografie = False
+        return {
+            "furnizor": "ebloc",
+            "id_cont": str(self.cont.id_cont),
+            "id_contor": self._id_contor,
+            "nume_contor": self._nume_contor,
+            "luna": str(contor.get("luna") or ""),
+            "necesita_fotografie": necesita_fotografie,
+        }
+
+    async def async_press(self) -> None:
+        notificare_id = (
+            f"utilitati_romania_ebloc_trimite_index_{self.cont.id_cont}_{self._id_contor}"
+        )
+        alias = alias_loc_ebloc(
+            self.cont.nume, self.cont.adresa, self.cont.id_cont, cont=self.cont
+        )
+
+        try:
+            if not _citire_permisa_curenta(self.coordinator, self.cont.id_cont):
+                raise HomeAssistantError(
+                    "Perioada de transmitere a indexului e-bloc.ro nu este activă pentru acest apartament."
+                )
+
+            contor = self._contor_actual()
+            if contor is None:
+                raise HomeAssistantError(
+                    "Contorul e-bloc.ro nu mai este disponibil în datele curente."
+                )
+
+            try:
+                necesita_fotografie = (int(contor.get("flag") or 0) & 16) == 16
+            except (TypeError, ValueError):
+                necesita_fotografie = False
+            if necesita_fotografie and not str(contor.get("guid") or "").strip():
+                raise HomeAssistantError(
+                    "Pentru acest contor e-bloc.ro este obligatorie o fotografie. "
+                    "Indexul trebuie transmis din portalul sau aplicația e-bloc.ro."
+                )
+
+            registry = er.async_get(self.hass)
+            entity_id = registry.async_get_entity_id("number", DOMENIU, self._number_unique_id)
+            stare = self.hass.states.get(entity_id) if entity_id else None
+            if not stare:
+                raise HomeAssistantError(
+                    "Nu am găsit câmpul pentru indexul de transmis al acestui contor e-bloc.ro."
+                )
+            try:
+                valoare = round(float(stare.state), 3)
+                index_server = index_ebloc_pentru_server(valoare)
+            except (TypeError, ValueError) as err:
+                raise HomeAssistantError(
+                    f"Valoarea indexului e-bloc.ro nu este validă: {stare.state}"
+                ) from err
+
+            index_precedent = index_ebloc_pentru_afisare(contor.get("index_precedent"))
+            if index_precedent is not None and valoare < index_precedent:
+                raise HomeAssistantError(
+                    f"Indexul introdus ({valoare:.3f}) este mai mic decât indexul precedent "
+                    f"({index_precedent:.3f})."
+                )
+
+            luna = str(contor.get("luna") or "").strip()
+            if not luna:
+                raise HomeAssistantError(
+                    "Nu am putut identifica luna de citire pentru acest contor e-bloc.ro."
+                )
+
+            await self.coordinator.client.async_trimite_index(
+                self.cont.id_cont,
+                luna=luna,
+                id_contor=self._id_contor,
+                nume_contor=self._nume_contor,
+                index_server=index_server,
+            )
+
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"Indexul **{valoare:.3f}** pentru **{self._nume_contor}** "
+                    f"a fost transmis cu succes la e-bloc.ro.\n\n"
+                    f"Locație: **{alias}**"
+                ),
+                title="Utilități România – e-bloc.ro",
+                notification_id=notificare_id,
+            )
+            await self.coordinator.async_request_refresh()
+        except Exception as err:
+            mesaj = str(err) or "Transmiterea indexului e-bloc.ro a eșuat."
+            persistent_notification.async_create(
+                self.hass,
+                (
+                    f"Transmiterea indexului pentru **{self._nume_contor}** – **{alias}** "
+                    f"a eșuat.\n\nMotiv: **{mesaj}**"
+                ),
+                title="Utilități România – e-bloc.ro",
+                notification_id=notificare_id,
+            )
+            if isinstance(err, HomeAssistantError):
+                raise
+            raise HomeAssistantError(mesaj) from err
 
 
 class ButonCurataSesiuniEbloc(EntitateUtilitatiRomania, ButtonEntity):

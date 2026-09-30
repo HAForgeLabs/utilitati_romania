@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.2";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.3";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -1158,8 +1158,55 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     if (providerKey === "ebloc" && provider?.reading_available) {
       const isOpen = provider.reading_is_open === true || this._normalizeText(provider.reading_is_open) === "da";
       const days = Number(provider.reading_days_until);
-      let badge = null;
+      const states = this._hass?.states || {};
+      const targetIdCont = String(provider?.id_cont || "").trim();
 
+      const indexNumbers = Object.values(states).filter((stateObj) => {
+        if (!stateObj?.entity_id?.startsWith("number.")) return false;
+        const attrs = stateObj.attributes || {};
+        if (this._normalizeText(attrs.furnizor) !== "ebloc") return false;
+        if (targetIdCont && String(attrs.id_cont || "").trim() !== targetIdCont) return false;
+        return stateObj.entity_id.includes("index_de_transmis") || this._entityFriendlyText(stateObj).includes("index de transmis");
+      });
+
+      const controls = indexNumbers.map((numberEntity) => {
+        const attrs = numberEntity.attributes || {};
+        const idContor = String(attrs.id_contor || "").trim();
+        const buttonEntity = Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith("button.")) return false;
+          const buttonAttrs = stateObj.attributes || {};
+          if (this._normalizeText(buttonAttrs.furnizor) !== "ebloc") return false;
+          if (targetIdCont && String(buttonAttrs.id_cont || "").trim() !== targetIdCont) return false;
+          if (idContor && String(buttonAttrs.id_contor || "").trim() !== idContor) return false;
+          return stateObj.entity_id.includes("trimite_index") || this._entityFriendlyText(stateObj).includes("trimite index");
+        }) || null;
+
+        if (!buttonEntity) return null;
+
+        const currentEntity = Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
+          const currentAttrs = stateObj.attributes || {};
+          if (this._normalizeText(currentAttrs.furnizor) !== "ebloc") return false;
+          if (targetIdCont && String(currentAttrs.id_cont || "").trim() !== targetIdCont) return false;
+          if (idContor && String(currentAttrs.id_contor || "").trim() !== idContor) return false;
+          return stateObj.entity_id.includes("index_curent") || this._entityFriendlyText(stateObj).includes("index curent");
+        }) || null;
+
+        return {
+          key: `ebloc_${targetIdCont || "loc"}_${idContor || numberEntity.entity_id}`,
+          providerKey: "ebloc",
+          label: attrs.nume_contor ? `Index de transmis – ${attrs.nume_contor}` : "Index de transmis",
+          numberEntityId: numberEntity.entity_id,
+          buttonEntityId: buttonEntity.entity_id,
+          currentEntityId: currentEntity?.entity_id || null,
+          numberState: numberEntity,
+          currentState: currentEntity,
+          unit: currentEntity?.attributes?.unit_of_measurement || numberEntity.attributes?.unit_of_measurement || "",
+          currentValue: currentEntity?.state ?? null,
+        };
+      }).filter(Boolean);
+
+      let badge = null;
       if (isOpen) {
         badge = "Citire deschisă";
       } else if (Number.isFinite(days)) {
@@ -1171,7 +1218,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       const result = {
         available: true,
         isOpen,
-        controls: [],
+        controls,
         start: null,
         end: null,
         period: provider.reading_period || null,

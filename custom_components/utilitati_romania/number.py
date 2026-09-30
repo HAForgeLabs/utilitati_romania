@@ -18,7 +18,14 @@ from .entitate import EntitateUtilitatiRomania
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import alias_loc_eon, cheie_serviciu_eon, id_unic_eon, info_device_eon, slug_serviciu_loc_eon, tip_serviciu_eon
 from .myelectrica_device import alias_loc_myelectrica, info_device_myelectrica, slug_loc_myelectrica
-from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
+from .ebloc_device import (
+    alias_loc_ebloc,
+    contoare_ebloc,
+    index_ebloc_pentru_afisare,
+    info_device_ebloc,
+    slug_contor_ebloc,
+    slug_loc_ebloc,
+)
 from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .naming import build_provider_slug
 
@@ -206,6 +213,35 @@ async def async_setup_entry(
         elif coordonator.data.furnizor == "ebloc":
             for cont in coordonator.data.conturi:
                 entitati.append(NumarPersoaneEbloc(coordonator, cont))
+
+            contoare_adaugate: set[tuple[str, str]] = set()
+
+            def _adauga_indexuri_ebloc_descoperite() -> None:
+                data_curenta = coordonator.data
+                if not data_curenta or data_curenta.furnizor != "ebloc":
+                    return
+
+                entitati_noi: list[NumberEntity] = []
+                for cont in data_curenta.conturi:
+                    for contor in contoare_ebloc(cont):
+                        id_contor = str(contor.get("id_contor") or "").strip()
+                        if not id_contor:
+                            continue
+                        cheie = (str(cont.id_cont), id_contor)
+                        if cheie in contoare_adaugate:
+                            continue
+                        contoare_adaugate.add(cheie)
+                        entitati_noi.append(NumarIndexEbloc(coordonator, cont, contor))
+
+                if entitati_noi:
+                    async_add_entities(entitati_noi)
+
+            async_add_entities(entitati)
+            _adauga_indexuri_ebloc_descoperite()
+            entry.async_on_unload(
+                coordonator.async_add_listener(_adauga_indexuri_ebloc_descoperite)
+            )
+            return
 
         elif coordonator.data.furnizor == "retele_electrice":
             entitati.append(NumarIntervalActualizareContorRetele(coordonator))
@@ -506,6 +542,70 @@ class NumarIndexEngie(EntitateUtilitatiRomania, RestoreNumber):
 
     async def async_set_native_value(self, value: float) -> None:
         self._attr_native_value = int(float(value))
+        self.async_write_ha_state()
+
+
+class NumarIndexEbloc(EntitateUtilitatiRomania, RestoreNumber):
+    _attr_native_min_value = 0
+    _attr_native_max_value = 999999.999
+    _attr_native_step = 0.001
+    _attr_icon = "mdi:counter"
+    _attr_mode = "box"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, contor: dict) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self.contor = contor
+        self._id_contor = str(contor.get("id_contor") or "").strip()
+        self._nume_contor = str(contor.get("nume") or self._id_contor or "Contor").strip()
+
+        alias = alias_loc_ebloc(cont.nume, cont.adresa, cont.id_cont, cont=cont)
+        slug_locatie = slug_loc_ebloc(cont.id_cont, alias, cont.adresa, cont=cont)
+        slug_contor = slug_contor_ebloc(contor)
+        unitate = str(contor.get("unitate") or "m³").strip()
+        self._attr_native_unit_of_measurement = "m³" if unitate.lower() in {"mc", "m3", "m³"} else unitate
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_ebloc_{cont.id_cont}_{self._id_contor}_index_de_transmis"
+        self._attr_name = f"Index de transmis {self._nume_contor} - {alias}"
+        self._attr_device_info = info_device_ebloc(coordonator.hass, coordonator.intrare.entry_id, cont)
+        self._attr_suggested_object_id = f"{slug_locatie}_{slug_contor}_index_de_transmis"
+        self.entity_id = f"number.{slug_locatie}_{slug_contor}_index_de_transmis"
+        self._attr_native_value = 0.0
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        valoare_portal = index_ebloc_pentru_afisare(
+            self.contor.get("index_curent")
+            if self.contor.get("index_curent") not in (None, "")
+            else self.contor.get("index_precedent")
+        )
+        ultima_stare = await self.async_get_last_number_data()
+        if ultima_stare and ultima_stare.native_value is not None:
+            valoare_restaurata = float(ultima_stare.native_value)
+            self._attr_native_value = valoare_portal if valoare_restaurata <= 0 and valoare_portal is not None else valoare_restaurata
+        elif valoare_portal is not None:
+            self._attr_native_value = valoare_portal
+
+    @property
+    def available(self) -> bool:
+        return _citire_permisa_curenta(self.coordinator, self.cont.id_cont)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | bool | None]:
+        try:
+            necesita_fotografie = (int(self.contor.get("flag") or 0) & 16) == 16
+        except (TypeError, ValueError):
+            necesita_fotografie = False
+        return {
+            "furnizor": "ebloc",
+            "id_cont": str(self.cont.id_cont),
+            "id_contor": self._id_contor,
+            "nume_contor": self._nume_contor,
+            "luna": str(self.contor.get("luna") or ""),
+            "necesita_fotografie": necesita_fotografie,
+        }
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._attr_native_value = round(float(value), 3)
         self.async_write_ha_state()
 
 

@@ -187,6 +187,36 @@ class ClientApiEbloc:
 
         return data if isinstance(data, dict) else {"data": data}
 
+    async def _cerere_web_text(
+        self,
+        endpoint: str,
+        parametri: dict[str, Any],
+    ) -> str:
+        await self._asigura_sesiune()
+        try:
+            async with self._sesiune.post(
+                f"{URL_API_EBLOC}/{endpoint}",
+                data={k: v for k, v in parametri.items() if v is not None},
+                headers={
+                    "User-Agent": ANTETE_WEB_EBLOC["User-Agent"],
+                    "Accept": "text/plain, */*; q=0.01",
+                    "Origin": URL_EBLOC,
+                    "Referer": f"{URL_EBLOC}/index.php?page=10",
+                    "X-Requested-With": "XMLHttpRequest",
+                },
+                timeout=TIMEOUT_EBLOC,
+            ) as raspuns:
+                text = (await raspuns.text()).strip()
+                if raspuns.status in (401, 403):
+                    raise EroareAutentificareEbloc(f"Sesiune web e-bloc.ro invalidă pentru {endpoint}")
+                if raspuns.status >= 400:
+                    raise EroareConectareEbloc(f"HTTP {raspuns.status} pentru {endpoint}: {text[:300]}")
+                return text
+        except EroareApiEbloc:
+            raise
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise EroareConectareEbloc(f"Eroare de conectare la {endpoint}: {err}") from err
+
     async def _pagina_web(self, cale: str, *, referer: str | None = None) -> str:
         await self._asigura_sesiune()
         url = cale if cale.startswith("http") else f"{URL_EBLOC}/{cale.lstrip('/')}"
@@ -403,6 +433,62 @@ class ClientApiEbloc:
             },
         )
 
+    async def async_trimite_index(
+        self,
+        id_asociatie: str,
+        id_apartament: str,
+        luna: str,
+        id_contor: str,
+        nume_contor: str,
+        index_server: int,
+    ) -> str:
+        parametri = {
+            "pIdAsoc": id_asociatie,
+            "pAp": 1,
+            "pIdAp_1": id_apartament,
+            "pLuna": luna,
+            "pAp_1": 1,
+            "pIdContor_1": id_contor,
+            "pIndexNou_1": int(index_server),
+            "pNumeContor_1": nume_contor,
+            "pIndecsi": 1,
+        }
+
+        raspuns = await self._cerere_web_text("AjaxSetIndex.php", parametri)
+        cod = raspuns.strip().lower()
+
+        # AjaxSetIndex.php răspunde cu `nologin` dacă sesiunea portalului a
+        # expirat. În acest caz primul POST nu a salvat nimic, deci putem
+        # reautentifica și relua o singură dată în siguranță.
+        if cod == "nologin":
+            self._id_sesiune = None
+            await self.async_login()
+            raspuns = await self._cerere_web_text("AjaxSetIndex.php", parametri)
+            cod = raspuns.strip().lower()
+
+        if cod == "ok":
+            return cod
+        if cod == "nologin":
+            self._id_sesiune = None
+            raise EroareAutentificareEbloc("Sesiunea e-bloc.ro a expirat înainte de transmiterea indexului")
+
+        mesaje = {
+            "lock_sync": "Datele e-bloc.ro sunt în curs de actualizare. Reîncearcă în câteva secunde.",
+            "readonly": "Contul e-bloc.ro nu are dreptul să modifice indexurile contoarelor.",
+            "data": "Perioada de introducere a indexurilor a expirat.",
+            "nok": "e-bloc.ro a raportat o eroare internă la salvarea indexului.",
+            "minus": "Indexul introdus ar produce un consum negativ.",
+            "exagerat": "e-bloc.ro a refuzat un consum mai mare de 100 m³.",
+            "exagerat-1000": "e-bloc.ro a refuzat un consum mai mare de 2000 de unități.",
+            "exagerat-max": "e-bloc.ro a refuzat consumul deoarece este în afara limitelor acceptate.",
+        }
+        raise EroareRaspunsEbloc(
+            mesaje.get(
+                cod,
+                f"Răspuns neașteptat la transmiterea indexului e-bloc.ro: {raspuns[:120]}",
+            )
+        )
+
     async def async_listeaza_sesiuni_portal(self) -> list[SesiunePortalEbloc]:
         pagina = await self._pagina_web("index.php?page=3", referer=f"{URL_EBLOC}/index.php?page=10")
         return _extrage_sesiuni_portal_ebloc(pagina)
@@ -560,6 +646,27 @@ class ClientFurnizorEbloc(ClientFurnizor):
             raise EroareRaspunsEbloc("ID cont e-bloc.ro invalid pentru actualizarea numărului de persoane")
         return await self.api.async_seteaza_numar_persoane(parti[0], parti[1], luna, numar_persoane)
 
+    async def async_trimite_index(
+        self,
+        id_cont: str,
+        *,
+        luna: str,
+        id_contor: str,
+        nume_contor: str,
+        index_server: int,
+    ) -> str:
+        parti = str(id_cont or "").split("_", 1)
+        if len(parti) != 2:
+            raise EroareRaspunsEbloc("ID cont e-bloc.ro invalid pentru transmiterea indexului")
+        return await self.api.async_trimite_index(
+            parti[0],
+            parti[1],
+            luna,
+            str(id_contor),
+            str(nume_contor),
+            int(index_server),
+        )
+
     async def async_curata_sesiuni_vechi(self) -> dict[str, Any]:
         return await self.api.async_curata_sesiuni_vechi()
 
@@ -588,6 +695,28 @@ class ClientFurnizorEbloc(ClientFurnizor):
                 nume = str(apartament.get("nume") or apartament.get("proprietar") or apartament.get("locatar") or "").strip()
                 cod_client = str(apartament.get("cod_client") or apartament.get("cod") or "").strip()
 
+                pachet = (date_brute.get("date_apartamente") or {}).get(f"{id_asociatie}:{id_apartament}") or {}
+                contoare = _extrage_contoare(
+                    _alege_sursa_contoare(pachet),
+                    pachet.get("luna_index"),
+                    pachet,
+                )
+                contoare_compacte = [
+                    {
+                        "id_contor": contor.id_contor,
+                        "nume": contor.nume,
+                        "index_precedent": contor.index_precedent,
+                        "index_curent": contor.index_curent,
+                        "unitate": contor.unitate,
+                        "perioada_citire": contor.perioada_citire,
+                        "flag": contor.date_brute.get("flag"),
+                        "flag_contor": contor.date_brute.get("flag_contor"),
+                        "guid": contor.date_brute.get("guid"),
+                        "luna": pachet.get("luna_index"),
+                    }
+                    for contor in contoare
+                ]
+
                 rezultate.append(
                     ContUtilitate(
                         id_cont=f"{id_asociatie}_{id_apartament}",
@@ -604,6 +733,8 @@ class ClientFurnizorEbloc(ClientFurnizor):
                             "numar_apartament": numar_ap,
                             "apartament": apartament,
                             "asociatie": asociatie,
+                            "luna_index": pachet.get("luna_index"),
+                            "contoare": contoare_compacte,
                         },
                     )
                 )

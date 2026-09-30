@@ -38,7 +38,15 @@ from .retele_electrice_device import (
     info_device_retele_electrice,
     slug_loc_retele_electrice,
 )
-from .ebloc_device import alias_loc_ebloc, info_device_ebloc, slug_loc_ebloc
+from .ebloc_device import (
+    alias_loc_ebloc,
+    contor_ebloc_dupa_id,
+    contoare_ebloc,
+    index_ebloc_pentru_afisare,
+    info_device_ebloc,
+    slug_contor_ebloc,
+    slug_loc_ebloc,
+)
 from .orange_device import alias_loc_orange, info_device_orange, slug_loc_orange
 from .engie_device import alias_loc_engie, info_device_engie, slug_loc_engie
 from .naming import build_provider_slug, extract_street_slug, normalize_text
@@ -2160,6 +2168,35 @@ async def async_setup_entry(
             for descriere in SENZORI_CONT_EBLOC:
                 entitati.append(SenzorContEbloc(coordonator, cont, descriere))
 
+        contoare_adaugate: set[tuple[str, str]] = set()
+
+        def _adauga_senzori_index_ebloc_descoperiti() -> None:
+            data_curenta = coordonator.data
+            if not data_curenta or data_curenta.furnizor != "ebloc":
+                return
+
+            entitati_noi: list[SensorEntity] = []
+            for cont in data_curenta.conturi:
+                for contor in contoare_ebloc(cont):
+                    id_contor = str(contor.get("id_contor") or "").strip()
+                    if not id_contor:
+                        continue
+                    cheie = (str(cont.id_cont), id_contor)
+                    if cheie in contoare_adaugate:
+                        continue
+                    contoare_adaugate.add(cheie)
+                    entitati_noi.append(SenzorIndexCurentEbloc(coordonator, cont, contor))
+
+            if entitati_noi:
+                async_add_entities(entitati_noi)
+
+        async_add_entities(entitati)
+        _adauga_senzori_index_ebloc_descoperiti()
+        entry.async_on_unload(
+            coordonator.async_add_listener(_adauga_senzori_index_ebloc_descoperiti)
+        )
+        return
+
     elif instantaneu and instantaneu.furnizor == "apa_brasov":
         # Apă Brașov poate fi configurată cu toate locațiile din cont. Păstrăm
         # un dispozitiv principal pentru furnizor, cu senzori de rezumat, la fel
@@ -3844,6 +3881,60 @@ class SenzorContComprest(EntitateUtilitatiRomania, SensorEntity):
             attrs["plati"] = plati[:12]
 
         return attrs
+
+
+class SenzorIndexCurentEbloc(EntitateUtilitatiRomania, SensorEntity):
+    _attr_icon = "mdi:counter"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, contor: dict[str, Any]) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self._id_contor = str(contor.get("id_contor") or "").strip()
+        self._nume_contor = str(contor.get("nume") or self._id_contor or "Contor").strip()
+
+        alias = alias_loc_ebloc(cont.nume, cont.adresa, cont.id_cont, cont=cont)
+        slug_locatie = slug_loc_ebloc(cont.id_cont, alias, cont.adresa, cont=cont)
+        slug_contor = slug_contor_ebloc(contor)
+        unitate = str(contor.get("unitate") or "m³").strip()
+        self._attr_native_unit_of_measurement = "m³" if unitate.lower() in {"mc", "m3", "m³"} else unitate
+        self._attr_unique_id = (
+            f"{coordonator.intrare.entry_id}_ebloc_{cont.id_cont}_{self._id_contor}_index_curent"
+        )
+        self._attr_name = f"Index curent {self._nume_contor} - {alias}"
+        self._attr_suggested_object_id = f"{slug_locatie}_{slug_contor}_index_curent"
+        self.entity_id = f"sensor.{slug_locatie}_{slug_contor}_index_curent"
+        self._attr_device_info = info_device_ebloc(
+            coordonator.hass, coordonator.intrare.entry_id, cont
+        )
+
+    @property
+    def _contor_actual(self) -> dict[str, Any] | None:
+        cont_actual = _cont_curent_dupa_id(self.coordinator, self.cont.id_cont)
+        if cont_actual is None:
+            return None
+        return contor_ebloc_dupa_id(cont_actual, self._id_contor)
+
+    @property
+    def available(self) -> bool:
+        return self._contor_actual is not None
+
+    @property
+    def native_value(self) -> float | None:
+        contor = self._contor_actual
+        if contor is None:
+            return None
+        return index_ebloc_pentru_afisare(contor.get("index_curent"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        contor = self._contor_actual or {}
+        return {
+            "furnizor": "ebloc",
+            "id_cont": str(self.cont.id_cont),
+            "id_contor": self._id_contor,
+            "nume_contor": self._nume_contor,
+            "luna": str(contor.get("luna") or ""),
+        }
 
 
 class SenzorContEbloc(EntitateUtilitatiRomania, SensorEntity):

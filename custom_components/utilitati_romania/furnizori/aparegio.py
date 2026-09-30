@@ -435,11 +435,21 @@ class ClientApiAparegio:
         return {"conturi": conturi, "facturi": facturi, "plati": plati, "contoare": contoare, "pagini": pagini}
 
 
+AUTENTIFICARE_AUTOMATA_APAREGIO_DISPONIBILA = False
+MESAJ_LOGIN_APAREGIO_INDISPONIBIL = (
+    "Autentificarea automată ApaRegio Gorj este momentan indisponibilă deoarece "
+    "portalul solicită verificare interactivă Cloudflare Turnstile."
+)
+
+
 class ClientFurnizorAparegio(ClientFurnizor):
     cheie_furnizor = FURNIZOR_APAREGIO
     nume_prietenos = "ApaRegio Gorj"
 
     async def async_testeaza_conexiunea(self) -> str:
+        if not AUTENTIFICARE_AUTOMATA_APAREGIO_DISPONIBILA:
+            raise EroareConectare(MESAJ_LOGIN_APAREGIO_INDISPONIBIL)
+
         api = ClientApiAparegio(self.sesiune, self.utilizator, self.parola)
         try:
             rezultat = await api.async_validate_credentials()
@@ -456,6 +466,9 @@ class ClientFurnizorAparegio(ClientFurnizor):
         return self.utilizator.strip().lower()
 
     async def async_obtine_instantaneu(self) -> InstantaneuFurnizor:
+        if not AUTENTIFICARE_AUTOMATA_APAREGIO_DISPONIBILA:
+            raise EroareConectare(MESAJ_LOGIN_APAREGIO_INDISPONIBIL)
+
         api = ClientApiAparegio(self.sesiune, self.utilizator, self.parola)
         try:
             date_brute = await api.async_get_all_data()

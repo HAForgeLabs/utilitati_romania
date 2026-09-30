@@ -1,0 +1,155 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Choose provider and license",
+        "data": {
+          "furnizor": "Provider",
+          "cheie_licenta": "License key"
+        }
+      },
+      "credentiale_furnizor": {
+        "title": "Connect to {furnizor}",
+        "data": {
+          "utilizator": "Username / email",
+          "parola": "Password",
+          "interval_actualizare": "Update interval (hours)",
+          "digi_history_limit": "Historical invoices per address"
+        }
+      },
+      "confirmare_reautentificare": {
+        "title": "Reconnect {furnizor}",
+        "data": {
+          "utilizator": "Username / email",
+          "parola": "Password"
+        }
+      },
+      "eon_cod_email": {
+        "title": "E.ON verification code",
+        "description": "Enter the code received by email at {destinatar}.",
+        "data": {
+          "cod_email": "Email code"
+        }
+      },
+      "digi_metoda_2fa": {
+        "title": "Digi verification method",
+        "data": {
+          "digi_2fa_method": "2FA method",
+          "digi_2fa_target": "SMS number"
+        }
+      },
+      "digi_cod_2fa": {
+        "title": "Digi verification code",
+        "data": {
+          "cod_2fa": "2FA code"
+        }
+      },
+      "digi_selectare_cont": {
+        "title": "Select Digi account",
+        "data": {
+          "digi_selected_account_id": "Account"
+        }
+      },
+      "digi_reauth_metoda_2fa": {
+        "title": "Digi verification method",
+        "data": {
+          "digi_2fa_method": "2FA method",
+          "digi_2fa_target": "SMS number"
+        }
+      },
+      "digi_reauth_cod_2fa": {
+        "title": "Digi verification code",
+        "data": {
+          "cod_2fa": "2FA code"
+        }
+      },
+      "digi_reauth_selectare_cont": {
+        "title": "Select Digi account",
+        "data": {
+          "digi_selected_account_id": "Account"
+        }
+      },
+      "selectare_contract_apa_canal": {
+        "title": "Select Apă Canal Sibiu contract",
+        "description": "Choose the consumption location you want to configure.",
+        "data": {
+          "contract_apa_canal": "Contract / address"
+        }
+      },
+      "selectare_contract_apa_brasov": {
+        "title": "Select Apă Brașov contract",
+        "description": "Choose the consumption location you want to configure.",
+        "data": {
+          "contract_apa_brasov": "Contract / address"
+        }
+      },
+      "admin_global": {
+        "title": "Integration administration",
+        "description": "Configure the global license for the entire integration.",
+        "data": {
+          "utilizator": "Username / email",
+          "cheie_licenta": "License key"
+        }
+      },
+      "admin_bootstrap": {
+        "title": "Integration administration",
+        "description": "Configure the global license for the entire integration.",
+        "data": {
+          "utilizator": "Username / email",
+          "cheie_licenta": "License key"
+        }
+      },
+      "selectare_puncte_myelectrica": {
+        "title": "Select myElectrica consumption points",
+        "description": "Choose the consumption points you want to configure.",
+        "data": {
+          "puncte_consum_selectate": "Consumption points"
+        }
+      },
+      "eon_cod_email_reauth": {
+        "title": "E.ON verification code",
+        "description": "Enter the code received by email at {destinatar}.",
+        "data": {
+          "cod_email": "Email code"
+        }
+      }
+    },
+    "error": {
+      "autentificare_esuata": "Authentication failed.",
+      "nu_se_poate_conecta": "Connection is currently unavailable.",
+      "licenta_invalida": "The license is not valid for this integration.",
+      "necunoscuta": "Unexpected error.",
+      "cod_invalid": "Invalid or expired code.",
+      "digi_trimitere_cod_esuata": "The Digi code could not be sent.",
+      "digi_pagina_2fa_invalida": "The Digi 2FA page could not be parsed.",
+      "digi_selectare_cont_invalida": "The selected Digi account could not be confirmed.",
+      "fara_contracte": "No available contracts were found for this account.",
+      "contract_invalid": "The selected contract is no longer valid. Please try again.",
+      "digi_2fa_indisponibil": "No 2FA verification method is available for this Digi account."
+    },
+    "abort": {
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Reauthentication completed successfully.",
+      "aparegio_login_indisponibil": "Automatic authentication for ApaRegio Gorj is currently unavailable. The ApaRegio portal now requires an interactive Cloudflare Turnstile verification, which cannot be completed automatically by the Home Assistant integration. ApaRegio support remains in the integration and can be reactivated when a compatible authentication method becomes available."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "interval_actualizare": "Update interval (hours)",
+          "utilizator": "Username / email",
+          "parola": "Password",
+          "cheie_licenta": "License key",
+          "digi_history_limit": "Historical invoices per address",
+          "retele_interval_date_instantanee": "Automatic meter update interval (hours, 0 = disabled)",
+          "puncte_consum_selectate": "Consumption points"
+        }
+      }
+    },
+    "error": {
+      "licenta_invalida": "The license is not valid for this integration."
+    }
+  }
+}
