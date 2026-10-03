@@ -349,7 +349,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         )
 
     async def _async_refresh_eon_in_fundal(self) -> None:
-        retry_dupa_eroare = 15 * 60
+        retry_dupa_eroare = 60
 
         try:
             while True:
@@ -395,17 +395,17 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
                         continue
 
                     _LOGGER.warning(
-                        "Refresh-ul periodic E.ON a esuat. O noua incercare va fi facuta peste %s minute.",
-                        retry_dupa_eroare // 60,
+                        "Refresh-ul periodic E.ON a esuat. O noua incercare va fi facuta peste %s secunde.",
+                        retry_dupa_eroare,
                     )
                     await asyncio.sleep(retry_dupa_eroare)
                 except asyncio.CancelledError:
                     raise
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.warning(
-                        "Refresh-ul periodic E.ON a esuat: %s. Retry peste %s minute.",
+                        "Refresh-ul periodic E.ON a esuat: %s. Retry peste %s secunde.",
                         err,
-                        retry_dupa_eroare // 60,
+                        retry_dupa_eroare,
                     )
                     await asyncio.sleep(retry_dupa_eroare)
         except asyncio.CancelledError:

@@ -2485,6 +2485,21 @@ class SenzorContEonExtins(EntitateUtilitatiRomania, SensorEntity):
         return attrs
 
 
+def _parse_date_senzor_myelectrica(value: Any) -> date | None:
+    if value in (None, "", "None"):
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d.%m.%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(text[:19], fmt).date()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
 class SenzorContMyElectrica(EntitateUtilitatiRomania, SensorEntity):
     entity_description: DescriereSenzorCont
 
@@ -2505,6 +2520,55 @@ class SenzorContMyElectrica(EntitateUtilitatiRomania, SensorEntity):
             self._attr_native_unit_of_measurement = 'm³' if tip == 'gaz' else 'kWh'
 
     @property
+    def _cont_actual(self):
+        if self.coordinator.data is None:
+            return self.cont
+        return (
+            next(
+                (
+                    cont
+                    for cont in self.coordinator.data.conturi
+                    if getattr(cont, "id_cont", None) == getattr(self.cont, "id_cont", None)
+                ),
+                None,
+            )
+            or self.cont
+        )
+
+    @staticmethod
+    def _citiri_recente(citiri: list[dict[str, Any]], limita: int = 12) -> list[dict[str, Any]]:
+        def cheia_data(citire: dict[str, Any]) -> tuple[int, str]:
+            valoare = citire.get("ReadingDate")
+            data = _parse_date_senzor_myelectrica(valoare)
+            return (data.toordinal() if data else -1, str(valoare or ""))
+
+        valide = [citire for citire in citiri if isinstance(citire, dict)]
+        valide.sort(key=cheia_data, reverse=True)
+        return valide[:limita]
+
+    @staticmethod
+    def _citire_compacta(citire: dict[str, Any]) -> dict[str, Any]:
+        tip_raw = str(citire.get("MeterReadingType") or "").strip()
+        tip_lower = tip_raw.lower()
+        if "client" in tip_lower:
+            tip = "autocitire"
+        elif "comp" in tip_lower:
+            tip = "citire distribuitor"
+        else:
+            tip = tip_raw or "necunoscut"
+
+        rezultat = {
+            "data": citire.get("ReadingDate"),
+            "index": citire.get("Index"),
+            "tip": tip,
+        }
+        if citire.get("SerieContor") not in (None, ""):
+            rezultat["serie_contor"] = citire.get("SerieContor")
+        if citire.get("RegisterCode") not in (None, ""):
+            rezultat["registru"] = citire.get("RegisterCode")
+        return rezultat
+
+    @property
     def available(self):
         if self.coordinator.data is None:
             return False
@@ -2512,17 +2576,18 @@ class SenzorContMyElectrica(EntitateUtilitatiRomania, SensorEntity):
 
     @property
     def native_value(self):
-        return None if self.coordinator.data is None else self.entity_description.functie_valoare(self.coordinator.data, self.cont)
+        return None if self.coordinator.data is None else self.entity_description.functie_valoare(self.coordinator.data, self._cont_actual)
 
     @property
     def extra_state_attributes(self):
-        raw = getattr(self.cont, 'date_brute', None) or {}
+        cont = self._cont_actual
+        raw = getattr(cont, 'date_brute', None) or {}
         attrs = {
-            'nlc': self.cont.id_cont,
+            'nlc': cont.id_cont,
             'client_code': raw.get('client_code'),
             'contract_account': raw.get('contract_account'),
-            'adresa': self.cont.adresa,
-            'tip_serviciu': self.cont.tip_serviciu,
+            'adresa': cont.adresa,
+            'tip_serviciu': cont.tip_serviciu,
         }
         if self.entity_description.key == 'date_client':
             client = raw.get('client_data') or {}
@@ -2543,9 +2608,11 @@ class SenzorContMyElectrica(EntitateUtilitatiRomania, SensorEntity):
             if meter.get('MeterReadingEstimated') not in (None, ''):
                 attrs['citire_estimata'] = meter.get('MeterReadingEstimated')
         elif self.entity_description.key == 'istoric_citiri':
-            citiri = raw.get('readings') or []
+            citiri = [citire for citire in (raw.get('readings') or []) if isinstance(citire, dict)]
+            recente = self._citiri_recente(citiri, 12)
             attrs['numar_citiri'] = len(citiri)
-            attrs['ultima_citire'] = citiri[-1] if citiri else None
+            attrs['ultima_citire'] = self._citire_compacta(recente[0]) if recente else None
+            attrs['ultimele_12_citiri'] = [self._citire_compacta(citire) for citire in recente]
         elif self.entity_description.key == 'citire_permisa':
             meter = raw.get('meter_list') or {}
             if meter.get('StartDatePAC'):

@@ -58,6 +58,35 @@ def _registre_eon(cont) -> list[dict]:
     return [registru for device in devices for registru in (device.get("indexes") or []) if isinstance(registru, dict) and registru.get("ablbelnr")]
 
 
+def _cont_eon_curent(coordonator: CoordonatorUtilitatiRomania, id_cont: str):
+    data = getattr(coordonator, "data", None)
+    for cont in getattr(data, "conturi", None) or []:
+        if str(getattr(cont, "id_cont", "")) == str(id_cont):
+            return cont
+    return None
+
+
+def _registre_eon_curente(coordonator: CoordonatorUtilitatiRomania, id_cont: str, fallback_cont=None) -> list[dict]:
+    cont_curent = _cont_eon_curent(coordonator, id_cont)
+    registre = _registre_eon(cont_curent) if cont_curent is not None else []
+    if registre:
+        return registre
+    return _registre_eon(fallback_cont) if fallback_cont is not None else []
+
+
+def _registre_eon_din_meter_index(meter_index: dict | None) -> list[dict]:
+    if not isinstance(meter_index, dict):
+        return []
+    devices = ((meter_index.get("indexDetails") or {}).get("devices") or [])
+    return [
+        registru
+        for device in devices
+        if isinstance(device, dict)
+        for registru in (device.get("indexes") or [])
+        if isinstance(registru, dict) and registru.get("ablbelnr")
+    ]
+
+
 def _rol_registru_eon(registru: dict) -> str:
     return "injectie" if str(registru.get("code") or "").upper() == "P" else "consum"
 
@@ -673,11 +702,25 @@ class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
     async def async_press(self) -> None:
         notif_id = f"utilitati_romania_eon_trimite_index_{self.cont.id_cont}"
         try:
-            registre = _registre_eon(self.cont)
+            api = self.coordinator.client.api
+
+            meter_index = await api.async_fetch_meter_index(self.cont.id_cont)
+            if meter_index is None:
+                if getattr(api, "reauth_required", False):
+                    await self.coordinator.async_request_refresh()
+                    raise HomeAssistantError(
+                        "Sesiunea E.ON a expirat. Home Assistant va solicita reautentificarea."
+                    )
+                raise HomeAssistantError(
+                    "Datele curente ale contorului E.ON nu au putut fi actualizate. "
+                    "Reincearca transmiterea peste cateva momente."
+                )
+
+            registre = _registre_eon_din_meter_index(meter_index)
             if not registre:
-                registre = [self.registru] if self.registru else []
-            if not registre:
-                raise ValueError("Nu s-au putut identifica registrele contorului E.ON.")
+                raise HomeAssistantError(
+                    "E.ON nu a returnat registre active pentru acest loc de consum."
+                )
 
             registru_entitati = er.async_get(self.hass)
             payload = []
@@ -706,9 +749,17 @@ class ButonTrimiteIndexEon(EntitateUtilitatiRomania, ButtonEntity):
                 payload.append({"ablbelnr": ablbelnr, "indexValue": valoare})
                 valori_afisare.append(f"- {eticheta.capitalize()}: **{valoare}**")
 
-            rezultat = await self.coordinator.client.api.async_submit_meter_index(self.cont.id_cont, payload)
+            rezultat = await api.async_submit_meter_index(self.cont.id_cont, payload)
             if rezultat is None:
-                raise ValueError("API-ul E.ON nu a returnat un răspuns valid.")
+                if getattr(api, "reauth_required", False):
+                    await self.coordinator.async_request_refresh()
+                    raise HomeAssistantError(
+                        "Sesiunea E.ON a expirat. Home Assistant va solicita reautentificarea."
+                    )
+                raise HomeAssistantError(
+                    "Transmiterea către E.ON nu a primit un răspuns valid. "
+                    "Dacă problema este temporară, reîncearcă peste câteva momente."
+                )
             if isinstance(rezultat, dict) and rezultat.get("success") is False:
                 raise ValueError(f"E.ON a refuzat transmiterea: {rezultat}")
 

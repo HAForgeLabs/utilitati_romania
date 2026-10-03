@@ -38,6 +38,23 @@ def _registre_eon(cont) -> list[dict]:
     return [registru for device in devices for registru in (device.get("indexes") or []) if isinstance(registru, dict) and registru.get("ablbelnr")]
 
 
+def _cont_eon_curent(coordonator: CoordonatorUtilitatiRomania, id_cont: str):
+    data = getattr(coordonator, "data", None)
+    for cont in getattr(data, "conturi", None) or []:
+        if str(getattr(cont, "id_cont", "")) == str(id_cont):
+            return cont
+    return None
+
+
+def _registru_eon_curent(coordonator: CoordonatorUtilitatiRomania, id_cont: str, rol: str, fallback: dict | None = None) -> dict:
+    cont_curent = _cont_eon_curent(coordonator, id_cont)
+    if cont_curent is not None:
+        for registru in _registre_eon(cont_curent):
+            if _rol_registru_eon(registru) == rol:
+                return registru
+    return fallback or {}
+
+
 def _rol_registru_eon(registru: dict) -> str:
     return "injectie" if str(registru.get("code") or "").upper() == "P" else "consum"
 
@@ -363,10 +380,13 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        registru_curent = _registru_eon_curent(
+            self.coordinator, self.cont.id_cont, self.rol_registru, self.registru
+        )
         valoare_registru = None
         for cheie in ("currentValue", "oldSelfIndexValue", "oldValue"):
-            if self.registru.get(cheie) is not None:
-                valoare_registru = int(float(self.registru[cheie]))
+            if registru_curent.get(cheie) is not None:
+                valoare_registru = int(float(registru_curent[cheie]))
                 break
 
         ultima_stare = await self.async_get_last_number_data()
@@ -382,12 +402,15 @@ class NumarIndexEon(EntitateUtilitatiRomania, RestoreNumber):
 
     @property
     def extra_state_attributes(self) -> dict[str, str | None]:
+        registru_curent = _registru_eon_curent(
+            self.coordinator, self.cont.id_cont, self.rol_registru, self.registru
+        )
         return {
             "furnizor": "eon",
             "id_cont": self.cont.id_cont,
             "rol_registru": self.rol_registru,
-            "cod_registru": str(self.registru.get("code") or ""),
-            "ablbelnr": str(self.registru.get("ablbelnr") or ""),
+            "cod_registru": str(registru_curent.get("code") or ""),
+            "ablbelnr": str(registru_curent.get("ablbelnr") or ""),
         }
 
 

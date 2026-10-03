@@ -679,7 +679,12 @@ class ClientFurnizorEon(ClientFurnizor):
         if not self._api.is_token_likely_valid():
             ok = await self._api.async_ensure_authenticated()
             if not ok:
-                raise EroareAutentificare("Nu s-a putut autentifica la E.ON")
+                if self._api.reauth_required:
+                    raise EroareAutentificare("Reautentificare E.ON necesara")
+                raise EroareConectare(
+                    "Sesiunea E.ON nu a putut fi reimprospatata temporar. "
+                    "Integrarea va reincerca automat."
+                )
 
         etapa = time.monotonic()
         contracte = await self._api.async_fetch_contracts_list()

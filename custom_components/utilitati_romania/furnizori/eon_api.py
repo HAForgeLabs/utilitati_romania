@@ -133,6 +133,8 @@ class EonApiClient:
         self._mfa_data: dict | None = None
         self._mfa_blocked: bool = False
         self._reauth_required: bool = False
+        self._last_refresh_status: int | None = None
+        self._last_refresh_error: str | None = None
 
     @property
     def has_token(self) -> bool:
@@ -167,13 +169,21 @@ class EonApiClient:
 
     @property
     def reauth_required(self) -> bool:
-        """Indica faptul ca sesiunea trebuie refacuta prin flow-ul Home Assistant.
-
-        Este important sa nu pornim login cu 2FA din actualizarile de fundal,
-        pentru ca E.ON trimite codul, dar Home Assistant nu are un formular
-        activ in care utilizatorul sa il introduca.
-        """
+        """Indica faptul ca sesiunea trebuie refacuta prin flow-ul Home Assistant."""
         return self._reauth_required or self._mfa_blocked
+
+    @property
+    def last_refresh_status(self) -> int | None:
+        return self._last_refresh_status
+
+    @property
+    def last_refresh_error(self) -> str | None:
+        return self._last_refresh_error
+
+    @property
+    def refresh_failure_requires_reauth(self) -> bool:
+        """Doar respingerile explicite de autentificare trebuie sa porneasca reauth."""
+        return self._last_refresh_status in {400, 401, 403}
 
     def clear_mfa_block(self) -> None:
         self._mfa_blocked = False
@@ -562,8 +572,12 @@ class EonApiClient:
             if not force and self.seconds_until_refresh() > 0:
                 return True
 
+            self._last_refresh_status = None
+            self._last_refresh_error = None
+
             raw_token = _raw_access_token(self._access_token, self._token_type)
             if not raw_token:
+                self._last_refresh_error = "missing_access_token"
                 _LOGGER.debug(
                     "[REFRESH] Nu exista accessToken disponibil pentru refresh E.ON."
                 )
@@ -584,6 +598,7 @@ class EonApiClient:
                     timeout=self._timeout,
                 ) as resp:
                     response_text = await resp.text()
+                    self._last_refresh_status = resp.status
                     _LOGGER.debug(
                         "[REFRESH] E.ON status=%s body_len=%s gen=%s",
                         resp.status,
@@ -606,6 +621,7 @@ class EonApiClient:
                             )
                         )
                         if not token_present:
+                            self._last_refresh_error = "response_without_token"
                             _LOGGER.warning(
                                 "[REFRESH] E.ON a raspuns 200 fara token utilizabil. Chei=%s",
                                 sorted(data.keys()) if isinstance(data, dict) else [],
@@ -613,6 +629,8 @@ class EonApiClient:
                             return False
 
                         self._apply_token_data(data)
+                        self._last_refresh_status = 200
+                        self._last_refresh_error = None
                         _LOGGER.debug(
                             "[REFRESH] Token E.ON reinnoit: gen=%s expires_in=%s urmatorul_refresh=%.0fs",
                             self._token_generation,
@@ -621,6 +639,7 @@ class EonApiClient:
                         )
                         return True
 
+                    self._last_refresh_error = f"http_{resp.status}"
                     _LOGGER.warning(
                         "[REFRESH] Eroare la reimprospatare E.ON. Cod HTTP=%s, Raspuns=%s",
                         resp.status,
@@ -629,9 +648,11 @@ class EonApiClient:
                     return False
 
             except asyncio.TimeoutError:
+                self._last_refresh_error = "timeout"
                 _LOGGER.error("[REFRESH] Depasire de timp.")
                 return False
             except Exception as err:
+                self._last_refresh_error = type(err).__name__
                 _LOGGER.error("[REFRESH] Eroare: %s", err)
                 return False
 
@@ -692,18 +713,27 @@ class EonApiClient:
             if self._access_token:
                 if await self.async_refresh_token(force=True):
                     return True
-                self._reauth_required = True
-                self._mfa_blocked = False
-                _LOGGER.debug(
-                    "[AUTH] Refresh E.ON esuat cu accessToken. Se cere reautentificare prin Home Assistant, "
-                    "fara login 2FA in fundal."
-                )
+
+                if self.refresh_failure_requires_reauth:
+                    self._reauth_required = True
+                    self._mfa_blocked = False
+                    _LOGGER.warning(
+                        "[AUTH] Refresh E.ON respins explicit de server (HTTP=%s). "
+                        "Se cere reautentificare prin Home Assistant.",
+                        self._last_refresh_status,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "[AUTH] Refresh E.ON esuat temporar (%s). "
+                        "Nu se forteaza reautentificarea; se va reincerca.",
+                        self._last_refresh_error or "cauza necunoscuta",
+                    )
                 return False
 
             self._reauth_required = True
             self._mfa_blocked = False
             _LOGGER.debug(
-                "[AUTH] Token E.ON lipsa/invalid. "
+                "[AUTH] Token E.ON lipsa. "
                 "Se cere reautentificare prin Home Assistant, fara login 2FA in fundal."
             )
             return False
@@ -1047,12 +1077,29 @@ class EonApiClient:
                     if self._token_generation != gen_before:
                         _LOGGER.debug("[%s] Token reînnoit de alt apel. Retry.", label)
                     else:
-                        self.invalidate_token()
-                        self._reauth_required = True
-                        if not await self._ensure_token_valid():
+                        if not await self.async_refresh_token(force=True):
+                            if self.refresh_failure_requires_reauth:
+                                self._reauth_required = True
+                                _LOGGER.error(
+                                    "[%s] Token respins, iar refresh-ul E.ON a fost respins explicit (HTTP=%s). "
+                                    "Reautentificare necesara.",
+                                    label,
+                                    self._last_refresh_status,
+                                )
+                            else:
+                                _LOGGER.warning(
+                                    "[%s] Token respins, iar refresh-ul E.ON a esuat temporar (%s).",
+                                    label,
+                                    self._last_refresh_error or "cauza necunoscuta",
+                                )
                             return None
 
-                    headers_retry = {**HEADERS, "Authorization": _authorization_value(self._access_token, self._token_type)}
+                    headers_retry = {
+                        **HEADERS,
+                        "Authorization": _authorization_value(
+                            self._access_token, self._token_type
+                        ),
+                    }
                     async with self._session.post(
                         URL_METER_SUBMIT,
                         json=payload,
@@ -1071,7 +1118,21 @@ class EonApiClient:
                                 return None
                             _LOGGER.debug("[%s] Răspuns retry transmitere index E.ON: HTTP=200, Body=%s", label, response_text_retry[:1000])
                             return data_retry
-                        _LOGGER.error("[%s] Eroare HTTP=%s la retry transmitere index. Body=%s", label, resp_retry.status, response_text_retry[:1000])
+
+                        if resp_retry.status == 401:
+                            self._reauth_required = True
+                            _LOGGER.error(
+                                "[%s] Tokenul proaspat reinnoit a fost respins din nou cu 401. "
+                                "Reautentificare necesara.",
+                                label,
+                            )
+                        else:
+                            _LOGGER.error(
+                                "[%s] Eroare HTTP=%s la retry transmitere index. Body=%s",
+                                label,
+                                resp_retry.status,
+                                response_text_retry[:1000],
+                            )
                         return None
 
                 _LOGGER.error("[%s] Eroare HTTP=%s, Body=%s", label, resp.status, response_text)
@@ -1099,13 +1160,30 @@ class EonApiClient:
             _LOGGER.debug("[%s] 401 dar tokenul a fost deja reînnoit. Retry.", label)
         else:
             if not await self.async_refresh_token(force=True):
-                self._reauth_required = True
-                _LOGGER.error("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
+                if self.refresh_failure_requires_reauth:
+                    self._reauth_required = True
+                    _LOGGER.error(
+                        "[%s] Token respins, iar refresh-ul E.ON a fost respins explicit (HTTP=%s). "
+                        "Reautentificare necesara.",
+                        label,
+                        self._last_refresh_status,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "[%s] Token respins, iar refresh-ul E.ON a esuat temporar (%s).",
+                        label,
+                        self._last_refresh_error or "cauza necunoscuta",
+                    )
                 return None
 
         resp_data, status = await self._do_request(method, url, label)
         if status == 401:
-            _LOGGER.error("[%s] A doua încercare a eșuat cu 401.", label)
+            self._reauth_required = True
+            _LOGGER.error(
+                "[%s] A doua încercare a eșuat cu 401 după refresh. "
+                "Reautentificare E.ON necesara.",
+                label,
+            )
             return None
 
         return resp_data
@@ -1125,13 +1203,30 @@ class EonApiClient:
             _LOGGER.debug("[%s] 401 dar tokenul a fost deja reînnoit. Retry.", label)
         else:
             if not await self.async_refresh_token(force=True):
-                self._reauth_required = True
-                _LOGGER.error("[%s] Token respins si refresh E.ON esuat. Reautentificare necesara prin Home Assistant.", label)
+                if self.refresh_failure_requires_reauth:
+                    self._reauth_required = True
+                    _LOGGER.error(
+                        "[%s] Token respins, iar refresh-ul E.ON a fost respins explicit (HTTP=%s). "
+                        "Reautentificare necesara.",
+                        label,
+                        self._last_refresh_status,
+                    )
+                else:
+                    _LOGGER.warning(
+                        "[%s] Token respins, iar refresh-ul E.ON a esuat temporar (%s).",
+                        label,
+                        self._last_refresh_error or "cauza necunoscuta",
+                    )
                 return None
 
         resp_data, status = await self._do_request("POST", url, label, json_payload=payload)
         if status == 401:
-            _LOGGER.error("[%s] A doua încercare a eșuat cu 401.", label)
+            self._reauth_required = True
+            _LOGGER.error(
+                "[%s] A doua încercare POST a eșuat cu 401 după refresh. "
+                "Reautentificare E.ON necesara.",
+                label,
+            )
             return None
 
         return resp_data
@@ -1217,10 +1312,32 @@ class EonApiClient:
                             _LOGGER.debug("[%s] Token reînnoit de alt apel. Retry pagină %s.", label, page)
                         else:
                             if not await self.async_refresh_token(force=True):
-                                self._reauth_required = True
+                                if self.refresh_failure_requires_reauth:
+                                    self._reauth_required = True
+                                    _LOGGER.error(
+                                        "[%s] Refresh E.ON respins explicit în timpul paginării (HTTP=%s).",
+                                        label,
+                                        self._last_refresh_status,
+                                    )
+                                else:
+                                    _LOGGER.warning(
+                                        "[%s] Refresh E.ON eșuat temporar în timpul paginării (%s).",
+                                        label,
+                                        self._last_refresh_error or "cauza necunoscuta",
+                                    )
                                 return results if results else None
                         retried = True
                         continue
+
+                    if resp.status == 401 and retried:
+                        self._reauth_required = True
+                        _LOGGER.error(
+                            "[%s] Tokenul proaspăt reînnoit a fost respins din nou cu 401 "
+                            "la pagina %s. Reautentificare necesară.",
+                            label,
+                            page,
+                        )
+                        return results if results else None
 
                     _LOGGER.error("[%s] Eroare HTTP=%s la pagina %s, Body=%s", label, resp.status, page, response_text)
                     break

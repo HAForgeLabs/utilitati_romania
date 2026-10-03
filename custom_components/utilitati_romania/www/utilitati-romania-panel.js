@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.3";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.3b1";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2248,18 +2248,40 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         }
         return bestScore >= minimumScore ? best : null;
       };
+      const exactByIdCont = (kind, predicate = null) => {
+        if (!idCont) return null;
+        return Object.values(states).find((stateObj) => {
+          if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return false;
+          const attrs = stateObj.attributes || {};
+          if (String(attrs.furnizor || "").toLowerCase() !== "eon") return false;
+          if (String(attrs.id_cont ?? "").trim() !== idCont) return false;
+          return predicate ? predicate(stateObj) : true;
+        }) || null;
+      };
+      const exactNumberByContext = exactByIdCont("number", (stateObj) => String(stateObj.attributes?.rol_registru || "consum") !== "injectie");
       const exactNumber = states[`number.${base}_index`] || states[`number.${base}_index_gaz`] || states[`number.${base}_index_energie_electrica`] || null;
-      const numberEntity = exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : bestEntity("number", 120);
-      let currentEntity = states[`sensor.${base}_index_contor`] || states[`sensor.${base}_index_energie_electrica`] || states[`sensor.${base}_index_gaz`] || null;
+      const numberEntity = exactNumberByContext || (!idCont && exactNumber && !isOtherProviderEntity(exactNumber) ? exactNumber : null) || (!idCont ? bestEntity("number", 120) : null);
+      let currentEntity = exactByIdCont("sensor", (stateObj) => {
+        const entityId = String(stateObj.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        return entityId.includes("index_contor") || entityId.includes("index_gaz") || entityId.includes("index_energie") || text.includes("index gaz") || text.includes("index energie");
+      });
+      if (!currentEntity && !idCont) currentEntity = states[`sensor.${base}_index_contor`] || states[`sensor.${base}_index_energie_electrica`] || states[`sensor.${base}_index_gaz`] || null;
       if (currentEntity && isOtherProviderEntity(currentEntity)) currentEntity = null;
-      if (!currentEntity) currentEntity = bestEntity("sensor", 120);
+      if (!currentEntity && !idCont) currentEntity = bestEntity("sensor", 120);
+      const exactButtonByContext = exactByIdCont("button", (stateObj) => {
+        const entityId = String(stateObj.entity_id || "").toLowerCase();
+        const text = this._entityFriendlyText(stateObj);
+        return entityId.includes("trimite_index") || text.includes("trimite index");
+      });
       const exactButton = states[`button.${base}_trimite_index`] || states[`button.${base}_trimite_index_gaz`] || states[`button.${base}_trimite_index_energie_electrica`] || null;
-      const buttonEntity = exactButton && !isOtherProviderEntity(exactButton) ? exactButton : bestEntity("button", 120);
+      const buttonEntity = exactButtonByContext || (!idCont && exactButton && !isOtherProviderEntity(exactButton) ? exactButton : null) || (!idCont ? bestEntity("button", 120) : null);
       if (numberEntity && buttonEntity) controls.push({ key: `${providerKey}_${provider.id_cont || base}`, providerKey, label: wantsGas ? "Index gaz" : "Index consum", numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: currentEntity?.entity_id || null });
       if (wantsElectric) {
         const injectionNumber = states[`number.${base}_index_injectie`] || Object.values(states).find((stateObj) => {
           if (!stateObj?.entity_id?.startsWith("number.")) return false;
           const attrs = stateObj.attributes || {};
+          if (String(attrs.furnizor || "").toLowerCase() !== "eon") return false;
           if (String(attrs.rol_registru ?? "") !== "injectie") return false;
           const stateIdCont = String(attrs.id_cont ?? "").trim();
           if (idCont && stateIdCont && stateIdCont === idCont) return true;
