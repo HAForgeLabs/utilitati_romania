@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.4";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.5";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -40,6 +40,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._readingCache.clear();
     this._ensureDashboardPayloadLoaded();
     if ((this._isReadingInputActive() && !this._hasPendingReadingAction()) || this._isInvoiceGroupingSelectActive()) {
       return;

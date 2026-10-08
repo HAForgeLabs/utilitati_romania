@@ -2354,34 +2354,42 @@ class SenzorContEon(EntitateUtilitatiRomania, SensorEntity):
         _aplica_unitate_cost_mediu(self, cont)
 
     @property
-    def available(self):
+    def _cont_actual(self):
         if self.coordinator.data is None:
-            return False
-        return any(getattr(cont, "id_cont", None) == getattr(self.cont, "id_cont", None) for cont in self.coordinator.data.conturi)
+            return self.cont
+        return _cont_curent_din_instantaneu(self.coordinator.data, self.cont)
+
+    @property
+    def available(self):
+        return _cont_curent_dupa_id(
+            self.coordinator,
+            getattr(self.cont, "id_cont", None),
+        ) is not None
 
     @property
     def native_value(self):
         if self.coordinator.data is None:
             return None
+        cont = self._cont_actual
         if self.entity_description.key == "index_contor":
-            cont_curent = _cont_curent_din_instantaneu(self.coordinator.data, self.cont)
-            raw = _date_brute_cont(cont_curent)
+            raw = _date_brute_cont(cont)
             if not raw.get("registre_index"):
                 return None
-        return self.entity_description.functie_valoare(self.coordinator.data, self.cont)
+        return self.entity_description.functie_valoare(self.coordinator.data, cont)
 
     @property
     def extra_state_attributes(self):
+        cont = self._cont_actual
         attrs = {
-            "id_cont": self.cont.id_cont,
-            "nume_cont": self.cont.nume,
-            "tip_serviciu": self.cont.tip_serviciu,
-            "tip_utilitate": self.cont.tip_utilitate,
-            "serviciu_eon": cheie_serviciu_eon(self.cont),
-            "identificator_eon": id_unic_eon(self.cont),
-            "adresa": self.cont.adresa,
+            "id_cont": cont.id_cont,
+            "nume_cont": cont.nume,
+            "tip_serviciu": cont.tip_serviciu,
+            "tip_utilitate": cont.tip_utilitate,
+            "serviciu_eon": cheie_serviciu_eon(cont),
+            "identificator_eon": id_unic_eon(cont),
+            "adresa": cont.adresa,
         }
-        raw = _date_brute_cont(self.cont)
+        raw = _date_brute_cont(cont)
         if self.entity_description.key == "urmatoarea_scadenta":
             attrs["cod_contract"] = raw.get("cod_contract")
         elif self.entity_description.key == "citire_permisa":
@@ -2431,20 +2439,27 @@ class SenzorContEonExtins(EntitateUtilitatiRomania, SensorEntity):
         _aplica_unitate_cost_mediu(self, cont)
 
     @property
+    def _cont_actual(self):
+        if self.coordinator.data is None:
+            return self.cont
+        return _cont_curent_din_instantaneu(self.coordinator.data, self.cont)
+
+    @property
     def native_value(self):
-        return self.entity_description.functie_valoare(self.cont)
+        return self.entity_description.functie_valoare(self._cont_actual)
 
     @property
     def extra_state_attributes(self):
-        raw = _date_brute_cont(self.cont)
+        cont = self._cont_actual
+        raw = _date_brute_cont(cont)
         attrs = {
-            "id_cont": self.cont.id_cont,
-            "nume_cont": self.cont.nume,
-            "tip_serviciu": self.cont.tip_serviciu,
-            "tip_utilitate": self.cont.tip_utilitate,
-            "serviciu_eon": cheie_serviciu_eon(self.cont),
-            "identificator_eon": id_unic_eon(self.cont),
-            "adresa": self.cont.adresa,
+            "id_cont": cont.id_cont,
+            "nume_cont": cont.nume,
+            "tip_serviciu": cont.tip_serviciu,
+            "tip_utilitate": cont.tip_utilitate,
+            "serviciu_eon": cheie_serviciu_eon(cont),
+            "identificator_eon": id_unic_eon(cont),
+            "adresa": cont.adresa,
         }
 
         if self.entity_description.key == "date_contract":

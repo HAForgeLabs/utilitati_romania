@@ -27,6 +27,8 @@ from .baza import ClientFurnizor
 
 _LOGGER = logging.getLogger(__name__)
 
+APA_CANAL_READING_START_DAY = 25
+
 URL_BAZA = "https://portal.apacansb.ro"
 URL_LOGIN_APLICATIE = f"{URL_BAZA}/sap/bc/ui5_ui5/sap/UMCUI5_MOBILE/index.html"
 URL_SERVICIU = f"{URL_BAZA}/sap/opu/odata/sap/ERP_UTILITIES_UMC/"
@@ -612,27 +614,32 @@ class ApiApaCanal:
                 if register_id:
                     registers.append(self._normalize_register_to_read(item, device))
 
-        is_open = bool(registers)
         today = datetime.now(timezone.utc).date()
-        start_date = (billing_period or {}).get("start_date")
-        end_date = (billing_period or {}).get("end_date")
-        if is_open and not start_date:
-            start_date = today.isoformat()
-        if is_open and not end_date:
-            end_date = _last_day_of_month(today).isoformat()
+        reading_start = today.replace(day=APA_CANAL_READING_START_DAY)
+        reading_end = _last_day_of_month(today)
+        has_registers = bool(registers)
+        is_open = has_registers and reading_start <= today <= reading_end
 
-        period = None
-        if is_open:
-            period = _format_meter_reading_period(start_date, end_date)
-        elif start_date and end_date:
-            period = _format_meter_reading_period(start_date, end_date)
+        start_date = reading_start.isoformat()
+        end_date = reading_end.isoformat()
+        period = _format_meter_reading_period(start_date, end_date)
+
+        if today < reading_start:
+            days_until_open = (reading_start - today).days
+        elif today <= reading_end:
+            days_until_open = 0
+        else:
+            next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+            next_start = next_month.replace(day=APA_CANAL_READING_START_DAY)
+            days_until_open = (next_start - today).days
 
         return {
-            "available": bool(is_open or (start_date and end_date)),
+            "available": has_registers,
             "is_open": is_open,
             "start_date": start_date,
             "end_date": end_date,
             "period": period,
+            "days_until_open": days_until_open,
             "contract_id": contract_id,
             "registers": registers,
         }
@@ -990,7 +997,7 @@ class ClientFurnizorApaCanal(ClientFurnizor):
         consumuri.append(
             ConsumUtilitate(
                 cheie="zile_pana_citire_index",
-                valoare=0 if citire_permisa else None,
+                valoare=fereastra_index.get("days_until_open"),
                 unitate="zile",
                 perioada=fereastra_index.get("period"),
                 id_cont=account_id,
