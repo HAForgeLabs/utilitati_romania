@@ -31,6 +31,22 @@ ANTETE_WEB_EBLOC = {
 }
 
 
+def _este_raspuns_neautentificat(text: str) -> bool:
+    continut = str(text or "").strip().lower()
+    if not continut:
+        return False
+
+    if continut in {"nologin", "not_logged", "notlogged", "unauthorized"}:
+        return True
+
+    # e-bloc poate redirecționa silențios la formularul de login și răspunde 200.
+    return (
+        "puser" in continut
+        and "ppass" in continut
+        and ("profil=0" in continut or "index.php?profil=0" in continut)
+    )
+
+
 class EroareApiEbloc(Exception):
     pass
 
@@ -113,6 +129,21 @@ class ClientApiEbloc:
         self._luna_curenta: str | None = None
         self._date_info: dict[str, Any] = {}
 
+    def _reseteaza_sesiunea_portal(self) -> None:
+        self._id_sesiune = None
+        self._id_utilizator = None
+        self._asociatii = []
+        self._apartamente = {}
+        self._drepturi = {}
+        self._luna_curenta = None
+        self._date_info = {}
+        self._sesiune.cookie_jar.clear()
+
+    async def _reautentifica_portal(self) -> None:
+        self._reseteaza_sesiunea_portal()
+        await self.async_login()
+        await self.async_descopera_conturi()
+
     async def close(self) -> None:
         await self.async_inchide_sesiunea_curenta()
         if not self._sesiune.closed:
@@ -176,6 +207,10 @@ class ClientApiEbloc:
                     raise EroareAutentificareEbloc(f"Sesiune web e-bloc.ro invalidă pentru {endpoint}")
                 if raspuns.status >= 400:
                     raise EroareConectareEbloc(f"HTTP {raspuns.status} pentru {endpoint}: {text[:300]}")
+                if _este_raspuns_neautentificat(text):
+                    raise EroareAutentificareEbloc(
+                        f"Sesiune web e-bloc.ro expirată pentru {endpoint}"
+                    )
                 try:
                     data = await raspuns.json(content_type=None)
                 except Exception as err:
@@ -211,6 +246,10 @@ class ClientApiEbloc:
                     raise EroareAutentificareEbloc(f"Sesiune web e-bloc.ro invalidă pentru {endpoint}")
                 if raspuns.status >= 400:
                     raise EroareConectareEbloc(f"HTTP {raspuns.status} pentru {endpoint}: {text[:300]}")
+                if _este_raspuns_neautentificat(text):
+                    raise EroareAutentificareEbloc(
+                        f"Sesiune web e-bloc.ro expirată pentru {endpoint}"
+                    )
                 return text
         except EroareApiEbloc:
             raise
@@ -236,6 +275,10 @@ class ClientApiEbloc:
                     raise EroareAutentificareEbloc(f"Sesiune web e-bloc.ro invalidă pentru pagina {cale}")
                 if raspuns.status >= 400:
                     raise EroareConectareEbloc(f"HTTP {raspuns.status} pentru pagina {cale}")
+                if _este_raspuns_neautentificat(text):
+                    raise EroareAutentificareEbloc(
+                        f"Sesiune web e-bloc.ro expirată pentru pagina {cale}"
+                    )
                 return text
         except EroareApiEbloc:
             raise
@@ -306,6 +349,75 @@ class ClientApiEbloc:
         }
 
     async def async_obtine_date(self) -> dict[str, Any]:
+        ultima_eroare: Exception | None = None
+
+        for incercare in range(2):
+            try:
+                date = await self._async_obtine_date_o_data()
+                lipsa = self._apartamente_fara_home_info(date)
+                if not lipsa:
+                    return date
+
+                ultima_eroare = EroareRaspunsEbloc(
+                    "Portalul e-bloc.ro nu a returnat datele principale pentru "
+                    f"{len(lipsa)} apartament(e): {', '.join(lipsa[:5])}"
+                )
+
+                if incercare == 0:
+                    _LOGGER.warning(
+                        "Date e-bloc.ro suspect de goale pentru %s apartament(e). "
+                        "Se reface sesiunea și se repetă actualizarea o singură dată.",
+                        len(lipsa),
+                    )
+                    await self._reautentifica_portal()
+                    continue
+                break
+
+            except EroareAutentificareEbloc as err:
+                ultima_eroare = err
+                if incercare == 0:
+                    _LOGGER.warning(
+                        "Sesiunea e-bloc.ro a expirat. "
+                        "Se reautentifică și se repetă actualizarea o singură dată."
+                    )
+                    await self._reautentifica_portal()
+                    continue
+                break
+
+        if isinstance(ultima_eroare, EroareAutentificareEbloc):
+            raise ultima_eroare
+
+        raise EroareRaspunsEbloc(
+            str(ultima_eroare)
+            if ultima_eroare
+            else "e-bloc.ro nu a furnizat date valide după reautentificare"
+        )
+
+    def _apartamente_fara_home_info(self, date: dict[str, Any]) -> list[str]:
+        pachete = date.get("date_apartamente") or {}
+        lipsa: list[str] = []
+
+        for id_asociatie, apartamente in self._apartamente.items():
+            for apartament in apartamente:
+                id_apartament = str(
+                    apartament.get("id_ap") or apartament.get("id") or ""
+                ).strip()
+                if not id_apartament or id_apartament == "0":
+                    continue
+
+                cheie = f"{id_asociatie}:{id_apartament}"
+                pachet = pachete.get(cheie)
+                if not isinstance(pachet, dict):
+                    lipsa.append(cheie)
+                    continue
+
+                home_info = pachet.get("home_info_web")
+                if not isinstance(home_info, dict) or not home_info:
+                    lipsa.append(cheie)
+
+        return lipsa
+
+    async def _async_obtine_date_o_data(self) -> dict[str, Any]:
         if not self._apartamente:
             await self.async_descopera_conturi()
 
@@ -404,6 +516,8 @@ class ClientApiEbloc:
     async def _obtine_web_sigur(self, endpoint: str, parametri: dict[str, Any]) -> dict[str, Any]:
         try:
             return await self._cerere_web(endpoint, parametri)
+        except EroareAutentificareEbloc:
+            raise
         except Exception as err:
             _LOGGER.debug("Endpoint web e-bloc.ro indisponibil %s: %s", endpoint, err)
             return {}
@@ -411,6 +525,8 @@ class ClientApiEbloc:
     async def _obtine_pagina_web_sigur(self, cale: str) -> str:
         try:
             return await self._pagina_web(cale)
+        except EroareAutentificareEbloc:
+            raise
         except Exception as err:
             _LOGGER.debug("Pagina web e-bloc.ro indisponibilă %s: %s", cale, err)
             return ""
