@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.0";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.0b3";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2169,6 +2169,46 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return { isOpen: explicitOpen || openByRange || truthyState, start: startRaw || null, end: endRaw || null };
   }
 
+  _premierIndexControls(provider, readingSensor = null) {
+    const states = Object.values(this._hass?.states || {});
+    const premier = (domain) => states.filter((state) =>
+      state?.entity_id?.startsWith(`${domain}.`) &&
+      this._normalizeText(state.attributes?.furnizor) === this._normalizeText("premier_energy")
+    );
+    const numbers = premier("number");
+    const buttons = premier("button");
+    const targetIds = [provider?.id_cont, readingSensor?.attributes?.id_cont]
+      .filter((id) => id !== undefined && id !== null && String(id).trim())
+      .map((id) => String(id).trim());
+    const matching = (statesList) => statesList.filter((state) =>
+      targetIds.includes(String(state.attributes?.id_cont ?? "").trim())
+    );
+    let matchingNumbers = matching(numbers);
+    let matchingButtons = matching(buttons);
+    // A unique pair is unambiguous even when the invoice's identifier differs
+    // from the location identifier. Never guess between multiple accounts.
+    if ((!matchingNumbers.length || !matchingButtons.length) && numbers.length === 1 && buttons.length === 1) {
+      matchingNumbers = numbers;
+      matchingButtons = buttons;
+    }
+    if (matchingNumbers.length !== 1 || matchingButtons.length !== 1) return [];
+    const numberState = matchingNumbers[0];
+    const buttonState = matchingButtons[0];
+    if (String(numberState.attributes?.id_cont ?? "") !== String(buttonState.attributes?.id_cont ?? "")) return [];
+    return [{
+      key: `premier_energy_${numberState.attributes?.id_cont ?? "index"}`,
+      providerKey: "premier_energy",
+      label: "Index de transmis (m³)",
+      numberEntityId: numberState.entity_id,
+      buttonEntityId: buttonState.entity_id,
+      currentEntityId: null,
+      numberState,
+      currentState: null,
+      unit: numberState.attributes?.unit_of_measurement || "m³",
+      currentValue: null,
+    }];
+  }
+
   _deriveControlsFromReadingSensor(location, provider, readingSensor) {
     if (!readingSensor) return [];
     const providerKey = this._providerKey(provider);
@@ -2180,17 +2220,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const controls = [];
 
     if (providerKey === "premier_energy") {
-      const idCont = String(provider?.id_cont ?? readingSensor.attributes?.id_cont ?? "").trim();
-      const entityMatches = (item, kind) => item?.entity_id?.startsWith(`${kind}.`) &&
-        String(item.attributes?.furnizor || "") === "premier_energy" &&
-        String(item.attributes?.id_cont || "") === idCont;
-      const numberEntity = Object.values(states).find((item) => entityMatches(item, "number") && item.entity_id.includes("index_de_transmis"));
-      const buttonEntity = Object.values(states).find((item) => entityMatches(item, "button") && item.entity_id.includes("trimite_index"));
-      if (numberEntity && buttonEntity) controls.push({
-        key: `premier_energy_${idCont}`, providerKey, label: "Index de transmis (m³)",
-        numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: null,
-      });
-      return controls;
+      return this._premierIndexControls(provider, readingSensor);
     }
 
     if (providerKey === "hidroelectrica") {
@@ -2493,7 +2523,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const end = parseRo(pieces[1]);
       const now = this._todayDate();
       const isOpen = !!(start && end && now >= start && now <= end);
-      const result = { available: true, isOpen, controls: [], start, end, period,
+      const controls = this._premierIndexControls(provider);
+      const result = { available: true, isOpen, controls, start, end, period,
         badge: isOpen ? "Citire deschisă" : "În afara perioadei",
         readingSensorEntityId: null };
       this._readingCache.set(cacheKey, result);
