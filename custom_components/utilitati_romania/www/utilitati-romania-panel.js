@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.6";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.0";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2018,6 +2018,37 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return this._makeKey("invoice", location?.locatie_cheie || location?.eticheta_locatie || "locatie", this._providerName(provider), this._providerInvoice(provider), this._providerDue(provider), this._providerAmount(provider));
   }
 
+  async _downloadPremierInvoice(button) {
+    if (!this._hass?.callWS || button.disabled) return;
+    const entryId = button.dataset.premierEntry || "";
+    const invoiceId = button.dataset.premierInvoice || "";
+    if (!entryId || !/^[0-9]{1,32}$/.test(invoiceId)) return;
+    button.disabled = true;
+    try {
+      const response = await this._hass.callWS({
+        type: "utilitati_romania/premier_invoice_pdf",
+        entry_id: entryId,
+        invoice_id: invoiceId,
+      });
+      const raw = atob(response.content_base64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = response.filename || `premier-energy-${invoiceId}.pdf`;
+      this.shadowRoot.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    } catch (error) {
+      console.error("Premier Energy: eroare descărcare PDF", error);
+      alert("Factura Premier Energy nu a putut fi descărcată. Verifică jurnalul Home Assistant.");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   _invoiceRow(location, provider, grouping = "location") {
     const status = this._status(provider);
     const due = this._providerDue(provider);
@@ -2028,6 +2059,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const utilityType = this._providerUtilityType(provider);
     const utilityLine = utilityType ? `<span class="invoice-utility">${this._escape(utilityType)}</span>` : "";
     const documentNumber = this._providerDocumentNumber(provider);
+    const pdfButton = this._providerKey(provider) === "premier_energy" && provider?.pdf_available && provider?.entry_id && /^[0-9]{1,32}$/.test(String(provider?.invoice_id || ""))
+      ? `<button class="provider-app-action" data-premier-entry="${this._escape(provider.entry_id)}" data-premier-invoice="${this._escape(provider.invoice_id)}" title="Descarcă factura PDF"><ha-icon icon="mdi:file-pdf-box"></ha-icon><span>Descarcă PDF</span></button>`
+      : "";
     const documentMeta = documentNumber ? `<div class="invoice-meta invoice-document-meta"><span>Document</span><strong>${this._escape(documentNumber)}</strong></div>` : "";
     const displayName = this._providerDisplayName(location, provider);
     const locationLine = this._invoiceLocationLine(location, provider, displayName, grouping);
@@ -2044,6 +2078,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           <div class="invoice-meta amount"><span>Valoare</span><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong></div>
           <span class="pill ${status}">${this._escape(this._statusLabel(status))}</span>
           <div class="invoice-actions">
+            ${pdfButton}
             ${this._renderOpenProviderButton(provider)}
             ${this._renderRefreshButton(provider)}
           </div>
@@ -2070,7 +2105,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "ppc", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) return null;
+    if (!providerKey || !["hidroelectrica", "ppc", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova", "premier_energy"].includes(providerKey)) return null;
 
     const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
       if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
@@ -2143,6 +2178,20 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const readingText = this._entityFriendlyText(readingSensor);
     const terms = this._readingTerms(location, provider);
     const controls = [];
+
+    if (providerKey === "premier_energy") {
+      const idCont = String(provider?.id_cont ?? readingSensor.attributes?.id_cont ?? "").trim();
+      const entityMatches = (item, kind) => item?.entity_id?.startsWith(`${kind}.`) &&
+        String(item.attributes?.furnizor || "") === "premier_energy" &&
+        String(item.attributes?.id_cont || "") === idCont;
+      const numberEntity = Object.values(states).find((item) => entityMatches(item, "number") && item.entity_id.includes("index_de_transmis"));
+      const buttonEntity = Object.values(states).find((item) => entityMatches(item, "button") && item.entity_id.includes("trimite_index"));
+      if (numberEntity && buttonEntity) controls.push({
+        key: `premier_energy_${idCont}`, providerKey, label: "Index de transmis (m³)",
+        numberEntityId: numberEntity.entity_id, buttonEntityId: buttonEntity.entity_id, currentEntityId: null,
+      });
+      return controls;
+    }
 
     if (providerKey === "hidroelectrica") {
       const base = sensorObject.replace(/_citire_permisa$/, "");
@@ -2429,6 +2478,24 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         badge,
       };
 
+      this._readingCache.set(cacheKey, result);
+      return result;
+    }
+
+    if (providerKey === "premier_energy" && provider?.reading_available && provider?.reading_period) {
+      const period = String(provider.reading_period);
+      const pieces = period.split(/\s+-\s+/);
+      const parseRo = (value) => {
+        const match = String(value || "").trim().match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1])) : null;
+      };
+      const start = parseRo(pieces[0]);
+      const end = parseRo(pieces[1]);
+      const now = this._todayDate();
+      const isOpen = !!(start && end && now >= start && now <= end);
+      const result = { available: true, isOpen, controls: [], start, end, period,
+        badge: isOpen ? "Citire deschisă" : "În afara perioadei",
+        readingSensorEntityId: null };
       this._readingCache.set(cacheKey, result);
       return result;
     }
@@ -3849,6 +3916,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       return;
     }
 
+    if (providerKey === "premier_energy" && !window.confirm(`Transmiți indexul ${numericValue} pentru Premier Energy? Operațiunea înregistrează o citire reală.`)) return;
+
     this._actions.set(actionKey, { status: "busy", message: "" });
     this._render();
 
@@ -3873,7 +3942,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         await this._hass.callService("button", "press", { entity_id: buttonEntityId });
       }
       this._readingDrafts.delete(buttonEntityId || numberEntityId);
-      this._actions.set(actionKey, { status: "ok", message: "Comanda de transmitere a indexului a fost trimisă. Verifică ulterior portalul furnizorului sau următorul refresh pentru confirmarea finală." });
+      this._actions.set(actionKey, { status: "ok", message: providerKey === "premier_energy" ? "Premier Energy a confirmat înregistrarea indexului. Numărul de confirmare este disponibil în notificări." : "Comanda de transmitere a indexului a fost trimisă. Verifică ulterior portalul furnizorului sau următorul refresh pentru confirmarea finală." });
     } catch (err) {
       this._actions.set(actionKey, { status: "error", message: err?.message || "Transmiterea indexului a eșuat." });
     }
@@ -3960,6 +4029,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         if (this._expandedInvoices.has(key)) this._expandedInvoices.delete(key);
         else this._expandedInvoices.add(key);
         this._render();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-premier-invoice]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this._downloadPremierInvoice(button);
       });
     });
     const invoiceGrouping = this.shadowRoot.querySelector("[data-invoice-grouping]");

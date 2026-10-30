@@ -245,7 +245,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                         else:
                             return await self.async_step_selectare_contract_apa_brasov()
                 else:
-                    sesiune_dedicata = self._furnizor in {"deo", "retele_electrice"}
+                    sesiune_dedicata = self._furnizor in {"deo", "retele_electrice", "premier_energy"}
                     sesiune = (
                         _creeaza_sesiune_dedicata(self.hass)
                         if sesiune_dedicata
@@ -259,12 +259,16 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                     )
                     try:
                         unic = await client.async_testeaza_conexiunea()
-                    except EroareAutentificare:
+                    except EroareAutentificare as err:
+                        if self._furnizor == "premier_energy":
+                            _LOGGER.warning("Premier Energy diagnostic: autentificare respinsă: %s", err)
                         erori["base"] = "autentificare_esuata"
-                    except EroareConectare:
+                    except EroareConectare as err:
+                        if self._furnizor == "premier_energy":
+                            _LOGGER.warning("Premier Energy diagnostic: conectare eșuată: %s", err)
                         erori["base"] = "nu_se_poate_conecta"
                     except Exception:
-                        _LOGGER.exception("Eroare neașteptată în fluxul de configurare")
+                        _LOGGER.exception("Eroare neașteptată în fluxul de configurare pentru %s", self._furnizor)
                         erori["base"] = "necunoscuta"
                     else:
                         await self.async_set_unique_id(f"{self._furnizor}::{unic}")
@@ -1116,7 +1120,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                         return await self._finalizeaza_reauth_digi()
 
             else:
-                sesiune_dedicata = self._furnizor in {"deo", "retele_electrice"}
+                sesiune_dedicata = self._furnizor in {"deo", "retele_electrice", "premier_energy"}
                 sesiune = (
                     _creeaza_sesiune_dedicata(self.hass)
                     if sesiune_dedicata

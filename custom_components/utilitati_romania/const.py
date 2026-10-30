@@ -71,6 +71,7 @@ FURNIZOR_AQUATIM = "aquatim"
 FURNIZOR_COMPREST = "comprest"
 FURNIZOR_ENGIE = "engie"
 FURNIZOR_PPC = "ppc"
+FURNIZOR_PREMIER_ENERGY = "premier_energy"
 
 CONF_DATE_TOKEN_EON = "date_token_eon"
 

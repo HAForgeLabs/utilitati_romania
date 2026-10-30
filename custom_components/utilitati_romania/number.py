@@ -194,6 +194,10 @@ async def async_setup_entry(
             for cont in coordonator.data.conturi:
                 entitati.append(NumarIndexHidro(coordonator, cont))
 
+        elif coordonator.data.furnizor == "premier_energy":
+            for cont in coordonator.data.conturi:
+                entitati.append(NumarIndexPremier(coordonator, cont))
+
         elif coordonator.data.furnizor == "eon":
             for cont in coordonator.data.conturi:
                 registre = _registre_eon(cont)
@@ -689,3 +693,40 @@ def _valoare_consum_curent_text(coordonator: CoordonatorUtilitatiRomania, id_con
         valoare = getattr(consum, "valoare", None)
         return str(valoare) if valoare is not None else None
     return None
+
+
+class NumarIndexPremier(EntitateUtilitatiRomania, RestoreNumber):
+    _attr_native_min_value = 0
+    _attr_native_max_value = 99999999
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = "m³"
+    _attr_icon = "mdi:counter"
+    _attr_mode = "box"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_premier_{cont.id_cont}_index_de_transmis"
+        self._attr_name = "Index de transmis"
+        self._attr_native_value = 0
+        self._attr_device_info = {
+            "identifiers": {(DOMENIU, f"{coordonator.intrare.entry_id}_premier_energy_{cont.id_cont}")},
+        }
+
+    @property
+    def extra_state_attributes(self):
+        return {"furnizor": "premier_energy", "id_cont": self.cont.id_cont}
+
+    @property
+    def available(self) -> bool:
+        return super().available and _citire_permisa_curenta(self.coordinator, self.cont.id_cont)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        previous = await self.async_get_last_number_data()
+        if previous and previous.native_value is not None:
+            self._attr_native_value = int(previous.native_value)
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._attr_native_value = int(value)
+        self.async_write_ha_state()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -236,6 +237,49 @@ async def _websocket_dashboard_payload(hass, connection, msg):
     if not isinstance(payload, dict):
         payload = {"locatii": []}
     connection.send_result(msg["id"], payload)
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "utilitati_romania/premier_invoice_pdf",
+    vol.Required("entry_id"): str,
+    vol.Required("invoice_id"): str,
+})
+@websocket_api.async_response
+async def _websocket_premier_invoice_pdf(hass, connection, msg):
+    entry_id = msg["entry_id"]
+    invoice_id = msg["invoice_id"]
+    if not re.fullmatch(r"[0-9]{1,32}", invoice_id):
+        connection.send_error(msg["id"], "invalid_invoice", "Identificatorul facturii este invalid")
+        return
+
+    coordinator = hass.data.get(DOMENIU, {}).get(entry_id)
+    if (
+        not isinstance(coordinator, CoordonatorUtilitatiRomania)
+        or coordinator.cheie_furnizor != "premier_energy"
+        or coordinator.data is None
+        or not any(
+            str(f.id_factura) == invoice_id
+            and bool((f.date_brute or {}).get("exista_pdf"))
+            for f in coordinator.data.facturi
+        )
+    ):
+        connection.send_error(msg["id"], "invoice_not_found", "Factura nu aparține contului selectat sau nu are PDF")
+        return
+
+    api = getattr(coordinator.client, "api", None)
+    if api is None:
+        connection.send_error(msg["id"], "provider_unavailable", "Clientul Premier Energy nu este disponibil")
+        return
+    try:
+        pdf = await api.async_descarca_factura(invoice_id)
+    except Exception:
+        _LOGGER.exception("Premier Energy: descărcarea PDF a eșuat pentru intrarea %s", entry_id)
+        connection.send_error(msg["id"], "download_failed", "Nu s-a putut descărca factura de la furnizor")
+        return
+    connection.send_result(msg["id"], {
+        "filename": f"premier-energy-factura-{invoice_id}.pdf",
+        "content_base64": base64.b64encode(pdf).decode("ascii"),
+    })
+
 
 def _slug_legacy(text: str | None) -> str:
     value = str(text or "cont").lower()
@@ -617,6 +661,12 @@ def _admin_notify_select_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> s
 
 def _provider_open_target(provider: str | None) -> dict[str, str] | None:
     key = str(provider or "").strip().lower()
+
+    if key == "premier_energy":
+        return {
+            "mode": "url",
+            "fallback": "https://my.premierenergy.ro/",
+        }
 
     if key == "digi":
         return {
@@ -1094,6 +1144,7 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMENIU, SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS, _async_handle_set_distribution_supplier_links)
     websocket_api.async_register_command(hass, _websocket_distribution_supplier_links)
     websocket_api.async_register_command(hass, _websocket_dashboard_payload)
+    websocket_api.async_register_command(hass, _websocket_premier_invoice_pdf)
     hass.data[DOMENIU]["_services_registered"] = True
 
 

@@ -23,6 +23,7 @@ from .nova import ClientFurnizorNova
 from .orange import ClientFurnizorOrange
 from .polaris import ClientFurnizorPolaris
 from .ppc import ClientFurnizorPpc
+from .premier_energy import ClientFurnizorPremierEnergy
 from .rervest import ClientFurnizorRerVest
 from .retim import ClientFurnizorRetim
 from .retele_electrice import ClientFurnizorReteleElectrice
@@ -49,6 +50,7 @@ FURNIZORI: dict[str, type[ClientFurnizor]] = {
     ClientFurnizorOrange.cheie_furnizor: ClientFurnizorOrange,
     ClientFurnizorPolaris.cheie_furnizor: ClientFurnizorPolaris,
     ClientFurnizorPpc.cheie_furnizor: ClientFurnizorPpc,
+    ClientFurnizorPremierEnergy.cheie_furnizor: ClientFurnizorPremierEnergy,
     ClientFurnizorRerVest.cheie_furnizor: ClientFurnizorRerVest,
     ClientFurnizorRetim.cheie_furnizor: ClientFurnizorRetim,
     ClientFurnizorEngie.cheie_furnizor: ClientFurnizorEngie,

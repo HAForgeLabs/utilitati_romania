@@ -67,7 +67,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         # Pentru acestea nu folosim sesiunea globala Home Assistant, deoarece doua
         # config entry-uri ale aceluiasi furnizor pot ajunge sa imparta acelasi
         # cookie jar si sa citeasca datele altui cont.
-        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati", "eon", "deo", "retele_electrice"}
+        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati", "eon", "deo", "retele_electrice", "premier_energy"}
         self.sesiune: ClientSession = (
             async_create_clientsession(
                 hass,
@@ -502,6 +502,23 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             etapa = time.monotonic()
             instantaneu = await self.client.async_obtine_instantaneu()
             _log_temporar("[UR UPDATE DIAG] furnizor entry=%s furnizor=%s durata=%.3fs", self.intrare.entry_id, self.cheie_furnizor, time.monotonic() - etapa)
+
+            # Furnizorii cu locuri de consum deja confirmate nu trebuie să
+            # înlocuiască starea validă cu o listă goală tranzitorie.
+            if self.cheie_furnizor in {"ebloc", "retele_electrice"}:
+                conturi_anterioare = getattr(self.data, "conturi", None) or []
+                conturi_noi = getattr(instantaneu, "conturi", None) or []
+                if conturi_anterioare and not conturi_noi:
+                    _LOGGER.warning(
+                        "Actualizare respinsă pentru %s: 0 locuri de consum, anterior %s. "
+                        "Se păstrează ultima stare validă și se va reîncerca.",
+                        self.cheie_furnizor,
+                        len(conturi_anterioare),
+                    )
+                    raise UpdateFailed(
+                        f"{self.cheie_furnizor}: lista locurilor de consum a devenit goală "
+                        "după o actualizare validă"
+                    )
 
             try:
                 snapshot = self._construieste_snapshot_notificari(instantaneu)
