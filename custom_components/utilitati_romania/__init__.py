@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import re
@@ -72,7 +71,7 @@ def _log_temporar(*_args, **_kwargs) -> None:
     return None
 
 
-_FRONTEND_VERSION = "1.19.0b3"
+_FRONTEND_VERSION = "1.18.10"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -237,49 +236,6 @@ async def _websocket_dashboard_payload(hass, connection, msg):
     if not isinstance(payload, dict):
         payload = {"locatii": []}
     connection.send_result(msg["id"], payload)
-
-@websocket_api.websocket_command({
-    vol.Required("type"): "utilitati_romania/premier_invoice_pdf",
-    vol.Required("entry_id"): str,
-    vol.Required("invoice_id"): str,
-})
-@websocket_api.async_response
-async def _websocket_premier_invoice_pdf(hass, connection, msg):
-    entry_id = msg["entry_id"]
-    invoice_id = msg["invoice_id"]
-    if not re.fullmatch(r"[0-9]{1,32}", invoice_id):
-        connection.send_error(msg["id"], "invalid_invoice", "Identificatorul facturii este invalid")
-        return
-
-    coordinator = hass.data.get(DOMENIU, {}).get(entry_id)
-    if (
-        not isinstance(coordinator, CoordonatorUtilitatiRomania)
-        or coordinator.cheie_furnizor != "premier_energy"
-        or coordinator.data is None
-        or not any(
-            str(f.id_factura) == invoice_id
-            and bool((f.date_brute or {}).get("exista_pdf"))
-            for f in coordinator.data.facturi
-        )
-    ):
-        connection.send_error(msg["id"], "invoice_not_found", "Factura nu aparține contului selectat sau nu are PDF")
-        return
-
-    api = getattr(coordinator.client, "api", None)
-    if api is None:
-        connection.send_error(msg["id"], "provider_unavailable", "Clientul Premier Energy nu este disponibil")
-        return
-    try:
-        pdf = await api.async_descarca_factura(invoice_id)
-    except Exception:
-        _LOGGER.exception("Premier Energy: descărcarea PDF a eșuat pentru intrarea %s", entry_id)
-        connection.send_error(msg["id"], "download_failed", "Nu s-a putut descărca factura de la furnizor")
-        return
-    connection.send_result(msg["id"], {
-        "filename": f"premier-energy-factura-{invoice_id}.pdf",
-        "content_base64": base64.b64encode(pdf).decode("ascii"),
-    })
-
 
 def _slug_legacy(text: str | None) -> str:
     value = str(text or "cont").lower()
@@ -661,12 +617,6 @@ def _admin_notify_select_entity_id(hass: HomeAssistant, entry: ConfigEntry) -> s
 
 def _provider_open_target(provider: str | None) -> dict[str, str] | None:
     key = str(provider or "").strip().lower()
-
-    if key == "premier_energy":
-        return {
-            "mode": "url",
-            "fallback": "https://my.premierenergy.ro/",
-        }
 
     if key == "digi":
         return {
@@ -1144,7 +1094,6 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMENIU, SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS, _async_handle_set_distribution_supplier_links)
     websocket_api.async_register_command(hass, _websocket_distribution_supplier_links)
     websocket_api.async_register_command(hass, _websocket_dashboard_payload)
-    websocket_api.async_register_command(hass, _websocket_premier_invoice_pdf)
     hass.data[DOMENIU]["_services_registered"] = True
 
 
@@ -1330,6 +1279,15 @@ async def _async_verifica_licenta_la_pornire(hass: HomeAssistant, entry: ConfigE
         _LOGGER.warning("Verificarea licenței la pornire a eșuat: %s", err)
 
 
+def _async_register_apa_alba_pdf_view(hass: HomeAssistant) -> None:
+    hass.data.setdefault(DOMENIU, {})
+    if hass.data[DOMENIU].get("_apa_alba_pdf_view_registered"):
+        return
+    from .apa_alba_pdf import VizualizareFacturaApaAlba
+    hass.http.register_view(VizualizareFacturaApaAlba(hass))
+    hass.data[DOMENIU]["_apa_alba_pdf_view_registered"] = True
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMENIU, {})
     _async_ensure_services(hass)
@@ -1338,6 +1296,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await async_incarca_statusuri_facturi_manuale(hass)
     await async_incarca_locuri_ignorate(hass)
     await _async_register_static_paths(hass)
+    _async_register_apa_alba_pdf_view(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
     return True
@@ -1430,6 +1389,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     etapa = time.monotonic()
     await _async_register_static_paths(hass)
+    _async_register_apa_alba_pdf_view(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
     _log_temporar("[UR STARTUP DIAG] frontend entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)

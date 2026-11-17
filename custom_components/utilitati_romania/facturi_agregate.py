@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import logging
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -29,6 +30,7 @@ _LOGGER = logging.getLogger(__name__)
 _PROVIDER_LABELS = {
     "apa_canal": "Apă Canal Sibiu",
     "apa_brasov": "Apă Brașov",
+    "apa_alba": "Apă Alba",
     "apa_oradea": "Apă Oradea",
     "apa_galati": "Apă Canal Galați",
     "aparegio": "ApaRegio Gorj",
@@ -42,7 +44,6 @@ _PROVIDER_LABELS = {
     "hidroelectrica": "Hidroelectrica",
     "myelectrica": "myElectrica",
     "nova": "Nova",
-    "premier_energy": "Premier Energy",
     "orange": "Orange",
     "rervest": "RER Vest",
     "retim": "RETIM",
@@ -326,7 +327,7 @@ def _extract_unpaid_amount(
     # Unii furnizori expun soldul curent la nivel de locație, dar includ și
     # istoricul facturilor. Nu aplicăm soldul curent tuturor facturilor istorice,
     # altfel dashboardul multiplică artificial totalul neplătit.
-    if instantaneu.furnizor in {"apa_brasov", "hidroelectrica", "ppc", "premier_energy", "hidro_prahova"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
+    if instantaneu.furnizor in {"apa_brasov", "hidroelectrica", "ppc", "hidro_prahova"} and not _factura_este_ultima_curenta(instantaneu, factura, cont):
         return None
 
     for key in ("sold_factura", "de_plata", "total_neachitat", "sold_curent"):
@@ -672,8 +673,12 @@ def _build_invoice_item(
         "payment_status": payment_status,
         "is_paid": is_paid,
         "unpaid_amount": unpaid_amount,
-        "pdf_url": _extract_pdf_url(factura),
-        "pdf_available": bool(raw_factura.get("exista_pdf")) if instantaneu.furnizor == "premier_energy" else False,
+        "pdf_url": (
+            f"/api/utilitati_romania/apa_alba/factura/{coordonator.intrare.entry_id}/{re.search(r'/facturile-mele/(\d+)/download', str(_extract_pdf_url(factura) or '')).group(1)}"
+            if instantaneu.furnizor == "apa_alba"
+            and re.search(r"/facturile-mele/(\d+)/download", str(_extract_pdf_url(factura) or ""))
+            else _extract_pdf_url(factura) if instantaneu.furnizor != "apa_alba" else None
+        ),
         "refresh_button_entity_id": _refresh_button_entity_id(coordonator),
         "can_refresh": _refresh_button_entity_id(coordonator) is not None,
     }
@@ -681,10 +686,10 @@ def _build_invoice_item(
     _asigura_cheie_locatie_nova(item, factura, cont)
     _asigura_cheie_locatie_hidroelectrica(item)
 
-    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "aparegio", "hidro_prahova", "premier_energy"}:
+    if instantaneu.furnizor in {"ebloc", "apa_canal", "apa_brasov", "apa_alba", "apa_oradea", "apa_galati", "aparegio", "hidro_prahova"}:
         id_cont = getattr(cont, "id_cont", None) if cont else getattr(factura, "id_cont", None)
 
-        citire_permisa = _consum_value(instantaneu, "citire_permisa" if instantaneu.furnizor == "premier_energy" else "citire_index_permisa", id_cont)
+        citire_permisa = _consum_value(instantaneu, "citire_index_permisa", id_cont)
         perioada_citire = _consum_value(instantaneu, "perioada_citire", id_cont)
         zile_pana_citire = _consum_value(instantaneu, "zile_pana_citire_index", id_cont)
 
@@ -1303,7 +1308,7 @@ def _cheie_grupare_factura(item: dict[str, Any]) -> tuple[str, ...]:
         )
         return (locatie, furnizor, normalize_text(identificator_apartament).lower())
 
-    if furnizor in {"apa_brasov", "apa_oradea", "apa_galati", "aparegio", "hidro_prahova"}:
+    if furnizor in {"apa_brasov", "apa_alba", "apa_oradea", "apa_galati", "aparegio", "hidro_prahova"}:
         # Apă Brașov are câte o factură curentă pentru fiecare loc de consum.
         # Dacă grupăm doar după titlul generic al facturii („Factură apă/canal”),
         # factura plătită de pe o locație poate fi combinată cu factura restantă
@@ -1712,7 +1717,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
         if instantaneu.furnizor == "hidroelectrica":
             facturi_de_afisat = _ajusteaza_facturi_hidroelectrica(facturi_de_afisat)
 
-        if instantaneu.furnizor in {"engie", "apa_brasov", "hidroelectrica", "premier_energy"}:
+        if instantaneu.furnizor in {"engie", "apa_brasov", "apa_alba", "hidroelectrica"}:
             # Pentru MyENGIE, Apă Brașov și Hidroelectrica păstrăm în card doar ultima factură
             # pe fiecare loc de consum. La Hidroelectrica păstrăm însă și facturile vechi
             # care au rest de plată explicit, deoarece pot exista mai multe facturi neachitate
@@ -1722,6 +1727,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                 factura for factura in facturi_de_afisat
                 if str(getattr(factura, "id_factura", "") or "") in latest_ids
                 or (instantaneu.furnizor == "hidroelectrica" and _hidroelectrica_are_rest_de_plata(factura))
+                or (instantaneu.furnizor == "apa_alba" and float((getattr(factura, "date_brute", None) or {}).get("rest_plata") or 0) > 0)
             ]
 
         if instantaneu.furnizor == "apa_nova_bucuresti":
@@ -1750,6 +1756,25 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
                     )
                 ]
 
+        if instantaneu.furnizor == "apa_alba":
+            cont_contract = {cont.id_cont: cont.id_contract or cont.id_cont for cont in instantaneu.conturi}
+            facturi_deduplicate = []
+            facturi_vazute = set()
+            for factura in sorted(
+                facturi_de_afisat,
+                key=lambda factura: (factura.data_emitere or date.min, factura.id_factura),
+                reverse=True,
+            ):
+                cheie_factura = (
+                    cont_contract.get(factura.id_cont, factura.id_cont),
+                    factura.id_factura,
+                )
+                if cheie_factura in facturi_vazute:
+                    continue
+                facturi_vazute.add(cheie_factura)
+                facturi_deduplicate.append(factura)
+            facturi_de_afisat = facturi_deduplicate
+
         # 1. Facturi reale, dacă există
         for factura in facturi_de_afisat:
             item = _apply_manual_invoice_status(hass, _build_invoice_item(maybe_coord, instantaneu, factura))
@@ -1760,7 +1785,7 @@ def colecteaza_facturi_agregate(hass) -> list[dict[str, Any]]:
             # Pentru cardul de "ultima factură" ignorăm documentele de tip credit/storno.
             # Altfel, la unii furnizori (ex. myElectrica) putem afișa greșit un credit
             # în locul ultimei facturi reale de consum.
-            if item.get("status") == "credit" and instantaneu.furnizor != "premier_energy":
+            if item.get("status") == "credit":
                 continue
 
             group_key = _cheie_grupare_factura(item)

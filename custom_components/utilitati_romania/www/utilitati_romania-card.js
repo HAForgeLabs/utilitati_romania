@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.0b3";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.10";
 
 class UtilitatiRomaniaFacturiCard extends HTMLElement {
   setConfig(config) {
@@ -252,6 +252,28 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     }
 
     return false;
+  }
+
+  async _descarcaFacturaApaAlba(url) {
+    const token = this._hass?.auth?.data?.access_token || this._hass?.auth?.accessToken;
+    if (!token) throw new Error("Sesiunea Home Assistant nu permite descărcarea facturii.");
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Descărcarea a eșuat (HTTP ${response.status}).`);
+    const blob = await response.blob();
+    if (!blob.type.includes("pdf")) throw new Error("Serverul nu a returnat un PDF.");
+    const fileId = url.split("/").pop() || "factura";
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = `apa_alba_factura_${fileId}.pdf`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
   }
 
   _formatMoney(value, currency = "RON") {
@@ -840,7 +862,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "ppc", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) {
+    if (!providerKey || !["hidroelectrica", "ppc", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_alba", "apa_oradea", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) {
       return null;
     }
 
@@ -980,7 +1002,7 @@ class UtilitatiRomaniaFacturiCard extends HTMLElement {
       const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
         const entityId = String(stateObj?.entity_id || "").toLowerCase();
-        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("aparegio") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("aparegio") || text.includes("polaris") || text.includes("hidro prahova") || text.includes("ebloc");
+        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_alba") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("aparegio") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apa alba") || text.includes("apă alba") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("aparegio") || text.includes("polaris") || text.includes("hidro prahova") || text.includes("ebloc");
       };
       const scoreEonEntity = (stateObj, kind) => {
         if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
@@ -2072,7 +2094,15 @@ _buildProviderRefreshButton(provider) {
       button.addEventListener("click", (event) => {
         event.stopPropagation();
         const url = button.getAttribute("data-url");
-        if (url) window.open(url, "_blank", "noopener");
+        if (!url) return;
+        if (url.startsWith("/api/utilitati_romania/apa_alba/factura/")) {
+          this._descarcaFacturaApaAlba(url).catch((err) => {
+            console.error("Nu am putut descărca factura Apă Alba", err);
+            alert(err.message || "Descărcarea facturii a eșuat.");
+          });
+        } else {
+          window.open(url, "_blank", "noopener");
+        }
       });
     });
     root.querySelectorAll(".refresh-btn[data-refresh-entity]").forEach((button) => {
@@ -2351,7 +2381,7 @@ _buildProviderRefreshButton(provider) {
             });
           } else {
             if (providerKey === "eon") {
-              const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|aparegio|polaris|hidro_prahova|apacanal|ebloc)/i;
+              const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_alba|apa_oradea|aparegio|polaris|hidro_prahova|apacanal|ebloc)/i;
               if (wrongProviderPattern.test(String(numberEntityId)) || wrongProviderPattern.test(String(buttonEntityId))) {
                 throw new Error("Cardul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina sau actualizează integrarea.");
               }
