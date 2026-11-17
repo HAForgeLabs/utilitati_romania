@@ -46,6 +46,7 @@ from .furnizori.retele_electrice import aplica_date_instantanee
 from .exceptions import EroareUtilitatiRomania
 
 from .storage_citiri import async_salveaza_citire
+from .premier_index_history import async_check_confirmation, async_record_confirmation
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -287,6 +288,9 @@ async def async_setup_entry(
     if coordonator.data and coordonator.data.furnizor == "hidroelectrica":
         for cont in coordonator.data.conturi:
             entitati.append(ButonTrimiteIndexHidro(coordonator, cont))
+    elif coordonator.data and coordonator.data.furnizor == "premier_energy":
+        for cont in coordonator.data.conturi:
+            entitati.append(ButonTrimiteIndexPremier(coordonator, cont))
     elif coordonator.data and coordonator.data.furnizor == "eon":
         for cont in coordonator.data.conturi:
             registre = _registre_eon(cont)
@@ -1275,3 +1279,81 @@ class ButonTrimiteNumarPersoaneEbloc(EntitateUtilitatiRomania, ButtonEntity):
             raise HomeAssistantError(f"e-bloc.ro a refuzat actualizarea numărului de persoane: {rezultat}")
 
         await self.coordinator.async_request_refresh()
+
+
+class ButonTrimiteIndexPremier(EntitateUtilitatiRomania, ButtonEntity):
+    _attr_icon = "mdi:send-circle"
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont) -> None:
+        super().__init__(coordonator)
+        self.cont = cont
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_premier_{cont.id_cont}_trimite_index"
+        self._attr_name = "Trimite index"
+        self._attr_device_info = {
+            "identifiers": {(DOMENIU, f"{coordonator.intrare.entry_id}_premier_energy_{cont.id_cont}")},
+        }
+        self._last_sent = None
+        self._busy = False
+
+    @property
+    def extra_state_attributes(self):
+        return {"furnizor": "premier_energy", "id_cont": self.cont.id_cont}
+
+    @property
+    def available(self) -> bool:
+        data = getattr(self.coordinator, "data", None)
+        for value in getattr(data, "consumuri", None) or []:
+            if getattr(value, "id_cont", None) == self.cont.id_cont and getattr(value, "cheie", None) == "citire_permisa":
+                return super().available and value.valoare is True
+        return False
+
+    async def async_press(self) -> None:
+        if self._busy:
+            raise HomeAssistantError("Premier Energy: transmitere deja în desfășurare")
+        entities = self.hass.states.async_all("number")
+        entity = next((e for e in entities if e.attributes.get("furnizor") == "premier_energy" and
+                       str(e.attributes.get("id_cont")) == str(self.cont.id_cont) and
+                       "index_de_transmis" in e.entity_id), None)
+        if entity is None:
+            raise HomeAssistantError("Premier Energy: entitatea de introducere index nu a fost găsită")
+        try:
+            value = float(entity.state)
+            if not value.is_integer() or value < 0 or value > 99999999:
+                raise ValueError
+            index = int(value)
+        except (TypeError, ValueError) as err:
+            raise HomeAssistantError("Premier Energy: index invalid; introduceți un număr întreg") from err
+        today = datetime.now().astimezone().date()
+        if self._last_sent == (index, today) or await async_check_confirmation(
+            self.hass, self.coordinator.intrare.entry_id, str(self.cont.id_cont), index, today
+        ):
+            raise HomeAssistantError("Premier Energy: același index a fost deja transmis astăzi")
+        self._busy = True
+        try:
+            position = await self.coordinator.client.async_transmite_index(self.cont.id_cont, index)
+            self._last_sent = (index, today)
+            try:
+                await async_record_confirmation(
+                    self.hass, self.coordinator.intrare.entry_id, str(self.cont.id_cont),
+                    index, today, position
+                )
+            except Exception:
+                _LOGGER.exception("Premier Energy: index confirmat, dar protecția persistentă nu a putut fi salvată")
+            try:
+                await async_salveaza_citire(self.hass, "premier_energy", self.cont.id_cont, float(index), sursa="card", extra={"pozitie_confirmare": position})
+            except Exception:
+                _LOGGER.exception("Premier Energy: index confirmat, dar jurnalizarea locală a eșuat")
+            persistent_notification.async_create(
+                self.hass,
+                f"Indexul **{index}** a fost înregistrat pentru **{self.cont.nume}** la poziția **{position}**.",
+                title="Utilități România – Premier Energy",
+                notification_id=f"utilitati_romania_premier_index_{self.cont.id_cont}",
+            )
+            try:
+                await self.coordinator.async_request_refresh()
+            except Exception:
+                _LOGGER.exception("Premier Energy: index confirmat, dar actualizarea ulterioară a eșuat")
+        except EroareUtilitatiRomania as err:
+            raise HomeAssistantError(str(err)) from err
+        finally:
+            self._busy = False

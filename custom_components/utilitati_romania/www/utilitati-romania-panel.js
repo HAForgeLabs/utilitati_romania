@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.18.10";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.0";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2018,6 +2018,37 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return this._makeKey("invoice", location?.locatie_cheie || location?.eticheta_locatie || "locatie", this._providerName(provider), this._providerInvoice(provider), this._providerDue(provider), this._providerAmount(provider));
   }
 
+  async _downloadPremierInvoice(button) {
+    if (!this._hass?.callWS || button.disabled) return;
+    const entryId = button.dataset.premierEntry || "";
+    const invoiceId = button.dataset.premierInvoice || "";
+    if (!entryId || !/^[0-9]{1,32}$/.test(invoiceId)) return;
+    button.disabled = true;
+    try {
+      const response = await this._hass.callWS({
+        type: "utilitati_romania/premier_invoice_pdf",
+        entry_id: entryId,
+        invoice_id: invoiceId,
+      });
+      const raw = atob(response.content_base64);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const blobUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = response.filename || `premier-energy-${invoiceId}.pdf`;
+      this.shadowRoot.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
+    } catch (error) {
+      console.error("Premier Energy: eroare descărcare PDF", error);
+      alert("Factura Premier Energy nu a putut fi descărcată. Verifică jurnalul Home Assistant.");
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async _descarcaFacturaApaAlba(url) {
     const token = this._hass?.auth?.data?.access_token || this._hass?.auth?.accessToken;
     if (!token) throw new Error("Sesiunea Home Assistant nu permite descărcarea facturii.");
@@ -2050,6 +2081,9 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const utilityType = this._providerUtilityType(provider);
     const utilityLine = utilityType ? `<span class="invoice-utility">${this._escape(utilityType)}</span>` : "";
     const documentNumber = this._providerDocumentNumber(provider);
+    const pdfButton = this._providerKey(provider) === "premier_energy" && provider?.pdf_available && provider?.entry_id && /^[0-9]{1,32}$/.test(String(provider?.invoice_id || ""))
+      ? `<button class="provider-app-action" data-premier-entry="${this._escape(provider.entry_id)}" data-premier-invoice="${this._escape(provider.invoice_id)}" title="Descarcă factura PDF"><ha-icon icon="mdi:file-pdf-box"></ha-icon><span>Descarcă PDF</span></button>`
+      : "";
     const documentMeta = documentNumber ? `<div class="invoice-meta invoice-document-meta"><span>Document</span><strong>${this._escape(documentNumber)}</strong></div>` : "";
     const displayName = this._providerDisplayName(location, provider);
     const locationLine = this._invoiceLocationLine(location, provider, displayName, grouping);
@@ -2066,6 +2100,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           <div class="invoice-meta amount"><span>Valoare</span><strong>${this._escape(this._money(this._providerAmount(provider), provider?.currency || "RON"))}</strong></div>
           <span class="pill ${status}">${this._escape(this._statusLabel(status))}</span>
           <div class="invoice-actions">
+            ${pdfButton}
             ${provider?.pdf_url ? `<button class="row-action" data-invoice-pdf="${this._escape(provider.pdf_url)}" title="Descarcă factura PDF"><ha-icon icon="mdi:file-pdf-box"></ha-icon> PDF</button>` : ""}
             ${this._renderOpenProviderButton(provider)}
             ${this._renderRefreshButton(provider)}
@@ -2093,7 +2128,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "ppc", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_alba", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova"].includes(providerKey)) return null;
+    if (!providerKey || !["hidroelectrica", "ppc", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_alba", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova", "premier_energy"].includes(providerKey)) return null;
 
     const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
       if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
@@ -2157,6 +2192,46 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     return { isOpen: explicitOpen || openByRange || truthyState, start: startRaw || null, end: endRaw || null };
   }
 
+  _premierIndexControls(provider, readingSensor = null) {
+    const states = Object.values(this._hass?.states || {});
+    const premier = (domain) => states.filter((state) =>
+      state?.entity_id?.startsWith(`${domain}.`) &&
+      this._normalizeText(state.attributes?.furnizor) === this._normalizeText("premier_energy")
+    );
+    const numbers = premier("number");
+    const buttons = premier("button");
+    const targetIds = [provider?.id_cont, readingSensor?.attributes?.id_cont]
+      .filter((id) => id !== undefined && id !== null && String(id).trim())
+      .map((id) => String(id).trim());
+    const matching = (statesList) => statesList.filter((state) =>
+      targetIds.includes(String(state.attributes?.id_cont ?? "").trim())
+    );
+    let matchingNumbers = matching(numbers);
+    let matchingButtons = matching(buttons);
+    // A unique pair is unambiguous even when the invoice's identifier differs
+    // from the location identifier. Never guess between multiple accounts.
+    if ((!matchingNumbers.length || !matchingButtons.length) && numbers.length === 1 && buttons.length === 1) {
+      matchingNumbers = numbers;
+      matchingButtons = buttons;
+    }
+    if (matchingNumbers.length !== 1 || matchingButtons.length !== 1) return [];
+    const numberState = matchingNumbers[0];
+    const buttonState = matchingButtons[0];
+    if (String(numberState.attributes?.id_cont ?? "") !== String(buttonState.attributes?.id_cont ?? "")) return [];
+    return [{
+      key: `premier_energy_${numberState.attributes?.id_cont ?? "index"}`,
+      providerKey: "premier_energy",
+      label: "Index de transmis (m³)",
+      numberEntityId: numberState.entity_id,
+      buttonEntityId: buttonState.entity_id,
+      currentEntityId: null,
+      numberState,
+      currentState: null,
+      unit: numberState.attributes?.unit_of_measurement || "m³",
+      currentValue: null,
+    }];
+  }
+
   _deriveControlsFromReadingSensor(location, provider, readingSensor) {
     if (!readingSensor) return [];
     const providerKey = this._providerKey(provider);
@@ -2166,6 +2241,10 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const readingText = this._entityFriendlyText(readingSensor);
     const terms = this._readingTerms(location, provider);
     const controls = [];
+
+    if (providerKey === "premier_energy") {
+      return this._premierIndexControls(provider, readingSensor);
+    }
 
     if (providerKey === "hidroelectrica") {
       const base = sensorObject.replace(/_citire_permisa$/, "");
@@ -2228,7 +2307,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
         const entityId = String(stateObj?.entity_id || "").toLowerCase();
-        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_alba") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("aparegio") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apa alba") || text.includes("apă alba") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("aparegio") || text.includes("polaris") || text.includes("hidro prahova") || text.includes("ebloc");
+        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_alba") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("aparegio") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("aparegio") || text.includes("polaris") || text.includes("hidro prahova") || text.includes("ebloc");
       };
       const scoreEonEntity = (stateObj, kind) => {
         if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
@@ -2452,6 +2531,25 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         badge,
       };
 
+      this._readingCache.set(cacheKey, result);
+      return result;
+    }
+
+    if (providerKey === "premier_energy" && provider?.reading_available && provider?.reading_period) {
+      const period = String(provider.reading_period);
+      const pieces = period.split(/\s+-\s+/);
+      const parseRo = (value) => {
+        const match = String(value || "").trim().match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        return match ? new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1])) : null;
+      };
+      const start = parseRo(pieces[0]);
+      const end = parseRo(pieces[1]);
+      const now = this._todayDate();
+      const isOpen = !!(start && end && now >= start && now <= end);
+      const controls = this._premierIndexControls(provider);
+      const result = { available: true, isOpen, controls, start, end, period,
+        badge: isOpen ? "Citire deschisă" : "În afara perioadei",
+        readingSensorEntityId: null };
       this._readingCache.set(cacheKey, result);
       return result;
     }
@@ -3873,6 +3971,8 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       return;
     }
 
+    if (providerKey === "premier_energy" && !window.confirm(`Transmiți indexul ${numericValue} pentru Premier Energy? Operațiunea înregistrează o citire reală.`)) return;
+
     this._actions.set(actionKey, { status: "busy", message: "" });
     this._render();
 
@@ -3897,7 +3997,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         await this._hass.callService("button", "press", { entity_id: buttonEntityId });
       }
       this._readingDrafts.delete(buttonEntityId || numberEntityId);
-      this._actions.set(actionKey, { status: "ok", message: "Comanda de transmitere a indexului a fost trimisă. Verifică ulterior portalul furnizorului sau următorul refresh pentru confirmarea finală." });
+      this._actions.set(actionKey, { status: "ok", message: providerKey === "premier_energy" ? "Premier Energy a confirmat înregistrarea indexului. Numărul de confirmare este disponibil în notificări." : "Comanda de transmitere a indexului a fost trimisă. Verifică ulterior portalul furnizorului sau următorul refresh pentru confirmarea finală." });
     } catch (err) {
       this._actions.set(actionKey, { status: "error", message: err?.message || "Transmiterea indexului a eșuat." });
     }
@@ -3999,6 +4099,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         if (this._expandedInvoices.has(key)) this._expandedInvoices.delete(key);
         else this._expandedInvoices.add(key);
         this._render();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-premier-invoice]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this._downloadPremierInvoice(button);
       });
     });
     const invoiceGrouping = this.shadowRoot.querySelector("[data-invoice-grouping]");

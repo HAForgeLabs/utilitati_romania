@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from time import monotonic
 from typing import Any
 
 from aiohttp import ClientError
@@ -39,10 +37,6 @@ _LOGGER = logging.getLogger(__name__)
 STATUSURI_ACCEPTATE = {LICENTA_STATUS_ACTIVA, LICENTA_STATUS_TRIAL}
 VERSIUNE_STORAGE_LICENTA = 1
 CHEIE_STORAGE_LICENTA = f"{DOMENIU}_licenta"
-CHEIE_CACHE_VALIDARE = "_license_validation_runtime"
-DURATA_CACHE_VALID_MS = 5 * 60
-DURATA_CACHE_REFUZ_MS = 60
-
 
 
 def normalizeaza_cheia_licenta(cheie: str | None) -> str:
@@ -163,16 +157,15 @@ def _date_licenta_din_storage_sunt_pentru_contextul_curent(
     return cheie_ok and utilizator_stocat == str(utilizator).strip()
 
 
-async def _async_solicita_validare_licenta(
+async def async_valideaza_licenta(
     hass: HomeAssistant,
     cheie_licenta: str,
     utilizator: str,
-    fingerprint: str,
 ) -> RezultatLicenta:
     sesiune = async_get_clientsession(hass)
     payload = {
-        "license_key": cheie_licenta,
-        "fingerprint": fingerprint,
+        "license_key": normalizeaza_cheia_licenta(cheie_licenta),
+        "fingerprint": construieste_fingerprint_instanta(hass),
         "product": DOMENIU,
         "username": utilizator,
     }
@@ -180,8 +173,6 @@ async def _async_solicita_validare_licenta(
     try:
         async with sesiune.post(URL_API_LICENTA, json=payload, timeout=20) as raspuns:
             data = await raspuns.json(content_type=None)
-            if not isinstance(data, dict):
-                raise ValueError("Raspunsul serverului de licentiere nu este un obiect JSON")
 
             return RezultatLicenta(
                 valida=bool(data.get("valid", False)),
@@ -195,7 +186,7 @@ async def _async_solicita_validare_licenta(
             )
 
     except (ClientError, TimeoutError, ValueError) as err:
-        _LOGGER.warning("Validarea licentei a esuat: %s", err)
+        _LOGGER.warning("Validarea licenței a eșuat: %s", err)
         return RezultatLicenta(
             valida=False,
             status=LICENTA_STATUS_NECUNOSCUT,
@@ -203,79 +194,6 @@ async def _async_solicita_validare_licenta(
             verificata_la=_acum_utc_iso(),
             eroare_conectare=True,
         )
-
-
-def _obtine_cache_validari(hass: HomeAssistant) -> dict[str, Any]:
-    domeniu = hass.data.setdefault(DOMENIU, {})
-    return domeniu.setdefault(
-        CHEIE_CACHE_VALIDARE,
-        {"rezultate": {}, "sarcini": {}},
-    )
-
-
-def _durata_cache_rezultat(rezultat: RezultatLicenta) -> float:
-    if rezultat.eroare_conectare:
-        return 0.0
-
-    durata = DURATA_CACHE_VALID_MS if rezultat.valida else DURATA_CACHE_REFUZ_MS
-    if rezultat.expira_la:
-        try:
-            expirare = datetime.fromisoformat(str(rezultat.expira_la).replace("Z", "+00:00"))
-            if expirare.tzinfo is None:
-                expirare = expirare.replace(tzinfo=UTC)
-            durata = min(durata, max(0.0, (expirare - datetime.now(UTC)).total_seconds()))
-        except ValueError:
-            pass
-    return max(0.0, durata)
-
-
-async def async_valideaza_licenta(
-    hass: HomeAssistant,
-    cheie_licenta: str,
-    utilizator: str,
-) -> RezultatLicenta:
-    """Reutilizeaza verificari recente si reuneste cererile simultane identice."""
-    cheie = normalizeaza_cheia_licenta(cheie_licenta)
-    utilizator_normalizat = str(utilizator or "").strip().lower()
-    fingerprint = construieste_fingerprint_instanta(hass)
-    identitate = (cheie, fingerprint, DOMENIU, utilizator_normalizat)
-    cache = _obtine_cache_validari(hass)
-    rezultate: dict = cache["rezultate"]
-    sarcini: dict = cache["sarcini"]
-
-    acum = monotonic()
-    for identitate_veche, (_, termen) in list(rezultate.items()):
-        if termen <= acum:
-            rezultate.pop(identitate_veche, None)
-
-    memorat = rezultate.get(identitate)
-    if memorat is not None:
-        return memorat[0]
-
-    sarcina = sarcini.get(identitate)
-    if sarcina is None:
-        sarcina = hass.async_create_task(
-            _async_solicita_validare_licenta(hass, cheie, utilizator_normalizat, fingerprint)
-        )
-        sarcini[identitate] = sarcina
-
-        def _finalizeaza(task: asyncio.Task) -> None:
-            if sarcini.get(identitate) is task:
-                sarcini.pop(identitate, None)
-            if task.cancelled():
-                return
-            eroare = task.exception()
-            if eroare is not None:
-                _LOGGER.warning("Validarea licentei a esuat neasteptat: %s", eroare)
-                return
-            rezultat = task.result()
-            durata = _durata_cache_rezultat(rezultat)
-            if durata:
-                rezultate[identitate] = (rezultat, monotonic() + durata)
-
-        sarcina.add_done_callback(_finalizeaza)
-
-    return await asyncio.shield(sarcina)
 
 
 def extrage_date_licenta_stocate(intrare: ConfigEntry) -> dict[str, Any]:

@@ -916,6 +916,24 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
         if not isinstance(value, list):
             raise EroareParsare("Lista POD Retele Electrice are un format neasteptat")
         pods = [item for item in value if isinstance(item, dict) and _text(item.get("POD__c") or item.get("Name"))]
+        if not pods:
+            if getattr(self, "_pods_retry_in_progress", False):
+                raise EroareConectare(
+                    "Rețele Electrice a returnat zero POD-uri și după reautentificare"
+                )
+            self._pods_retry_in_progress = True
+            try:
+                _LOGGER.warning(
+                    "Rețele Electrice a returnat zero POD-uri; se reface sesiunea "
+                    "și se reîncearcă o singură dată"
+                )
+                self._authenticated = False
+                self._aura_context = None
+                self._aura_token = None
+                await self._login()
+                return await self._get_pods()
+            finally:
+                self._pods_retry_in_progress = False
         self._pod_items = {
             _text(item.get("POD__c") or item.get("Name")): item
             for item in pods
@@ -949,6 +967,18 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
             raise EroareAutentificare("Sesiunea Retele Electrice a expirat")
         form = _select_form(form_page, "j_id0:j_id2")
         if form is None:
+            # O sesiune expirată poate afișa formularul de login fără redirect.
+            pagina = form_page.lower()
+            if any(indiciu in pagina for indiciu in ("pedro_sitelogin", "loginform", "session expired")):
+                if retry:
+                    self._authenticated = False
+                    self._aura_context = None
+                    self._aura_token = None
+                    await self._ensure_login()
+                    return await self._visualforce_action(
+                        url=url, method_name=method_name, params=params, retry=False
+                    )
+                raise EroareAutentificare("Sesiunea Retele Electrice a expirat")
             raise EroareParsare("Formularul Visualforce Retele Electrice nu a fost gasit")
         data = _form_data(form)
         form_id = _text(form.get("id")) or "j_id0:j_id2"
@@ -973,17 +1003,16 @@ class ClientFurnizorReteleElectrice(ClientFurnizor):
         }
         _, result_page = await self._request_text("POST", url, data=data, headers=headers)
         result = _extract_async_json(result_page)
-        if not result and retry and "login" in result_page.lower():
-            self._authenticated = False
-            self._aura_context = None
-            self._aura_token = None
-            await self._ensure_login()
-            return await self._visualforce_action(
-                url=url,
-                method_name=method_name,
-                params=params,
-                retry=False,
-            )
+        if not result and "login" in result_page.lower():
+            if retry:
+                self._authenticated = False
+                self._aura_context = None
+                self._aura_token = None
+                await self._ensure_login()
+                return await self._visualforce_action(
+                    url=url, method_name=method_name, params=params, retry=False
+                )
+            raise EroareAutentificare("Sesiunea Retele Electrice a expirat")
         return result
 
     @staticmethod
