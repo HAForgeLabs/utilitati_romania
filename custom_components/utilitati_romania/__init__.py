@@ -72,7 +72,7 @@ def _log_temporar(*_args, **_kwargs) -> None:
     return None
 
 
-_FRONTEND_VERSION = "1.19.0b3"
+_FRONTEND_VERSION = "1.19.1"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -1330,6 +1330,15 @@ async def _async_verifica_licenta_la_pornire(hass: HomeAssistant, entry: ConfigE
         _LOGGER.warning("Verificarea licenței la pornire a eșuat: %s", err)
 
 
+def _async_register_apa_alba_pdf_view(hass: HomeAssistant) -> None:
+    hass.data.setdefault(DOMENIU, {})
+    if hass.data[DOMENIU].get("_apa_alba_pdf_view_registered"):
+        return
+    from .apa_alba_pdf import VizualizareFacturaApaAlba
+    hass.http.register_view(VizualizareFacturaApaAlba(hass))
+    hass.data[DOMENIU]["_apa_alba_pdf_view_registered"] = True
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMENIU, {})
     _async_ensure_services(hass)
@@ -1338,6 +1347,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     await async_incarca_statusuri_facturi_manuale(hass)
     await async_incarca_locuri_ignorate(hass)
     await _async_register_static_paths(hass)
+    _async_register_apa_alba_pdf_view(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
     return True
@@ -1430,6 +1440,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     etapa = time.monotonic()
     await _async_register_static_paths(hass)
+    _async_register_apa_alba_pdf_view(hass)
     _async_register_dashboard_panel(hass)
     await _async_notify_missing_lovelace_resource(hass)
     _log_temporar("[UR STARTUP DIAG] frontend entry=%s durata=%.3fs", entry.entry_id, time.monotonic() - etapa)

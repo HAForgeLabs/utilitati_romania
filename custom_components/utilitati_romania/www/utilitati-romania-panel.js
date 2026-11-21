@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.0b3";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.1";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -2049,6 +2049,28 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     }
   }
 
+  async _descarcaFacturaApaAlba(url) {
+    const token = this._hass?.auth?.data?.access_token || this._hass?.auth?.accessToken;
+    if (!token) throw new Error("Sesiunea Home Assistant nu permite descărcarea facturii.");
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Descărcarea a eșuat (HTTP ${response.status}).`);
+    const blob = await response.blob();
+    if (!blob.type.includes("pdf")) throw new Error("Serverul nu a returnat un PDF.");
+    const fileId = url.split("/").pop() || "factura";
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = `apa_alba_factura_${fileId}.pdf`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+  }
+
   _invoiceRow(location, provider, grouping = "location") {
     const status = this._status(provider);
     const due = this._providerDue(provider);
@@ -2079,6 +2101,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
           <span class="pill ${status}">${this._escape(this._statusLabel(status))}</span>
           <div class="invoice-actions">
             ${pdfButton}
+            ${provider?.pdf_url ? `<button class="row-action" data-invoice-pdf="${this._escape(provider.pdf_url)}" title="Descarcă factura PDF"><ha-icon icon="mdi:file-pdf-box"></ha-icon> PDF</button>` : ""}
             ${this._renderOpenProviderButton(provider)}
             ${this._renderRefreshButton(provider)}
           </div>
@@ -2105,7 +2128,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const terms = this._readingTerms(location, provider);
     const normalizedProvider = providerKey.replace(/_/g, " ");
 
-    if (!providerKey || !["hidroelectrica", "ppc", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova", "premier_energy"].includes(providerKey)) return null;
+    if (!providerKey || !["hidroelectrica", "ppc", "engie", "eon", "myelectrica", "apa_canal", "apa_brasov", "apa_alba", "apa_oradea", "apa_galati", "aparegio", "polaris", "hidro_prahova", "premier_energy"].includes(providerKey)) return null;
 
     const candidates = Object.values(this._hass?.states || {}).filter((stateObj) => {
       if (!stateObj?.entity_id?.startsWith("sensor.")) return false;
@@ -2284,7 +2307,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       const isOtherProviderEntity = (stateObj) => {
         const text = this._entityFriendlyText(stateObj);
         const entityId = String(stateObj?.entity_id || "").toLowerCase();
-        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("aparegio") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("aparegio") || text.includes("polaris") || text.includes("hidro prahova") || text.includes("ebloc");
+        return entityId.includes("hidro") || entityId.includes("hidroelectrica") || entityId.includes("myelectrica") || entityId.includes("apa_canal") || entityId.includes("apa_brasov") || entityId.includes("apa_alba") || entityId.includes("apa_oradea") || entityId.includes("apa_galati") || entityId.includes("aparegio") || entityId.includes("hidro_prahova") || entityId.includes("apacanal") || entityId.includes("ebloc") || text.includes("hidro") || text.includes("hidroelectrica") || text.includes("myelectrica") || text.includes("apa canal") || text.includes("apa brasov") || text.includes("apă brașov") || text.includes("apa oradea") || text.includes("apă oradea") || text.includes("apa galati") || text.includes("apă galați") || text.includes("apa canal galati") || text.includes("aparegio") || text.includes("polaris") || text.includes("hidro prahova") || text.includes("ebloc");
       };
       const scoreEonEntity = (stateObj, kind) => {
         if (!stateObj?.entity_id?.startsWith(`${kind}.`)) return -1;
@@ -2990,6 +3013,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     const providerDefinitions = [
       { slug: "apa canal sibiu", label: "Apă Canal Sibiu" },
       { slug: "apa brasov", label: "Apă Brașov" },
+      { slug: "apa alba", label: "Apă Alba" },
       { slug: "digi romania", label: "Digi România" },
       { slug: "distributie energie electrica romania", label: "Distribuție Energie Electrică România" },
       { slug: "e on romania", label: "E.ON România" },
@@ -3964,7 +3988,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       } else {
         if (!numberEntityId || !buttonEntityId) throw new Error("Entitățile pentru transmiterea indexului nu sunt disponibile.");
         if (providerKey === "eon") {
-          const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_oradea|apa_galati|aparegio|hidro_prahova|apacanal|ebloc)/i;
+          const wrongProviderPattern = /(hidro|hidroelectrica|myelectrica|apa_canal|apa_brasov|apa_alba|apa_oradea|apa_galati|aparegio|hidro_prahova|apacanal|ebloc)/i;
           if (wrongProviderPattern.test(numberEntityId) || wrongProviderPattern.test(buttonEntityId)) throw new Error("Panoul a identificat o entitate de la alt furnizor pentru E.ON. Reîncarcă pagina și verifică entitățile.");
         }
         await this._hass.callService("number", "set_value", { entity_id: numberEntityId, value: numericValue });
@@ -4051,6 +4075,21 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         if (this._expandedLocations.has(key)) this._expandedLocations.delete(key);
         else this._expandedLocations.add(key);
         this._render();
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-invoice-pdf]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const url = button.getAttribute("data-invoice-pdf");
+        if (!url) return;
+        if (url.startsWith("/api/utilitati_romania/apa_alba/factura/")) {
+          this._descarcaFacturaApaAlba(url).catch((err) => {
+            console.error("Nu am putut descărca factura Apă Alba", err);
+            alert(err.message || "Descărcarea facturii a eșuat.");
+          });
+        } else if (/^https?:\/\//i.test(url)) {
+          window.open(url, "_blank", "noopener");
+        }
       });
     });
     this.shadowRoot.querySelectorAll("[data-toggle-invoice]").forEach((button) => {

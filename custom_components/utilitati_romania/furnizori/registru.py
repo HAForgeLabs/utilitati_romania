@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .apa_alba import ClientFurnizorApaAlba
 from .apa_canal import ClientFurnizorApaCanal
 from .aquatim import ClientFurnizorAquatim
 from .apa_brasov import ClientFurnizorApaBrasov
@@ -29,6 +30,7 @@ from .retim import ClientFurnizorRetim
 from .retele_electrice import ClientFurnizorReteleElectrice
 
 FURNIZORI: dict[str, type[ClientFurnizor]] = {
+    ClientFurnizorApaAlba.cheie_furnizor: ClientFurnizorApaAlba,
     ClientFurnizorAquatim.cheie_furnizor: ClientFurnizorAquatim,
     ClientFurnizorComprest.cheie_furnizor: ClientFurnizorComprest,
     ClientFurnizorNova.cheie_furnizor: ClientFurnizorNova,

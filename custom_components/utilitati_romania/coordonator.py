@@ -67,7 +67,7 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
         # Pentru acestea nu folosim sesiunea globala Home Assistant, deoarece doua
         # config entry-uri ale aceluiasi furnizor pot ajunge sa imparta acelasi
         # cookie jar si sa citeasca datele altui cont.
-        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati", "eon", "deo", "retele_electrice", "premier_energy"}
+        self._sesiune_dedicata = self.cheie_furnizor in {"apa_galati", "apa_alba", "eon", "deo", "retele_electrice", "premier_energy"}
         self.sesiune: ClientSession = (
             async_create_clientsession(
                 hass,

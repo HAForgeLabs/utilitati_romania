@@ -245,7 +245,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                         else:
                             return await self.async_step_selectare_contract_apa_brasov()
                 else:
-                    sesiune_dedicata = self._furnizor in {"deo", "retele_electrice", "premier_energy"}
+                    sesiune_dedicata = self._furnizor in {"deo", "retele_electrice", "premier_energy", "apa_alba"}
                     sesiune = (
                         _creeaza_sesiune_dedicata(self.hass)
                         if sesiune_dedicata
@@ -1120,7 +1120,7 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                         return await self._finalizeaza_reauth_digi()
 
             else:
-                sesiune_dedicata = self._furnizor in {"deo", "retele_electrice", "premier_energy"}
+                sesiune_dedicata = self._furnizor in {"deo", "retele_electrice", "premier_energy", "apa_alba"}
                 sesiune = (
                     _creeaza_sesiune_dedicata(self.hass)
                     if sesiune_dedicata
