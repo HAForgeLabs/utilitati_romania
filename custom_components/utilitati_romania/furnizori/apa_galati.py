@@ -852,11 +852,12 @@ class ClientFurnizorApaGalati(ClientFurnizor):
             total_de_plata = _numar(item.get("total_de_plata"))
             stare = _stare_factura(item, rest, plati)
             raw = dict(item)
+            raw["sold_portal"] = rest
             plata_potrivita = _plata_potrivita_factura(item, plati) if plati else None
             if stare == "platita":
                 raw["rest_plata"] = 0.0
-            elif rest is not None and rest > 0:
-                raw["rest_plata"] = rest
+            elif rest is not None:
+                raw["rest_plata"] = max(0.0, rest)
             elif total_de_plata is not None and total_de_plata > 0:
                 raw["rest_plata"] = total_de_plata
             else:
@@ -930,7 +931,11 @@ class ClientFurnizorApaGalati(ClientFurnizor):
             if not plati_cont and len(conturi) == 1:
                 plati_cont = plati
             citiri_cont = [c for c in citiri if self._gaseste_id_cont(c, [cont]) == cont.id_cont]
-            neachitate = [f for f in facturi_cont if f.stare in {"neplatita", "scadenta"}]
+            neachitate = [
+                f for f in facturi_cont
+                if f.stare in {"neplatita", "scadenta"}
+                and float(f.date_brute.get("rest_plata") or 0.0) > 0.005
+            ]
             sold = round(sum(float(f.date_brute.get("rest_plata") or 0.0) for f in neachitate), 2)
             ultima_factura = facturi_cont[0] if facturi_cont else None
             ultima_plata = _ultima_dupa_data(plati_cont, "data")
@@ -1358,6 +1363,9 @@ def _stare_factura(item: dict[str, Any], rest: float | None, plati: list[dict[st
     # Fallback de siguranta pentru raspunsuri in care Scriptcase nu returneaza
     # bifa ca text. Folosim istoricul de plati doar ca supliment, nu ca sursa
     # principala.
+    if rest is not None and rest <= 0.005:
+        return "platita"
+
     if plati is not None and _plata_potrivita_factura(item, plati):
         return "platita"
 
@@ -1389,18 +1397,40 @@ def _este_data_iso(value: Any) -> bool:
 def _numar(value: Any) -> float | None:
     if value in (None, ""):
         return None
-    text = str(value).strip().replace("\xa0", " ")
-    text = re.sub(r"[^0-9,.-]", "", text)
-    if not text:
+
+    text = str(value).strip().replace("\xa0", " ").replace("\u202f", " ")
+    text = text.replace("−", "-")
+    text = re.sub(r"\b(?:RON|LEI)\b", "", text, flags=re.IGNORECASE).strip()
+
+    negativ = text.startswith("(") and text.endswith(")")
+    if negativ:
+        text = text[1:-1].strip()
+    if text.startswith("-"):
+        negativ = True
+        text = text[1:].strip()
+    if text.endswith("-"):
+        negativ = True
+        text = text[:-1].strip()
+
+    text = text.replace(" ", "")
+    if not re.fullmatch(r"\d[\d.,]*", text):
         return None
+
     if "," in text and "." in text:
-        text = text.replace(".", "").replace(",", ".")
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            text = text.replace(",", "")
     elif "," in text:
         text = text.replace(",", ".")
+    elif text.count(".") > 1:
+        text = text.replace(".", "")
+
     try:
-        return float(text)
+        rezultat = float(text)
     except ValueError:
         return None
+    return -rezultat if negativ else rezultat
 
 
 def _fara_taguri(text: str) -> str:
