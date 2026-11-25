@@ -16,7 +16,6 @@
           "interval_actualizare": "Update interval (hours)",
           "digi_history_limit": "Historical invoices per address",
           "yellowgrid_country_code": "YellowGrid country code",
-          "yellowgrid_api_key": "YellowGrid API key (x-apikey)",
           "yellowgrid_interval_minutes": "YellowGrid refresh interval (minutes)"
         }
       },
@@ -25,8 +24,7 @@
         "data": {
           "utilizator": "Username / email",
           "parola": "Password",
-          "yellowgrid_country_code": "YellowGrid country code",
-          "yellowgrid_api_key": "YellowGrid API key (x-apikey)"
+          "yellowgrid_country_code": "YellowGrid country code"
         }
       },
       "eon_cod_email": {
@@ -124,7 +122,6 @@
         "data": {
           "utilizator": "Phone number (07xxxxxxxx)",
           "parola": "Password",
-          "yellowgrid_api_key": "API key (beta only)",
           "yellowgrid_interval_minutes": "Update interval (minutes)"
         }
       },
@@ -132,8 +129,7 @@
         "title": "Reconnect YellowGrid",
         "data": {
           "utilizator": "Phone number (07xxxxxxxx)",
-          "parola": "Password",
-          "yellowgrid_api_key": "API key (beta only)"
+          "parola": "Password"
         }
       },
       "conectare_yellowgrid": {
@@ -142,7 +138,6 @@
         "data": {
           "yellowgrid_telefon": "Phone number (07xxxxxxxx)",
           "parola": "Password",
-          "yellowgrid_api_key": "API key (beta only)",
           "yellowgrid_interval_minutes": "Update interval (minutes)"
         },
         "data_description": {
@@ -154,8 +149,7 @@
         "description": "Phone is sent as 07xxxxxxxx with country code 004. If connection fails, read utilitati_romania_yellowgrid_diagnostic.json in /config; retrying does not require another restart.",
         "data": {
           "yellowgrid_telefon": "Phone number (07xxxxxxxx)",
-          "parola": "Password",
-          "yellowgrid_api_key": "API key (beta only)"
+          "parola": "Password"
         }
       }
     },
@@ -173,10 +167,11 @@
       "digi_2fa_indisponibil": "No 2FA verification method is available for this Digi account.",
       "yellowgrid_numar_invalid": "The phone number must be 07xxxxxxxx (10 digits).",
       "yellowgrid_login_respins": "YellowGrid rejected the login request (HTTP 400/422). See the diagnostic file in /config.",
-      "yellowgrid_acces_respins": "YellowGrid rejected access (HTTP 401/403). Check the API key and login credentials.",
+      "yellowgrid_acces_respins": "YellowGrid rejected access (HTTP 401/403). Check your login credentials.",
       "yellowgrid_pre_multe_cereri": "YellowGrid rate-limited requests (HTTP 429). Try again later.",
       "yellowgrid_autentificare_esuata": "YellowGrid authentication failed. Check the diagnostic file in /config.",
       "yellowgrid_raspuns_invalid": "YellowGrid returned an invalid response. See the diagnostic file in /config.",
+      "yellowgrid_config_indisponibila": "YellowGrid configuration service is unavailable. See the local diagnostic for the HTTP status.",
       "yellowgrid_conexiune_esuata": "YellowGrid connection failed. See the diagnostic in /config for the stage and HTTP status.",
       "yellowgrid_eroare_neasteptata": "Unexpected YellowGrid error. See the diagnostic report in /config."
     },
@@ -199,7 +194,6 @@
           "retele_interval_date_instantanee": "Automatic meter update interval (hours, 0 = disabled)",
           "puncte_consum_selectate": "Consumption points",
           "yellowgrid_country_code": "YellowGrid country code",
-          "yellowgrid_api_key": "YellowGrid API key (x-apikey)",
           "yellowgrid_interval_minutes": "YellowGrid refresh interval (minutes)"
         }
       },
@@ -208,7 +202,6 @@
         "data": {
           "parola": "Password",
           "cheie_licenta": "License key",
-          "yellowgrid_api_key": "API key (beta only)",
           "yellowgrid_interval_minutes": "Update interval (minutes)",
           "yellowgrid_telefon": "Phone number (07xxxxxxxx)"
         }

@@ -9,7 +9,6 @@ from .const import (
     CONF_CHEIE_LICENTA,
     CONF_DIGI_COOKIES,
     CONF_PAROLA,
-    CONF_YELLOWGRID_API_KEY,
     DATE_VERIFICARE_LICENTA,
     DOMENIU,
 )
@@ -153,8 +152,6 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     for container in (data, optiuni):
         if CONF_PAROLA in container:
             container[CONF_PAROLA] = "***"
-        if CONF_YELLOWGRID_API_KEY in container:
-            container[CONF_YELLOWGRID_API_KEY] = "***"
         if CONF_CHEIE_LICENTA in container:
             container[CONF_CHEIE_LICENTA] = mascheaza_cheia_licenta(container[CONF_CHEIE_LICENTA])
         if CONF_DIGI_COOKIES in container:

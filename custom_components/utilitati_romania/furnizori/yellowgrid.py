@@ -6,8 +6,7 @@ import logging
 from typing import Any
 
 from ..const import (
-    COD_TARA_IMPLICIT_YELLOWGRID, CONF_YELLOWGRID_API_KEY,
-    CONF_YELLOWGRID_COUNTRY_CODE,
+    COD_TARA_IMPLICIT_YELLOWGRID, CONF_YELLOWGRID_COUNTRY_CODE,
 )
 from ..exceptions import EroareAutentificare, EroareConectare, EroareParsare
 from ..modele import ContUtilitate, InstantaneuFurnizor
@@ -31,7 +30,6 @@ class ClientFurnizorYellowGrid(ClientFurnizor):
             telefon=utilizator,
             parola=parola,
             cod_tara=str(optiuni.get(CONF_YELLOWGRID_COUNTRY_CODE) or COD_TARA_IMPLICIT_YELLOWGRID),
-            cheie_api=str(optiuni.get(CONF_YELLOWGRID_API_KEY) or ""),
         )
 
     @property

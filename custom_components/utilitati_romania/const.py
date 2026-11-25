@@ -75,7 +75,6 @@ FURNIZOR_PPC = "ppc"
 FURNIZOR_PREMIER_ENERGY = "premier_energy"
 FURNIZOR_YELLOWGRID = "yellowgrid"
 
-CONF_YELLOWGRID_API_KEY = "yellowgrid_api_key"
 CONF_YELLOWGRID_TELEFON = "yellowgrid_telefon"
 CONF_YELLOWGRID_COUNTRY_CODE = "yellowgrid_country_code"
 COD_TARA_IMPLICIT_YELLOWGRID = "004"

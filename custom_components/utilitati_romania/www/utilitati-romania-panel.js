@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.3b6";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.3b9";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {

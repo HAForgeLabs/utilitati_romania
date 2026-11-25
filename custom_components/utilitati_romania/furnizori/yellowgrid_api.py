@@ -22,8 +22,16 @@ LOGIN_PATH = "/platform-authentication/v1/api/mobile/public/user/login"
 REFRESH_PATH = "/platform-authentication/v1/api/mobile/public/refresh-token"
 PLANTS_PATH = "/customers/api/plants/plants"
 
+# Configurarea clientului este distribuita separat de sursele publice.
+CONFIG_URL = "https://utilitati-yellowgrid-config.marius-onitiu.workers.dev/v1/yellowgrid/config"
+CONFIG_CACHE_SECONDS = 6 * 60 * 60
+CONFIG_RESPONSE_BYTES = 4096
+CONFIG_STAGE = "/_configurare_client"
+
 
 def _diagnostic_stage(path: str) -> str:
+    if path == CONFIG_STAGE:
+        return "configurare_client"
     if path == LOGIN_PATH:
         return "login"
     if path == REFRESH_PATH:
@@ -146,21 +154,23 @@ class SesiuneYellowGrid:
     """Sesiune JWT cu refresh rotativ, tinuta numai in memorie."""
 
     def __init__(self, sesiune: aiohttp.ClientSession, *, telefon: str, parola: str,
-                 cod_tara: str, cheie_api: str) -> None:
+                 cod_tara: str) -> None:
         self._sesiune = sesiune
         self._telefon = normalizare_telefon_yellowgrid(telefon)
         if self._telefon is None:
             raise EroareAutentificare("YellowGrid: numarul trebuie sa fie 07xxxxxxxx")
         self._parola = parola
         self._cod_tara = cod_tara.strip()
-        self._cheie_api = cheie_api.strip()
-        if not all((self._telefon, self._parola, self._cod_tara, self._cheie_api)):
+        if not all((self._telefon, self._parola, self._cod_tara)):
             raise EroareAutentificare("YellowGrid: date de conectare incomplete")
         self._access: str | None = None
         self._refresh: str | None = None
         self._valid_until = 0.0
         self._customer_id: str | None = None
         self._auth_lock = asyncio.Lock()
+        self._client_key_lock = asyncio.Lock()
+        self._client_key: str | None = None
+        self._client_key_expires = 0.0
         self._diagnostic_events: list[dict[str, Any]] = []
 
     @property
@@ -186,6 +196,78 @@ class SesiuneYellowGrid:
     def customer_id(self) -> str | None:
         return self._customer_id
 
+    async def _obtine_cheie_client(self, *, reinnoieste: bool = False) -> str:
+        """Obtine identificatorul clientului din configurarea HTTPS, cu cache local."""
+        if self._client_key and not reinnoieste and time.monotonic() < self._client_key_expires:
+            return self._client_key
+
+        async with self._client_key_lock:
+            if self._client_key and not reinnoieste and time.monotonic() < self._client_key_expires:
+                return self._client_key
+            started = time.perf_counter()
+            try:
+                async with self._sesiune.get(
+                    CONFIG_URL,
+                    headers={"Accept": "application/json", "Cache-Control": "no-store"},
+                    timeout=aiohttp.ClientTimeout(total=15),
+                    allow_redirects=False,
+                ) as response:
+                    status = response.status
+                    if status != 200:
+                        self._note_diagnostic(
+                            path=CONFIG_STAGE, method="GET", result="http_error",
+                            started=started, http=status,
+                        )
+                        raise EroareConectare(f"YellowGrid: configurarea clientului nu este disponibila (HTTP {status})")
+                    if response.content_length is not None and response.content_length > CONFIG_RESPONSE_BYTES:
+                        self._note_diagnostic(
+                            path=CONFIG_STAGE, method="GET", result="response_too_large",
+                            started=started, http=200,
+                        )
+                        raise EroareParsare("YellowGrid: configurare client prea mare")
+                    raw = await response.content.read(CONFIG_RESPONSE_BYTES + 1)
+                    if len(raw) > CONFIG_RESPONSE_BYTES:
+                        self._note_diagnostic(
+                            path=CONFIG_STAGE, method="GET", result="response_too_large",
+                            started=started, http=200,
+                        )
+                        raise EroareParsare("YellowGrid: configurare client prea mare")
+            except asyncio.TimeoutError as err:
+                self._note_diagnostic(
+                    path=CONFIG_STAGE, method="GET", result="timeout", started=started,
+                )
+                if self._client_key and not reinnoieste:
+                    return self._client_key
+                raise EroareConectare("YellowGrid: timpul de asteptare pentru configurare a expirat") from err
+            except aiohttp.ClientError as err:
+                self._note_diagnostic(
+                    path=CONFIG_STAGE, method="GET", result="network_error", started=started,
+                )
+                if self._client_key and not reinnoieste:
+                    return self._client_key
+                raise EroareConectare("YellowGrid: serviciul de configurare este inaccesibil") from err
+            try:
+                payload = json.loads(raw)
+            except (UnicodeDecodeError, ValueError) as err:
+                self._note_diagnostic(
+                    path=CONFIG_STAGE, method="GET", result="json_invalid", started=started, http=200,
+                )
+                raise EroareParsare("YellowGrid: raspuns invalid al configurarii") from err
+
+            key = payload.get("api_key") if isinstance(payload, dict) and payload.get("provider") == "yellowgrid" else None
+            if (not isinstance(key, str) or not (12 <= len(key) <= 256)
+                    or not key.isascii() or not key.isprintable()):
+                self._note_diagnostic(
+                    path=CONFIG_STAGE, method="GET", result="config_invalid", started=started, http=200,
+                )
+                raise EroareParsare("YellowGrid: identificator client indisponibil in configurare")
+            self._client_key = key
+            self._client_key_expires = time.monotonic() + CONFIG_CACHE_SECONDS
+            self._note_diagnostic(
+                path=CONFIG_STAGE, method="GET", result="ok", started=started, http=200,
+            )
+            return key
+
     async def _request(self, path: str, *, method: str = "GET", body: dict[str, Any] | None = None,
                        auth: bool = False) -> Any:
         if not path.startswith("/") or path.startswith("//") or ".." in path:
@@ -194,49 +276,65 @@ class SesiuneYellowGrid:
             raise EroareParsare("YellowGrid: operatie nepermisa")
         if method not in {"GET", "POST"}:
             raise EroareParsare("YellowGrid: metoda nepermisa")
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "okhttp/4.9.2",
-            "x-apikey": self._cheie_api,
-        }
-        if auth and self._access:
-            headers["Authorization"] = f"Bearer {self._access}"
-        started = time.perf_counter()
-        try:
-            async with self._sesiune.request(
-                method, API_ROOT + path, headers=headers, json=body,
-                timeout=aiohttp.ClientTimeout(total=25), allow_redirects=False,
-            ) as response:
-                status = response.status
-                if status != 200:
-                    self._note_diagnostic(path=path, method=method,
-                                          result="http_error", started=started, http=status)
-                    if status in (401, 403):
-                        raise EroareAutentificare(f"YellowGrid: acces respins (HTTP {status})")
-                    raise EroareConectare(f"YellowGrid: raspuns HTTP {status}")
-                if response.content_length is not None and response.content_length > MAX_RESPONSE_BYTES:
-                    self._note_diagnostic(path=path, method=method,
-                                          result="response_too_large", started=started, http=status)
-                    raise EroareParsare("YellowGrid: raspuns prea mare")
-                raw = await response.content.read(MAX_RESPONSE_BYTES + 1)
-                if len(raw) > MAX_RESPONSE_BYTES:
-                    self._note_diagnostic(path=path, method=method,
-                                          result="response_too_large", started=started, http=status)
-                    raise EroareParsare("YellowGrid: raspuns prea mare")
-        except asyncio.TimeoutError as err:
-            self._note_diagnostic(path=path, method=method, result="timeout", started=started)
-            raise EroareConectare("YellowGrid: timp de asteptare depasit") from err
-        except aiohttp.ClientError as err:
-            self._note_diagnostic(path=path, method=method, result="network_error", started=started)
-            raise EroareConectare("YellowGrid: conexiune indisponibila") from err
-        try:
-            data = json.loads(raw)
-        except (ValueError, UnicodeDecodeError) as err:
-            self._note_diagnostic(path=path, method=method,
-                                  result="json_invalid", started=started, http=200)
-            raise EroareParsare("YellowGrid: JSON invalid") from err
-        self._note_diagnostic(path=path, method=method, result="ok", started=started, http=200)
-        return data
+
+        for attempt in range(2):
+            key = await self._obtine_cheie_client()
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "okhttp/4.9.2",
+                "x-apikey": key,
+            }
+            if auth and self._access:
+                headers["Authorization"] = f"Bearer {self._access}"
+            started = time.perf_counter()
+            try:
+                async with self._sesiune.request(
+                    method, API_ROOT + path, headers=headers, json=body,
+                    timeout=aiohttp.ClientTimeout(total=25), allow_redirects=False,
+                ) as response:
+                    status = response.status
+                    if status != 200:
+                        self._note_diagnostic(
+                            path=path, method=method, result="http_error", started=started, http=status,
+                        )
+                        if status in (401, 403):
+                            if path in {LOGIN_PATH, REFRESH_PATH} and attempt == 0:
+                                fresh_key = await self._obtine_cheie_client(reinnoieste=True)
+                                if fresh_key != key:
+                                    continue
+                                self._note_diagnostic(
+                                    path=path, method=method, result="http_error",
+                                    started=started, http=status,
+                                )
+                            raise EroareAutentificare(f"YellowGrid: acces respins (HTTP {status})")
+                        raise EroareConectare(f"YellowGrid: raspuns HTTP {status}")
+                    if response.content_length is not None and response.content_length > MAX_RESPONSE_BYTES:
+                        self._note_diagnostic(
+                            path=path, method=method, result="response_too_large", started=started, http=status,
+                        )
+                        raise EroareParsare("YellowGrid: raspuns prea mare")
+                    raw = await response.content.read(MAX_RESPONSE_BYTES + 1)
+                    if len(raw) > MAX_RESPONSE_BYTES:
+                        self._note_diagnostic(
+                            path=path, method=method, result="response_too_large", started=started, http=status,
+                        )
+                        raise EroareParsare("YellowGrid: raspuns prea mare")
+            except asyncio.TimeoutError as err:
+                self._note_diagnostic(path=path, method=method, result="timeout", started=started)
+                raise EroareConectare("YellowGrid: timp de asteptare depasit") from err
+            except aiohttp.ClientError as err:
+                self._note_diagnostic(path=path, method=method, result="network_error", started=started)
+                raise EroareConectare("YellowGrid: conexiune indisponibila") from err
+            try:
+                data = json.loads(raw)
+            except (ValueError, UnicodeDecodeError) as err:
+                self._note_diagnostic(
+                    path=path, method=method, result="json_invalid", started=started, http=200,
+                )
+                raise EroareParsare("YellowGrid: JSON invalid") from err
+            self._note_diagnostic(path=path, method=method, result="ok", started=started, http=200)
+            return data
+        raise EroareAutentificare("YellowGrid: autentificarea a esuat dupa reinnoirea configurarii")
 
     def _set_tokens(self, response: Any) -> None:
         if not isinstance(response, dict):

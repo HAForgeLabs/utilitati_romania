@@ -50,9 +50,9 @@ def _safe_trace(client: Any) -> list[dict[str, Any]]:
             if key in {"etapa", "metoda", "rezultat"} and isinstance(value, str):
                 if value in {
                     "login", "refresh", "instalatii", "telemetrie", "fluxuri",
-                    "castiguri", "portofel", "api", "GET", "POST", "ok",
+                    "castiguri", "portofel", "api", "configurare_client", "GET", "POST", "ok",
                     "http_error", "network_error", "timeout", "json_invalid",
-                    "response_too_large",
+                    "response_too_large", "config_invalid",
                 }:
                     item[key] = value
             elif key == "http" and type(value) is int and 100 <= value <= 599:

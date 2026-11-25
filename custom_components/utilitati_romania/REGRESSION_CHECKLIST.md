@@ -702,5 +702,25 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 
 - Se cere validare in Home Assistant pentru config flow, actualizare,
   restaurare din snapshot si statisticile senzorilor daily reset.
-- Cheia x-apikey trebuie introdusa manual in acest beta.
+- Cheia YellowGrid este preluata automat prin HTTPS; verificati si indisponibilitatea serviciului de configurare.
 - Facturile si veniturile estimate nu sunt expuse in acest beta.
+
+## v1.19.3b9 – YellowGrid Cloudflare (beta publică)
+
+### Domeniu
+
+- Baza: v1.19.3b8 testată live în Home Assistant.
+- Nicio schimbare la autentificare, fluxurile energetice, portofel sau diagnosticul YellowGrid.
+- Corecție punctuală: sincronizarea versiunii din manifest, backend și ambele fișiere JavaScript.
+- Parametrii de cache-busting pentru panou și card sunt `?v=1.19.3b9`.
+- Documentația YellowGrid indică versiunea curentă.
+
+### Verificări pentru publicare
+
+- [x] Manifestul, `__init__.py`, panoul și cardul declară `1.19.3b9`.
+- [x] Sintaxa Python, JavaScript și JSON este validă.
+- [x] Arhiva are structura corectă `utilitati_romania/` și nu conține date brute de autentificare sau cheia YellowGrid.
+- [x] Fișierele nelegate de versiune au rămas identice cu v1.19.3b8.
+- [x] Testele simulate pentru obținerea configurației din Cloudflare și loginul YellowGrid sunt reușite.
+- [ ] Confirmare după instalare: dashboardul afișează b9, iar senzorii continuă să se actualizeze.
+- [ ] Validare cu conturi și instalații YellowGrid multiple.

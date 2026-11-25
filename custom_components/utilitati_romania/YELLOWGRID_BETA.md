@@ -1,63 +1,58 @@
-# YellowGrid - versiune beta v1.19.3b6
+# YellowGrid – integrare comunitară, versiunea 1.19.3b9 (beta publică)
 
-Versiune de test, construita pe baza Utilitati Romania v1.19.2. Nu este destinata publicarii.
+## Configurare
 
-## Configurare in Home Assistant
+- Număr de telefon: `07xxxxxxxx` (sunt acceptate și `7xxxxxxxx`, `+407xxxxxxxx`, `00407xxxxxxxx`).
+- Parola / codul de conectare folosit în aplicația YellowGrid.
+- Interval de actualizare: 5–60 de minute.
 
-La adaugarea YellowGrid, introdu numarul de telefon in format 07xxxxxxxx
-(10 cifre, cu zero-ul national) si parola / codul de conectare din aplicatia mobila.
-Pentru comoditate, se accepta si 7xxxxxxxx, +407xxxxxxxx sau 00407xxxxxxxx:
-integrarea normalizeaza automat la 07xxxxxxxx pentru campul `mobileNumber`.
+Integrarea trimite `countryCode = "004"` și `mobileNumber = "07xxxxxxxx"`.
+Nu solicită introducerea unei chei API. Integrarea preia automat configurația
+clientului din serviciul `https://utilitati-yellowgrid-config.marius-onitiu.workers.dev/v1/yellowgrid/config`.
+Valoarea nu este inclusă în sursele publice și este ținută temporar numai în
+memoria sesiunii Home Assistant (cache de până la 6 ore). Numărul de telefon,
+parola și tokenurile nu sunt transmise acestui serviciu; autentificarea
+utilizatorului și citirile rămân directe către API-ul YellowGrid.
 
-`countryCode` este transmis automat cu valoarea `004`, conform formatului
-comunicat pentru contul testat. Nu exista camp pentru prefixul tarii in UI.
+Endpointul Cloudflare este public și transmite cheia clientului către
+instalările Home Assistant: cheia poate fi recuperată din trafic de oricine
+cunoaște adresa. Această abordare permite actualizarea centralizată, dar **nu**
+asigură confidențialitatea cheii și nu constituie autorizare de utilizare din
+partea YellowGrid. Dacă serviciul de configurare nu funcționează, conexiunile
+noi pot eșua; o cheie deja obținută poate fi folosită temporar din memoria
+sesiunii. În cazul unei respingeri 401/403 la login, integrarea verifică dacă
+există o cheie actualizată și reîncearcă doar dacă valoarea s-a schimbat.
 
-Limitare beta: cheia `x-apikey` trebuie inca introdusa separat. Este utilizata
-exclusiv pentru testarea privata; nu se publica si nu se include in cod sursa.
-Pentru lansarea publica este necesara o metoda sustenabila/autorizata de
-obtinere sau aprovizionare a acestei chei, fara interventia utilizatorului.
 
-## Separarea autentificarii de licentiere
+## Funcționalități
 
-Numarul de telefon YellowGrid nu inlocuieste identitatea globala de licenta
-Utilitati Romania. Daca exista o licenta globala salvata, integrarea continua
-sa o valideze cu identitatea deja asociata acesteia.
+- Descoperirea automată a instalațiilor și citirea telemetriei, inclusiv SOC.
+- Producție, consum, import/export și încărcare/descărcare baterie.
+- Fluxuri energetice pentru ziua calendaristică din România, în kWh.
+- Soldul portofelului, disponibilul pentru retragere și suma neachitată, în RON.
+- Filă YellowGrid afișată numai când furnizorul este configurat.
+- Diagramă animată cu sensul fluxurilor și grafice circulare zilnice.
+- Pentru un dispozitiv offline, puterile instantanee apar indisponibile,
+  în timp ce datele energetice istorice pot rămâne disponibile.
 
-## Date si comportament
+## Siguranță și diagnostic
 
-- Descoperire automata a instalatiilor
-- Puteri instantanee, baterie si fluxuri zilnice in kWh
-- Sold portofel, disponibil pentru retragere si suma neachitata in RON
-- Actualizare configurabila de la 5 la 60 de minute
-- Numai GET pentru date; POST folosit exclusiv pentru login/refresh
-- Tokenuri pastrate in memorie, fara comenzi catre invertor
+Se efectuează doar citiri de date și operațiuni de autentificare/reînnoire a
+sesiunii, fără comenzi către invertor. Tokenurile sunt păstrate în memoria
+sesiunii. În timpul configurării, fișierul de diagnostic local
+`/config/utilitati_romania_yellowgrid_diagnostic.json` poate înregistra etapele
+și codurile HTTP, dar nu parola, telefonul, tokenurile, cheia API sau
+răspunsurile brute.
 
-Datele energetice zilnice se pot revizui pe server; verificarea statisticilor
-Home Assistant este necesara inainte de folosirea lor in Energy Dashboard.
+## Stadiul testării
 
-## Testare
+Autentificarea fără introducerea manuală a cheii, crearea dispozitivelor,
+portofelul, datele energetice și dashboardul au fost verificate într-o
+instalare Home Assistant reală. A fost verificat și comportamentul la
+indisponibilitatea YellowBox. Testarea live s-a făcut pe un singur cont.
+Rămân necesare verificări cu instalații multiple, reautentificare după perioade
+îndelungate și eventuale schimbări ale API-ului.
 
-Copiaza intai versiunea HA existenta si pastreaza arhiva stabila.
-Dupa instalare este necesar un singur restart Home Assistant pentru incarcarea
-codului nou. Poti incerca autentificarea de mai multe ori fara alte restarturi.
-
-La fiecare incercare de conectare, rezultatul se salveaza in:
-`/config/utilitati_romania_yellowgrid_diagnostic.json`
-
-Raportul include operatia, etapa, codul HTTP, durata si categoria erorii.
-Nu include telefonul, parola, cheia `x-apikey`, identificatori de instalatie,
-tokenuri sau corpuri de raspuns. Fisierul este suprascris la incercarea urmatoare.
-Jurnalul HA contine acelasi ID de diagnostic. In caz de eroare trimite doar
-acest JSON, fara capturi cu formularul si fara credentiale.
-
-Autentificarea corecta trimite `countryCode="004"` si
-`mobileNumber="07xxxxxxxx"`. Include zero-ul national.
-
-## Panou vizual v1.19.3b6
-
-- Flux energetic original, creat din elemente HTML/CSS, nu din resursele aplicației mobile.
-- Grafice circulare pentru distribuția producției și a consumului, generate din senzorii energetici existenți.
-- Toate fluxurile detaliate rămân disponibile prin extinderea secțiunii aferente.
-- Contoarele generale și celelalte file rămân neschimbate.
-- Valorile de 0% raportate de API sunt afișate ca atare, fără corecții artificiale.
-- Nu se modifică autentificarea, colectarea datelor sau dispozitivele.
+Integrare comunitară neoficială. Aceasta nu este o integrare oferită sau
+garantată de YellowGrid. Efectele unei eventuale modificări a API-ului nu
+pot fi excluse.

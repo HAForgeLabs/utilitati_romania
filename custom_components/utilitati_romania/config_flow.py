@@ -57,7 +57,6 @@ from .const import (
     MINIM_DIGI_HISTORY_LIMIT,
     MINIM_INTERVAL_ACTUALIZARE_ORE,
     MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
-    CONF_YELLOWGRID_API_KEY,
     CONF_YELLOWGRID_TELEFON,
     CONF_YELLOWGRID_COUNTRY_CODE,
     CONF_YELLOWGRID_INTERVAL_MINUTES,
@@ -144,6 +143,8 @@ def _eroare_formular_yellowgrid(client: Any, error: Exception) -> str:
     last = events[-1] if events else {}
     status = last.get("http") if isinstance(last, dict) else None
     stage = last.get("etapa") if isinstance(last, dict) else None
+    if stage == "configurare_client" and isinstance(error, (EroareConectare, EroareParsare)):
+        return "yellowgrid_config_indisponibila"
     if status in {400, 422} and stage == "login":
         return "yellowgrid_login_respins"
     if status in {401, 403}:
@@ -417,9 +418,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                     TextSelectorConfig(type=TextSelectorType.TEL)
                 ),
                 vol.Required(CONF_PAROLA): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                ),
-                vol.Required(CONF_YELLOWGRID_API_KEY): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.PASSWORD)
                 ),
                 vol.Optional(
@@ -1284,10 +1282,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                 if self._furnizor == FURNIZOR_YELLOWGRID:
                     actualizare_yellowgrid = {
                         CONF_YELLOWGRID_COUNTRY_CODE: COD_TARA_IMPLICIT_YELLOWGRID,
-                        CONF_YELLOWGRID_API_KEY: user_input.get(
-                            CONF_YELLOWGRID_API_KEY,
-                            intrare.data.get(CONF_YELLOWGRID_API_KEY, ""),
-                        ),
                     }
                 client = clasa_furnizor(
                     sesiune=sesiune,
@@ -1354,12 +1348,6 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                 vol.Required(CONF_PAROLA): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.PASSWORD)
                 ),
-                vol.Required(
-                    CONF_YELLOWGRID_API_KEY,
-                    default=intrare.options.get(
-                        CONF_YELLOWGRID_API_KEY, intrare.data.get(CONF_YELLOWGRID_API_KEY, "")
-                    ),
-                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
             }
         schema = vol.Schema(schema_items_reauth)
         return self.async_show_form(
@@ -1641,7 +1629,6 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
                 if self._config_entry.data.get(CONF_FURNIZOR) == FURNIZOR_YELLOWGRID:
                     data.update({
                         CONF_YELLOWGRID_COUNTRY_CODE: COD_TARA_IMPLICIT_YELLOWGRID,
-                        CONF_YELLOWGRID_API_KEY: str(user_input[CONF_YELLOWGRID_API_KEY]).strip(),
                         CONF_YELLOWGRID_INTERVAL_MINUTES: int(user_input[CONF_YELLOWGRID_INTERVAL_MINUTES]),
                     })
                 if self._config_entry.data.get(CONF_FURNIZOR) == "myelectrica":
@@ -1740,13 +1727,6 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
             schema_items[vol.Required(
                 CONF_YELLOWGRID_TELEFON, default=util_implicit,
             )] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEL))
-            schema_items[vol.Required(
-                CONF_YELLOWGRID_API_KEY,
-                default=self._config_entry.options.get(
-                    CONF_YELLOWGRID_API_KEY,
-                    self._config_entry.data.get(CONF_YELLOWGRID_API_KEY, ""),
-                ),
-            )] = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
             schema_items[vol.Required(
                 CONF_YELLOWGRID_INTERVAL_MINUTES,
                 default=self._config_entry.options.get(
