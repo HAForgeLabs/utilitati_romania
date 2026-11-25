@@ -14,14 +14,19 @@
           "utilizator": "Username / email",
           "parola": "Password",
           "interval_actualizare": "Update interval (hours)",
-          "digi_history_limit": "Historical invoices per address"
+          "digi_history_limit": "Historical invoices per address",
+          "yellowgrid_country_code": "YellowGrid country code",
+          "yellowgrid_api_key": "YellowGrid API key (x-apikey)",
+          "yellowgrid_interval_minutes": "YellowGrid refresh interval (minutes)"
         }
       },
       "confirmare_reautentificare": {
         "title": "Reconnect {furnizor}",
         "data": {
           "utilizator": "Username / email",
-          "parola": "Password"
+          "parola": "Password",
+          "yellowgrid_country_code": "YellowGrid country code",
+          "yellowgrid_api_key": "YellowGrid API key (x-apikey)"
         }
       },
       "eon_cod_email": {
@@ -112,6 +117,46 @@
         "data": {
           "cod_email": "Email code"
         }
+      },
+      "credentiale_yellowgrid": {
+        "title": "Connect YellowGrid",
+        "description": "Enter a phone number as 07xxxxxxxx. The country code is set automatically. An API key is required only for this testing beta.",
+        "data": {
+          "utilizator": "Phone number (07xxxxxxxx)",
+          "parola": "Password",
+          "yellowgrid_api_key": "API key (beta only)",
+          "yellowgrid_interval_minutes": "Update interval (minutes)"
+        }
+      },
+      "confirmare_reautentificare_yellowgrid": {
+        "title": "Reconnect YellowGrid",
+        "data": {
+          "utilizator": "Phone number (07xxxxxxxx)",
+          "parola": "Password",
+          "yellowgrid_api_key": "API key (beta only)"
+        }
+      },
+      "conectare_yellowgrid": {
+        "title": "Connect YellowGrid",
+        "description": "Phone is sent as 07xxxxxxxx with country code 004. If connection fails, read utilitati_romania_yellowgrid_diagnostic.json in /config; retrying does not require another restart.",
+        "data": {
+          "yellowgrid_telefon": "Phone number (07xxxxxxxx)",
+          "parola": "Password",
+          "yellowgrid_api_key": "API key (beta only)",
+          "yellowgrid_interval_minutes": "Update interval (minutes)"
+        },
+        "data_description": {
+          "yellowgrid_telefon": "Enter the number without the country prefix."
+        }
+      },
+      "reconectare_yellowgrid": {
+        "title": "Reconnect YellowGrid",
+        "description": "Phone is sent as 07xxxxxxxx with country code 004. If connection fails, read utilitati_romania_yellowgrid_diagnostic.json in /config; retrying does not require another restart.",
+        "data": {
+          "yellowgrid_telefon": "Phone number (07xxxxxxxx)",
+          "parola": "Password",
+          "yellowgrid_api_key": "API key (beta only)"
+        }
       }
     },
     "error": {
@@ -125,7 +170,15 @@
       "digi_selectare_cont_invalida": "The selected Digi account could not be confirmed.",
       "fara_contracte": "No available contracts were found for this account.",
       "contract_invalid": "The selected contract is no longer valid. Please try again.",
-      "digi_2fa_indisponibil": "No 2FA verification method is available for this Digi account."
+      "digi_2fa_indisponibil": "No 2FA verification method is available for this Digi account.",
+      "yellowgrid_numar_invalid": "The phone number must be 07xxxxxxxx (10 digits).",
+      "yellowgrid_login_respins": "YellowGrid rejected the login request (HTTP 400/422). See the diagnostic file in /config.",
+      "yellowgrid_acces_respins": "YellowGrid rejected access (HTTP 401/403). Check the API key and login credentials.",
+      "yellowgrid_pre_multe_cereri": "YellowGrid rate-limited requests (HTTP 429). Try again later.",
+      "yellowgrid_autentificare_esuata": "YellowGrid authentication failed. Check the diagnostic file in /config.",
+      "yellowgrid_raspuns_invalid": "YellowGrid returned an invalid response. See the diagnostic file in /config.",
+      "yellowgrid_conexiune_esuata": "YellowGrid connection failed. See the diagnostic in /config for the stage and HTTP status.",
+      "yellowgrid_eroare_neasteptata": "Unexpected YellowGrid error. See the diagnostic report in /config."
     },
     "abort": {
       "already_configured": "This account is already configured.",
@@ -144,12 +197,26 @@
           "cheie_licenta": "License key",
           "digi_history_limit": "Historical invoices per address",
           "retele_interval_date_instantanee": "Automatic meter update interval (hours, 0 = disabled)",
-          "puncte_consum_selectate": "Consumption points"
+          "puncte_consum_selectate": "Consumption points",
+          "yellowgrid_country_code": "YellowGrid country code",
+          "yellowgrid_api_key": "YellowGrid API key (x-apikey)",
+          "yellowgrid_interval_minutes": "YellowGrid refresh interval (minutes)"
+        }
+      },
+      "yellowgrid": {
+        "title": "YellowGrid options",
+        "data": {
+          "parola": "Password",
+          "cheie_licenta": "License key",
+          "yellowgrid_api_key": "API key (beta only)",
+          "yellowgrid_interval_minutes": "Update interval (minutes)",
+          "yellowgrid_telefon": "Phone number (07xxxxxxxx)"
         }
       }
     },
     "error": {
-      "licenta_invalida": "The license is not valid for this integration."
+      "licenta_invalida": "The license is not valid for this integration.",
+      "yellowgrid_numar_invalid": "The phone number must be 07xxxxxxxx (10 digits)."
     }
   }
 }

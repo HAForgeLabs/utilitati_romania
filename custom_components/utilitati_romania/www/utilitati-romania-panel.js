@@ -1,4 +1,4 @@
-const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.2";
+const UTILITATI_ROMANIA_FRONTEND_VERSION = "1.19.3b6";
 
 class UtilitatiRomaniaPanel extends HTMLElement {
   constructor() {
@@ -27,6 +27,11 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._dashboardPayload = null;
     this._dashboardPayloadRevision = null;
     this._dashboardPayloadLoading = false;
+    this._yellowGridData = null;
+    this._yellowGridFetching = false;
+    this._yellowGridLastCheck = 0;
+    this._yellowGridError = false;
+    this._yellowGridDetailsState = new Map();
   }
 
   set hass(hass) {
@@ -34,6 +39,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     this._readingCache.clear();
     this._ensureDistributionSupplierLinksLoaded();
     this._ensureDashboardPayloadLoaded();
+    this._ensureYellowGridLoaded();
     if (this._shouldDelayRenderForInteraction()) return;
     this._render();
   }
@@ -153,6 +159,272 @@ class UtilitatiRomaniaPanel extends HTMLElement {
         this._dashboardPayloadLoading = false;
         if (!this._shouldDelayRenderForInteraction()) this._render();
       });
+  }
+
+  _ensureYellowGridLoaded() {
+    if (!this._hass?.callWS || this._yellowGridFetching) return;
+    // Detectarea conturilor se reface periodic si cand panoul ramane deschis.
+    const now = Date.now();
+    if (now - this._yellowGridLastCheck < 60000) return;
+    this._yellowGridLastCheck = now;
+    this._yellowGridFetching = true;
+    this._hass.callWS({ type: "utilitati_romania/yellowgrid_dashboard" })
+      .then((payload) => {
+        this._yellowGridData = payload && Array.isArray(payload.conturi)
+          ? payload : { conturi: [] };
+        this._yellowGridError = false;
+        if (!this._yellowGridData.conturi.length && this._activeTab === "yellowgrid") {
+          this._activeTab = "overview";
+        }
+      })
+      .catch(() => {
+        // Pana la prima conectare valida nu afisam o fila fara furnizor.
+        this._yellowGridError = true;
+      })
+      .finally(() => {
+        this._yellowGridFetching = false;
+        if (!this._shouldDelayRenderForInteraction()) this._render();
+      });
+  }
+
+  _yellowGridAccounts() {
+    return Array.isArray(this._yellowGridData?.conturi) ? this._yellowGridData.conturi : [];
+  }
+
+  _yellowGridEntity(mapping, key) {
+    const entityId = mapping?.[key];
+    return typeof entityId === "string" ? this._hass?.states?.[entityId] || null : null;
+  }
+
+  _yellowGridNumber(mapping, key) {
+    const state = this._yellowGridEntity(mapping, key)?.state;
+    if (state === null || state === undefined || state === "unknown" || state === "unavailable" || state === "") return null;
+    const numeric = Number(state);
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  _yellowGridFormatted(mapping, key, unit = "", precision = 2) {
+    const value = this._yellowGridNumber(mapping, key);
+    if (value === null) return "—";
+    const formatted = new Intl.NumberFormat("ro-RO", {
+      minimumFractionDigits: precision,
+      maximumFractionDigits: precision,
+    }).format(value);
+    return unit ? `${formatted} ${unit}` : formatted;
+  }
+
+  _yellowGridPowerDisplay(mapping, key) {
+    const value = this._yellowGridNumber(mapping, key);
+    if (value === null) return "—";
+    if (Math.abs(value) >= 1000) {
+      return `${new Intl.NumberFormat("ro-RO", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value / 1000)} kW`;
+    }
+    return `${new Intl.NumberFormat("ro-RO", { maximumFractionDigits: 0 }).format(value)} W`;
+  }
+
+  _yellowGridMetric(label, value, icon = "mdi:flash") {
+    return `<div class="yg-metric"><ha-icon icon="${this._escape(icon)}"></ha-icon><span>${this._escape(label)}</span><strong>${this._escape(value)}</strong></div>`;
+  }
+
+  _yellowGridFlow(mapping, items, title) {
+    return `<div class="yg-flow-group"><h4>${this._escape(title)}</h4><div class="yg-flow-items">${items.map(([key, label]) =>
+      `<div class="yg-flow-line"><span>${this._escape(label)}</span><strong>${this._escape(this._yellowGridFormatted(mapping, key, "kWh"))}</strong></div>`
+    ).join("")}</div></div>`;
+  }
+
+  _yellowGridLiveFlow(mapping) {
+    const read = (key) => this._yellowGridNumber(mapping, key);
+    const production = read("production_w");
+    const load = read("load_w");
+    const batteryCharge = read("battery_charging_w");
+    const batteryDischarge = read("battery_discharging_w");
+    const gridImport = read("grid_import_w");
+    const gridExport = read("grid_export_w");
+    const soc = read("battery_soc_pct");
+
+    const batteryAvailable = batteryCharge !== null || batteryDischarge !== null;
+    const charge = Math.max(0, batteryCharge ?? 0);
+    const discharge = Math.max(0, batteryDischarge ?? 0);
+    const batteryDirection = !batteryAvailable ? "Date indisponibile" :
+      charge > 0 && charge >= discharge ? "Încărcare" :
+      discharge > 0 ? "Descărcare" : "În repaus";
+    const batteryPower = !batteryAvailable ? null : Math.max(charge, discharge);
+    const gridAvailable = gridImport !== null || gridExport !== null;
+    const imported = Math.max(0, gridImport ?? 0);
+    const exported = Math.max(0, gridExport ?? 0);
+    const gridDirection = !gridAvailable ? "Date indisponibile" :
+      imported > 0 && imported >= exported ? "Import" :
+      exported > 0 ? "Export" : "Fără transfer";
+    const gridPower = !gridAvailable ? null : Math.max(imported, exported);
+    // Sensul este calculat din puterile citite, fara estimari despre repartizarea interna.
+    const solarDirection = production !== null && production > 0 ? "down" : "";
+    const batteryFlowDirection = !batteryAvailable ? "" :
+      charge > 0 && charge >= discharge ? "left" : discharge > 0 ? "right" : "";
+    const gridFlowDirection = !gridAvailable ? "" :
+      imported > 0 && imported >= exported ? "left" : exported > 0 ? "right" : "";
+    // Panoul se redeseneaza la actualizari hass: pastram faza miscarii intre redesenari.
+    const motionPhase = `--yg-flow-phase:-${Date.now() % 1800}ms`;
+    const conduit = (kind, direction) => `
+      <span class="yg-live-conduit yg-live-conduit-${kind} ${direction ? `active direction-${direction}` : ""}" aria-hidden="true">
+        <span class="yg-flow-particle"></span><span class="yg-flow-chevron"></span>
+      </span>`;
+
+    const display = (value) => {
+      if (value === null || value === undefined) return "—";
+      if (Math.abs(value) >= 1000) {
+        return `${new Intl.NumberFormat("ro-RO", { maximumFractionDigits: 2 }).format(value / 1000)} kW`;
+      }
+      return `${new Intl.NumberFormat("ro-RO", { maximumFractionDigits: 0 }).format(value)} W`;
+    };
+    const node = (kind, icon, title, value, subtitle) => `
+      <div class="yg-live-node yg-live-${kind}">
+        <div class="yg-live-node-icon"><ha-icon icon="${icon}"></ha-icon></div>
+        <span class="yg-live-node-title">${this._escape(title)}</span>
+        <strong>${this._escape(value)}</strong>
+        <small>${this._escape(subtitle)}</small>
+      </div>`;
+    return `<div class="yg-live-flow-wrap">
+      <div class="yg-live-flow-heading">
+        <div><span class="yg-kicker">Flux energetic</span><h4>În timp real</h4></div>
+        <small>Săgețile arată sensul transferurilor · W / kW</small>
+      </div>
+      <div class="yg-live-map" style="${motionPhase}" aria-label="Fluxuri energetice animate: săgețile arată direcția energiei între producție, baterie, locuință și rețea">
+        ${conduit("solar", solarDirection)}
+        ${conduit("battery", batteryFlowDirection)}
+        ${conduit("grid", gridFlowDirection)}
+        ${node("solar", "mdi:solar-power-variant", "Producție totală", display(production), "FV și cuplaj AC")}
+        ${node("battery", "mdi:battery", "Baterie", display(batteryPower), `${batteryDirection} · ${soc === null ? "—" : `${new Intl.NumberFormat("ro-RO", { maximumFractionDigits: 0 }).format(soc)}%`}`)}
+        ${node("home", "mdi:home-lightning-bolt", "Consum locuință", display(load), "Consum instantaneu")}
+        ${node("grid", "mdi:transmission-tower", "Rețea", display(gridPower), gridDirection)}
+      </div>
+    </div>`;
+  }
+
+  _yellowGridEnergyDonut(mapping, title, entries) {
+    const series = entries.map(([key, label, color]) => {
+      const value = this._yellowGridNumber(mapping, key);
+      return { label, color, value: value === null ? null : Math.max(0, value) };
+    });
+    const values = series.filter((entry) => entry.value !== null);
+    const total = values.reduce((sum, item) => sum + item.value, 0);
+    let cumulative = 0;
+    const gradient = total > 0 ? `conic-gradient(${series.map((item) => {
+      const start = cumulative;
+      cumulative += ((item.value || 0) / total) * 100;
+      return `${item.color} ${start.toFixed(5)}% ${cumulative.toFixed(5)}%`;
+    }).join(",")})` : "conic-gradient(var(--divider-color) 0% 100%)";
+    const fmt = (value, digits = 1) => value === null ? "—" : new Intl.NumberFormat("ro-RO", {
+      minimumFractionDigits: digits, maximumFractionDigits: digits,
+    }).format(value);
+    return `<section class="yg-chart-card">
+      <h4>${this._escape(title)}</h4>
+      <div class="yg-chart-layout">
+        <div class="yg-donut" role="img" aria-label="${this._escape(`${title}: ${values.length ? fmt(total) + " kWh" : "fără date energetice"}`)}" style="background:${gradient}">
+          <div class="yg-donut-core"><strong>${values.length ? fmt(total) : "—"}</strong><span>kWh</span></div>
+        </div>
+        <div class="yg-chart-legend">
+          ${series.map((item) => {
+            const pct = item.value === null ? null : total > 0 ? Math.round(item.value * 100 / total) : 0;
+            return `<div class="yg-chart-legend-row">
+              <span class="yg-chart-swatch" style="background:${item.color}"></span>
+              <span class="yg-chart-label">${this._escape(item.label)}</span>
+              <strong>${this._escape(item.value === null ? "—" : `${fmt(item.value)} kWh`)}</strong>
+              <small>${pct === null ? "—" : `${pct}%`}</small>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+    </section>`;
+  }
+
+  _renderYellowGrid() {
+    const accounts = this._yellowGridAccounts();
+    if (!accounts.length) {
+      return `<section class="panel-card"><div class="empty">Nu există un cont YellowGrid configurat.</div></section>`;
+    }
+    return `
+      <section class="panel-card wide yg-intro">
+        <div class="card-head"><div><span class="eyebrow">YellowGrid</span><h2>Energie solară și portofel</h2></div></div>
+        <p>Datele sunt citite din senzorii instalațiilor YellowGrid în Home Assistant. Valorile energetice de mai jos sunt pentru ziua calendaristică din România; portofelul nu este o factură neachitată.</p>
+      </section>
+      ${accounts.map((account, accountIndex) => {
+        const wallet = account.portofel || {};
+        const walletAvailable = Object.keys(wallet).length > 0;
+        const installations = Array.isArray(account.instalatii) ? account.instalatii : [];
+        return `<div class="yg-account">
+          ${walletAvailable ? `<section class="panel-card yg-wallet-card">
+            <div class="card-head"><div><span class="eyebrow">cont financiar</span><h2>Portofel YellowGrid</h2></div><ha-icon icon="mdi:wallet-outline"></ha-icon></div>
+            <div class="yg-wallet-grid">
+              ${this._yellowGridMetric("Sold portofel", this._yellowGridFormatted(wallet, "balance", "RON"), "mdi:wallet")}
+              ${this._yellowGridMetric("Disponibil pentru retragere", this._yellowGridFormatted(wallet, "withdrawable", "RON"), "mdi:cash-check")}
+              ${this._yellowGridMetric("Sumă neachitată", this._yellowGridFormatted(wallet, "unpaid", "RON"), "mdi:cash-remove")}
+            </div>
+          </section>` : ""}
+          ${installations.map((installation, installationIndex) => {
+            const entities = installation.senzori || {};
+            const detailsKey = `${accountIndex}:${installationIndex}`;
+            const detailsOpen = this._yellowGridDetailsState.get(detailsKey) === true;
+            const onlineState = this._yellowGridEntity(entities, "state")?.state;
+            const online = onlineState === "Online";
+            const lastUpdate = this._yellowGridEntity(entities, "solar_w")?.attributes?.ultima_citire
+              || this._yellowGridEntity(entities, "state")?.attributes?.ultima_citire;
+            const soc = this._yellowGridFormatted(entities, "battery_soc_pct", "%", 0);
+            return `<section class="panel-card yg-installation">
+              <header class="yg-installation-header">
+                <div><span class="eyebrow">instalație fotovoltaică</span><h2>${this._escape(installation.nume || "Instalație YellowGrid")}</h2>
+                  <small>${lastUpdate ? `Ultima telemetrie: ${this._escape(this._dateTime(lastUpdate))}` : "Datele se actualizează prin integrarea Home Assistant"}</small>
+                </div>
+                <span class="pill ${online ? "paid" : "unknown"}">${this._escape(onlineState && onlineState !== "unavailable" && onlineState !== "unknown" ? onlineState : "Indisponibil")}</span>
+              </header>
+              ${this._yellowGridLiveFlow(entities)}
+              <div class="yg-group-head"><ha-icon icon="mdi:lightning-bolt"></ha-icon><h3>Puteri instantanee</h3></div>
+              <div class="yg-metrics">
+                ${this._yellowGridMetric("Producție totală", this._yellowGridPowerDisplay(entities, "production_w"), "mdi:solar-power-variant")}
+                ${this._yellowGridMetric("Consum locuință", this._yellowGridPowerDisplay(entities, "load_w"), "mdi:home-lightning-bolt")}
+                ${this._yellowGridMetric("Import rețea", this._yellowGridPowerDisplay(entities, "grid_import_w"), "mdi:transmission-tower-import")}
+                ${this._yellowGridMetric("Export rețea", this._yellowGridPowerDisplay(entities, "grid_export_w"), "mdi:transmission-tower-export")}
+                ${this._yellowGridMetric("Nivel baterie", soc, "mdi:battery")}
+                ${this._yellowGridMetric("Încărcare baterie", this._yellowGridPowerDisplay(entities, "battery_charging_w"), "mdi:battery-arrow-up")}
+                ${this._yellowGridMetric("Descărcare baterie", this._yellowGridPowerDisplay(entities, "battery_discharging_w"), "mdi:battery-arrow-down")}
+                ${this._yellowGridMetric("Cuplaj AC", this._yellowGridPowerDisplay(entities, "ac_coupling_w"), "mdi:solar-panel")}
+              </div>
+              <div class="yg-group-head"><ha-icon icon="mdi:chart-donut"></ha-icon><h3>Energie astăzi</h3><span>kWh · zi calendaristică</span></div>
+              <div class="yg-donut-grid">
+                ${this._yellowGridEnergyDonut(entities, "Producție", [
+                  ["solar_to_load_kwh", "Consum direct", "#d77b50"],
+                  ["solar_to_battery_kwh", "Stocată în baterie", "#15aa9a"],
+                  ["solar_to_grid_kwh", "Livrată în rețea", "#488de0"],
+                  ["solar_conversion_loss_kwh", "Pierderi", "#8192a9"],
+                ])}
+                ${this._yellowGridEnergyDonut(entities, "Consum", [
+                  ["solar_to_load_kwh", "Din producție", "#e1a928"],
+                  ["load_from_battery_kwh", "Din baterie", "#15aa9a"],
+                  ["load_from_grid_kwh", "Din rețea", "#488de0"],
+                ])}
+              </div>
+              <details class="yg-energy-details" data-yellowgrid-details-key="${detailsKey}" ${detailsOpen ? "open" : ""}>
+                <summary>Vezi toate fluxurile energetice în kWh</summary>
+                <div class="yg-energy-grid">
+                ${this._yellowGridFlow(entities, [
+                  ["solar_to_load_kwh", "Din producție spre consum"],
+                  ["solar_to_battery_kwh", "Din producție spre baterie"],
+                  ["solar_to_grid_kwh", "Din producție spre rețea"],
+                  ["solar_conversion_loss_kwh", "Pierderi de conversie"],
+                ], "Destinația producției")}
+                ${this._yellowGridFlow(entities, [
+                  ["solar_to_load_kwh", "Consum din producție"],
+                  ["load_from_battery_kwh", "Consum din baterie"],
+                  ["load_from_grid_kwh", "Consum din rețea"],
+                  ["grid_to_battery_kwh", "Din rețea spre baterie"],
+                  ["battery_to_grid_kwh", "Din baterie spre rețea"],
+                ], "Consum și transferuri")}
+                </div>
+              </details>
+            </section>`;
+          }).join("")}
+          ${!walletAvailable && !installations.length ? `<section class="panel-card"><div class="empty">Contul YellowGrid este configurat, dar nu există încă senzori disponibili.</div></section>` : ""}
+        </div>`;
+      }).join("")}`;
   }
 
   _summary() {
@@ -1640,6 +1912,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       ["invoices", "Facturi", "mdi:file-document-outline"],
       ["readings", "Indexuri", "mdi:gauge"],
       ...(this._distributionLocations().length ? [["distribution", "Distributie energie", "mdi:transmission-tower"]] : []),
+      ...(this._yellowGridAccounts().length ? [["yellowgrid", "YellowGrid", "mdi:solar-power-variant"]] : []),
       ["license", "Licență", "mdi:shield-check"],
       ["contact", "Contact", "mdi:email-outline"],
       ["settings", "Setări", "mdi:cog-outline"],
@@ -3478,6 +3751,7 @@ class UtilitatiRomaniaPanel extends HTMLElement {
     if (this._activeTab === "invoices") return this._renderInvoices(locations);
     if (this._activeTab === "readings") return this._renderReadings(locations);
     if (this._activeTab === "distribution") return this._renderDistribution();
+    if (this._activeTab === "yellowgrid") return this._renderYellowGrid();
     if (this._activeTab === "license") return this._renderLicense();
     if (this._activeTab === "contact") return this._renderContact();
     if (this._activeTab === "settings") return this._renderSettings(summary);
@@ -3491,6 +3765,91 @@ class UtilitatiRomaniaPanel extends HTMLElement {
       * { box-sizing:border-box; }
       .wrap { max-width:1280px; margin:0 auto; padding:28px clamp(16px,4vw,42px) 48px; }
       .distribution-grid { display:grid; gap:18px; }
+      .yg-live-flow-wrap { margin:4px 0 18px; border-radius:22px; padding:18px 18px 12px; background:color-mix(in srgb,var(--card-background-color) 84%,#103c53); border:1px solid color-mix(in srgb,var(--divider-color) 76%,#3690aa); overflow:hidden; }
+      .yg-live-flow-heading { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:8px; }
+      .yg-kicker { color:var(--primary-color); font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
+      .yg-live-flow-heading h4 { margin:2px 0; font-size:17px; color:var(--primary-text-color); }
+      .yg-live-flow-heading small { color:var(--secondary-text-color); text-align:right; font-size:11px; }
+      .yg-live-map { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.15fr) minmax(0,1fr); grid-template-rows:118px 140px; align-items:center; justify-items:center; position:relative; isolation:isolate; max-width:820px; margin:0 auto; gap:10px 7px; }
+      .yg-live-conduit { position:absolute; z-index:0; border-radius:10px; background:color-mix(in srgb,var(--divider-color) 80%,#94a3b8); opacity:.45; pointer-events:none; }
+      .yg-live-conduit.active { opacity:1; background:linear-gradient(90deg,#16a7b6,#5097e8); box-shadow:0 0 12px rgba(32,174,214,.25); }
+      .yg-live-conduit-solar { width:3px; height:42%; left:50%; top:19%; transform:translateX(-50%); }
+      .yg-live-conduit-battery { height:3px; width:32%; left:18%; top:74%; }
+      .yg-live-conduit-grid { height:3px; width:32%; right:18%; top:74%; }
+      .yg-flow-particle,.yg-flow-chevron { display:none; position:absolute; pointer-events:none; }
+      .yg-live-conduit.active .yg-flow-particle { display:block; width:9px; height:9px; border-radius:50%; background:#38d9fc; box-shadow:0 0 0 3px rgba(56,217,252,.17),0 0 15px rgba(56,217,252,.9); animation-duration:1800ms; animation-timing-function:linear; animation-iteration-count:infinite; animation-delay:var(--yg-flow-phase,0ms); }
+      .yg-live-conduit.direction-right .yg-flow-particle { top:50%; margin-top:-4.5px; animation-name:yg-flow-right; }
+      .yg-live-conduit.direction-left .yg-flow-particle { top:50%; margin-top:-4.5px; animation-name:yg-flow-left; }
+      .yg-live-conduit.direction-down .yg-flow-particle { left:50%; margin-left:-4.5px; animation-name:yg-flow-down; }
+      .yg-live-conduit.active .yg-flow-chevron { display:block; top:50%; left:50%; width:10px; height:10px; border-right:3px solid #38d9fc; border-bottom:3px solid #38d9fc; filter:drop-shadow(0 0 4px rgba(56,217,252,.65)); }
+      .yg-live-conduit.direction-right .yg-flow-chevron { transform:translate(-50%,-50%) rotate(-45deg); }
+      .yg-live-conduit.direction-left .yg-flow-chevron { transform:translate(-50%,-50%) rotate(135deg); }
+      .yg-live-conduit.direction-down .yg-flow-chevron { transform:translate(-50%,-50%) rotate(45deg); }
+      @keyframes yg-flow-right { from { left:0%; } to { left:100%; } }
+      @keyframes yg-flow-left { from { left:100%; } to { left:0%; } }
+      @keyframes yg-flow-down { from { top:0%; } to { top:100%; } }
+      @media (prefers-reduced-motion:reduce) { .yg-live-conduit.active .yg-flow-particle { animation:none; display:none; } }
+      .yg-live-node { position:relative; z-index:1; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:4px; width:100%; max-width:198px; min-height:105px; padding:12px 8px; border-radius:18px; border:1px solid color-mix(in srgb,var(--divider-color) 72%,#5087a6); background:color-mix(in srgb,var(--card-background-color) 92%,#0d3249); box-shadow:0 8px 28px rgba(0,0,0,.07); color:var(--primary-text-color); }
+      .yg-live-solar { grid-area:1/2; border-color:rgba(220,172,56,.5); }
+      .yg-live-battery { grid-area:2/1; border-color:rgba(31,171,150,.5); }
+      .yg-live-home { grid-area:2/2; border-color:rgba(93,157,243,.75); box-shadow:0 0 22px rgba(63,138,246,.13); min-height:124px; }
+      .yg-live-grid { grid-area:2/3; border-color:rgba(112,145,190,.5); }
+      .yg-live-node-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:50%; background:color-mix(in srgb,var(--primary-color) 12%,transparent); }
+      .yg-live-node-icon ha-icon { width:20px; height:20px; color:var(--primary-color); }
+      .yg-live-solar .yg-live-node-icon ha-icon { color:#daa523; }
+      .yg-live-battery .yg-live-node-icon ha-icon { color:#15aa9a; }
+      .yg-live-node-title { font-size:12px; line-height:1.2; color:var(--secondary-text-color); }
+      .yg-live-node strong { font-size:clamp(16px,1.8vw,22px); letter-spacing:-.02em; white-space:nowrap; }
+      .yg-live-node small { font-size:11px; color:var(--secondary-text-color); min-height:13px; }
+      .yg-donut-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin:4px 0 14px; }
+      .yg-chart-card { min-width:0; background:color-mix(in srgb,var(--primary-background-color) 85%,var(--card-background-color)); border:1px solid var(--divider-color); border-radius:18px; padding:17px; }
+      .yg-chart-card h4 { margin:0 0 14px; color:var(--primary-text-color); font-size:15px; }
+      .yg-chart-layout { display:grid; grid-template-columns:144px minmax(0,1fr); gap:15px; align-items:center; }
+      .yg-donut { position:relative; width:144px; height:144px; border-radius:50%; display:grid; place-items:center; transform:rotate(-90deg); }
+      .yg-donut::before { content:""; position:absolute; inset:16px; background:var(--card-background-color,#ffffff); border-radius:50%; }
+      .yg-donut-core { position:relative; transform:rotate(90deg); display:flex; flex-direction:column; align-items:center; text-align:center; }
+      .yg-donut-core strong { color:var(--primary-text-color); font-size:23px; font-weight:800; }
+      .yg-donut-core span { color:var(--secondary-text-color); font-size:11px; }
+      .yg-chart-legend { display:grid; gap:10px; min-width:0; }
+      .yg-chart-legend-row { display:grid; grid-template-columns:9px minmax(0,1fr) auto 32px; align-items:center; gap:7px; font-size:11px; }
+      .yg-chart-swatch { display:block; width:9px; height:9px; border-radius:50%; }
+      .yg-chart-label { color:var(--secondary-text-color); }
+      .yg-chart-legend-row strong { color:var(--primary-text-color); white-space:nowrap; font-weight:750; }
+      .yg-chart-legend-row small { color:var(--secondary-text-color); text-align:right; }
+      .yg-energy-details { margin-top:8px; border:1px solid var(--divider-color); border-radius:16px; padding:0 14px; }
+      .yg-energy-details summary { padding:14px 2px; cursor:pointer; font-size:13px; font-weight:700; color:var(--primary-text-color); }
+      .yg-energy-details[open] summary { margin-bottom:12px; border-bottom:1px solid var(--divider-color); }
+      .yg-energy-details .yg-energy-grid { margin-bottom:14px; }
+      @media (max-width:1050px) { .yg-chart-layout { grid-template-columns:1fr; justify-items:center; } .yg-chart-legend { width:100%; } }
+      @media (max-width:640px) { .yg-donut-grid { grid-template-columns:1fr; } .yg-chart-layout { grid-template-columns:128px minmax(0,1fr); justify-items:stretch; gap:10px; } .yg-donut { width:128px; height:128px; } .yg-live-flow-heading small { max-width:135px; } .yg-live-node { padding:9px 4px; min-height:97px; } .yg-live-node strong { font-size:16px; } .yg-live-node-title, .yg-live-node small { font-size:10px; } .yg-live-node-icon { width:24px; height:24px; } .yg-live-node-icon ha-icon { width:17px; height:17px; } .yg-live-map { grid-template-rows:107px 112px; } .yg-live-home { min-height:105px; } }
+      @media (max-width:410px) { .yg-chart-layout { grid-template-columns:1fr; justify-items:center; } .yg-chart-legend { width:100%; } .yg-chart-legend-row { font-size:11px; } .yg-live-flow-wrap { padding:12px 8px; } .yg-live-node strong { font-size:14px; } }
+      .yg-intro p { color:var(--secondary-text-color); line-height:1.55; margin:0; }
+      .yg-account { display:grid; gap:18px; margin-bottom:20px; }
+      .yg-wallet-card,.yg-installation { min-width:0; }
+      .yg-wallet-card .card-head > ha-icon { color:var(--primary-color); width:28px; height:28px; }
+      .yg-wallet-grid,.yg-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+      .yg-wallet-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+      .yg-metric { display:grid; grid-template-columns:auto minmax(0,1fr); gap:7px 9px; align-items:center; padding:15px; background:color-mix(in srgb,var(--primary-background-color) 86%,var(--card-background-color)); border:1px solid var(--divider-color); border-radius:16px; min-width:0; }
+      .yg-metric ha-icon { color:var(--primary-color); width:20px; height:20px; }
+      .yg-metric span { font-size:12px; color:var(--secondary-text-color); line-height:1.35; }
+      .yg-metric strong { grid-column:1 / -1; font-size:19px; font-weight:800; color:var(--primary-text-color); overflow-wrap:anywhere; }
+      .yg-installation-header { display:flex; align-items:start; justify-content:space-between; gap:16px; margin-bottom:18px; }
+      .yg-installation-header h2 { margin:4px 0 6px; }
+      .yg-installation-header small { color:var(--secondary-text-color); }
+      .yg-installation-header .pill { flex-shrink:0; }
+      .yg-group-head { display:flex; align-items:center; gap:9px; margin:22px 0 12px; color:var(--primary-text-color); }
+      .yg-group-head ha-icon { color:var(--primary-color); width:22px; height:22px; }
+      .yg-group-head h3 { margin:0; font-size:17px; }
+      .yg-group-head span { margin-left:auto; color:var(--secondary-text-color); font-size:12px; }
+      .yg-energy-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+      .yg-flow-group { min-width:0; padding:16px; border-radius:16px; background:color-mix(in srgb,var(--primary-background-color) 86%,var(--card-background-color)); border:1px solid var(--divider-color); }
+      .yg-flow-group h4 { color:var(--primary-text-color); font-size:14px; margin:0 0 13px; }
+      .yg-flow-items { display:grid; gap:12px; }
+      .yg-flow-line { display:flex; justify-content:space-between; gap:10px; align-items:baseline; }
+      .yg-flow-line span { color:var(--secondary-text-color); font-size:13px; }
+      .yg-flow-line strong { color:var(--primary-text-color); text-align:right; white-space:nowrap; font-size:13px; }
+      @media(max-width:950px) { .yg-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+      @media(max-width:640px) { .yg-wallet-grid { grid-template-columns:1fr; } .yg-energy-grid { grid-template-columns:1fr; } .yg-installation-header { flex-wrap:wrap; } .yg-group-head { flex-wrap:wrap; } .yg-group-head span { margin-left:0; } }
       .distribution-intro p { margin:0; color:var(--secondary-text-color); line-height:1.55; }
       .distribution-location-card { background:var(--card-background-color); color:var(--primary-text-color); border:1px solid var(--divider-color); border-radius:26px; padding:24px; box-shadow:0 18px 48px rgba(0,0,0,.12); }
       .distribution-location-card header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:18px; }
@@ -4034,6 +4393,13 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   }
 
   _bindEvents() {
+    this.shadowRoot.querySelectorAll("[data-yellowgrid-details-key]").forEach((details) => {
+      details.addEventListener("toggle", () => {
+        if (!details.isConnected) return;
+        const key = details.getAttribute("data-yellowgrid-details-key");
+        if (key) this._yellowGridDetailsState.set(key, details.open);
+      });
+    });
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((button) => {
       button.addEventListener("click", () => {
         this._activeTab = button.getAttribute("data-tab") || "overview";
@@ -4570,6 +4936,12 @@ class UtilitatiRomaniaPanel extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const distributionScroll = new Map();
+    // Salvam imediat starea sectiunilor YellowGrid inainte de inlocuirea DOM-ului.
+    // Altfel, actualizarile frecvente hass inchid automat un <details> deschis.
+    this.shadowRoot.querySelectorAll?.('[data-yellowgrid-details-key]').forEach((element) => {
+      const key = element.getAttribute('data-yellowgrid-details-key');
+      if (key) this._yellowGridDetailsState.set(key, element.open);
+    });
     this.shadowRoot.querySelectorAll?.('[data-distribution-scroll-key]').forEach((element) => {
       const key = element.getAttribute('data-distribution-scroll-key');
       if (key) distributionScroll.set(key, element.scrollLeft);

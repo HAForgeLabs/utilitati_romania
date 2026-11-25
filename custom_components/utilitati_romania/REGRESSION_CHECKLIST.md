@@ -678,3 +678,29 @@ Acest fisier se actualizeaza pentru orice modificare care poate influenta mai mu
 - [ ] Cazul RER Vest pentru total neachitat mai mare decât ultima factură rămâne funcțional.
 - [ ] Nu mai există loguri locale `[HIDRO FIX TRACE]`, `[HIDRO AGG TRACE]` sau `[ORANGE AGG TRACE]` în codul public.
 - [ ] Versiunea este sincronizată la `1.16.2` în manifest, backend, panel și card.
+
+## v1.19.3b1 – YellowGrid (beta)
+
+### Domeniu
+
+- Baza: v1.19.2 nemodificata pentru furnizorii existenti.
+- Furnizor nou: YellowGrid, exclusiv autentificare si citiri.
+- Module comune ajustate punctual: registru, config flow, coordinator,
+  sensor si diagnostics; celelalte servicii si panouri nu se modifica.
+
+### Verificari
+
+- Client local YellowGrid v0.1.3: autentificare, instalatii,
+  telemetrie, fluxuri zilnice si portofel – validate live.
+- Teste offline API nou: login, refresh JWT, selectia plantelor,
+  cereri GET, portofel, normalizarea semnelor, treceri DST.
+- Datele senzitive din diagnostice: cheia API mascata.
+- Instalatiile noi sunt inregistrate dinamic fara dubluri.
+- Nicio comanda de modificare catre invertor (doar POST de login/refresh).
+
+### Risc / test necesar
+
+- Se cere validare in Home Assistant pentru config flow, actualizare,
+  restaurare din snapshot si statisticile senzorilor daily reset.
+- Cheia x-apikey trebuie introdusa manual in acest beta.
+- Facturile si veniturile estimate nu sunt expuse in acest beta.

@@ -57,11 +57,22 @@ from .const import (
     MINIM_DIGI_HISTORY_LIMIT,
     MINIM_INTERVAL_ACTUALIZARE_ORE,
     MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
+    CONF_YELLOWGRID_API_KEY,
+    CONF_YELLOWGRID_TELEFON,
+    CONF_YELLOWGRID_COUNTRY_CODE,
+    CONF_YELLOWGRID_INTERVAL_MINUTES,
+    COD_TARA_IMPLICIT_YELLOWGRID,
+    FURNIZOR_YELLOWGRID,
+    IMPLICIT_YELLOWGRID_INTERVAL_MINUTES,
+    MINIM_YELLOWGRID_INTERVAL_MINUTES,
+    MAXIM_YELLOWGRID_INTERVAL_MINUTES,
 )
-from .exceptions import EroareAutentificare, EroareConectare
+from .exceptions import EroareAutentificare, EroareConectare, EroareParsare
 from .furnizori.apa_canal import ClientFurnizorApaCanal, OptiuneContractApaCanal
 from .furnizori.apa_brasov import ClientFurnizorApaBrasov, OptiuneContractApaBrasov, nume_scurt_locatie_apa_brasov
 from .furnizori.myelectrica import ClientApiMyElectrica
+from .furnizori.yellowgrid_api import normalizare_telefon_yellowgrid
+from .yellowgrid_diagnostic import async_salvare_diagnostic_yellowgrid
 from .furnizori.digi_api import (
     AddressOption,
     DigiAccountSelectionRequired,
@@ -113,6 +124,37 @@ def _rezumat_debug_eon(**detalii: Any) -> str:
         else:
             valori_sigur_de_afisat[cheie] = valoare
     return json.dumps(valori_sigur_de_afisat, ensure_ascii=False, default=str)
+
+
+def _date_normalizate_yellowgrid(user_input: dict[str, Any]) -> dict[str, Any] | None:
+    """Pastreaza telefonul in cheia interna comuna, fara aliasul de formular."""
+    candidate = user_input.get(CONF_YELLOWGRID_TELEFON, user_input.get(CONF_UTILIZATOR))
+    phone = normalizare_telefon_yellowgrid(candidate)
+    if phone is None:
+        return None
+    data = {**user_input, CONF_UTILIZATOR: phone,
+            CONF_YELLOWGRID_COUNTRY_CODE: COD_TARA_IMPLICIT_YELLOWGRID}
+    data.pop(CONF_YELLOWGRID_TELEFON, None)
+    return data
+
+
+def _eroare_formular_yellowgrid(client: Any, error: Exception) -> str:
+    """Clasifica esecul fara expunerea datelor din cererile HTTP."""
+    events = getattr(client, "istoric_diagnostic", ())
+    last = events[-1] if events else {}
+    status = last.get("http") if isinstance(last, dict) else None
+    stage = last.get("etapa") if isinstance(last, dict) else None
+    if status in {400, 422} and stage == "login":
+        return "yellowgrid_login_respins"
+    if status in {401, 403}:
+        return "yellowgrid_acces_respins"
+    if status == 429:
+        return "yellowgrid_pre_multe_cereri"
+    if isinstance(error, EroareAutentificare):
+        return "yellowgrid_autentificare_esuata"
+    if isinstance(error, EroareParsare):
+        return "yellowgrid_raspuns_invalid"
+    return "yellowgrid_conexiune_esuata"
 
 
 class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU):
@@ -174,23 +216,46 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
 
         clasa_furnizor = obtine_clasa_furnizor(self._furnizor)
 
+        if self._furnizor == FURNIZOR_YELLOWGRID and user_input is not None:
+            normalizate = _date_normalizate_yellowgrid(user_input)
+            if normalizate is None:
+                erori["base"] = "yellowgrid_numar_invalid"
+                await async_salvare_diagnostic_yellowgrid(
+                    self.hass, operatie="configurare", rezultat="eroare",
+                    etapa="validare_telefon",
+                )
+                user_input = None
+            else:
+                user_input = normalizate
+
         if user_input is not None:
             self._date_utilizator_curente = user_input
+            utilizator_licenta = user_input[CONF_UTILIZATOR]
+            if self._furnizor == FURNIZOR_YELLOWGRID:
+                licenta_stocata = await async_obtine_licenta_globala(self.hass)
+                utilizator_licenta = str(
+                    licenta_stocata.get(CONF_UTILIZATOR) or utilizator_licenta
+                ).strip()
 
             try:
                 rezultat_licenta = await async_valideaza_licenta(
                     self.hass,
                     self._cheie_licenta,
-                    user_input[CONF_UTILIZATOR],
+                    utilizator_licenta,
                 )
                 valideaza_rezultat_licenta(rezultat_licenta)
-            except Exception:
+            except Exception as err:
                 erori["base"] = "licenta_invalida"
+                if self._furnizor == FURNIZOR_YELLOWGRID:
+                    await async_salvare_diagnostic_yellowgrid(
+                        self.hass, operatie="configurare", rezultat="eroare",
+                        etapa="licenta", eroare=err,
+                    )
             else:
                 await async_salveaza_licenta_globala(
                     self.hass,
                     self._cheie_licenta,
-                    user_input[CONF_UTILIZATOR],
+                    utilizator_licenta,
                     rezultat_licenta,
                 )
                 if self._furnizor == "eon":
@@ -260,17 +325,53 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                     try:
                         unic = await client.async_testeaza_conexiunea()
                     except EroareAutentificare as err:
-                        if self._furnizor == "premier_energy":
-                            _LOGGER.warning("Premier Energy diagnostic: autentificare respinsă: %s", err)
-                        erori["base"] = "autentificare_esuata"
+                        if self._furnizor == FURNIZOR_YELLOWGRID:
+                            erori["base"] = _eroare_formular_yellowgrid(client, err)
+                            await async_salvare_diagnostic_yellowgrid(
+                                self.hass, operatie="configurare", rezultat="eroare",
+                                etapa="api", client=client, eroare=err,
+                            )
+                        else:
+                            if self._furnizor == "premier_energy":
+                                _LOGGER.warning("Premier Energy diagnostic: autentificare respinsă: %s", err)
+                            erori["base"] = "autentificare_esuata"
                     except EroareConectare as err:
-                        if self._furnizor == "premier_energy":
-                            _LOGGER.warning("Premier Energy diagnostic: conectare eșuată: %s", err)
-                        erori["base"] = "nu_se_poate_conecta"
-                    except Exception:
-                        _LOGGER.exception("Eroare neașteptată în fluxul de configurare pentru %s", self._furnizor)
-                        erori["base"] = "necunoscuta"
+                        if self._furnizor == FURNIZOR_YELLOWGRID:
+                            erori["base"] = _eroare_formular_yellowgrid(client, err)
+                            await async_salvare_diagnostic_yellowgrid(
+                                self.hass, operatie="configurare", rezultat="eroare",
+                                etapa="api", client=client, eroare=err,
+                            )
+                        else:
+                            if self._furnizor == "premier_energy":
+                                _LOGGER.warning("Premier Energy diagnostic: conectare eșuată: %s", err)
+                            erori["base"] = "nu_se_poate_conecta"
+                    except EroareParsare as err:
+                        if self._furnizor == FURNIZOR_YELLOWGRID:
+                            erori["base"] = _eroare_formular_yellowgrid(client, err)
+                            await async_salvare_diagnostic_yellowgrid(
+                                self.hass, operatie="configurare", rezultat="eroare",
+                                etapa="api", client=client, eroare=err,
+                            )
+                        else:
+                            _LOGGER.exception("Eroare neașteptată în fluxul de configurare pentru %s", self._furnizor)
+                            erori["base"] = "necunoscuta"
+                    except Exception as err:
+                        if self._furnizor == FURNIZOR_YELLOWGRID:
+                            await async_salvare_diagnostic_yellowgrid(
+                                self.hass, operatie="configurare", rezultat="eroare",
+                                etapa="api", client=client, eroare=err,
+                            )
+                            erori["base"] = "yellowgrid_eroare_neasteptata"
+                        else:
+                            _LOGGER.exception("Eroare neașteptată în fluxul de configurare pentru %s", self._furnizor)
+                            erori["base"] = "necunoscuta"
                     else:
+                        if self._furnizor == FURNIZOR_YELLOWGRID:
+                            await async_salvare_diagnostic_yellowgrid(
+                                self.hass, operatie="configurare", rezultat="ok",
+                                etapa="finalizare", client=client,
+                            )
                         await self.async_set_unique_id(f"{self._furnizor}::{unic}")
                         self._abort_if_unique_id_configured()
                         titlu_intrare = clasa_furnizor.nume_prietenos
@@ -310,6 +411,28 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
             ),
         }
 
+        if self._furnizor == FURNIZOR_YELLOWGRID:
+            schema_items = {
+                vol.Required(CONF_YELLOWGRID_TELEFON): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEL)
+                ),
+                vol.Required(CONF_PAROLA): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(CONF_YELLOWGRID_API_KEY): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Optional(
+                    CONF_YELLOWGRID_INTERVAL_MINUTES,
+                    default=IMPLICIT_YELLOWGRID_INTERVAL_MINUTES,
+                ): NumberSelector(NumberSelectorConfig(
+                    min=MINIM_YELLOWGRID_INTERVAL_MINUTES,
+                    max=MAXIM_YELLOWGRID_INTERVAL_MINUTES,
+                    step=5,
+                    mode=NumberSelectorMode.BOX,
+                )),
+            }
+
         if self._furnizor == "digi":
             schema_items[vol.Optional(
                 CONF_DIGI_HISTORY_LIMIT,
@@ -324,11 +447,25 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
             )
 
         return self.async_show_form(
-            step_id="credentiale_furnizor",
+            step_id=(
+                "conectare_yellowgrid"
+                if self._furnizor == FURNIZOR_YELLOWGRID
+                else "credentiale_furnizor"
+            ),
             data_schema=vol.Schema(schema_items),
             errors=erori,
             description_placeholders={"furnizor": clasa_furnizor.nume_prietenos},
         )
+
+    async def async_step_conectare_yellowgrid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_credentiale_furnizor(user_input)
+
+    async def async_step_credentiale_yellowgrid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_conectare_yellowgrid(user_input)
 
     async def async_step_selectare_contract_apa_canal(
         self, user_input: dict[str, Any] | None = None
@@ -977,8 +1114,13 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
             try:
                 rezultat_licenta = await async_valideaza_licenta(self.hass, cheie, utilizator)
                 valideaza_rezultat_licenta(rezultat_licenta)
-            except Exception:
+            except Exception as err:
                 erori["base"] = "licenta_invalida"
+                if este_yellowgrid:
+                    await async_salvare_diagnostic_yellowgrid(
+                        self.hass, operatie="optiuni", rezultat="eroare",
+                        etapa="licenta", eroare=err,
+                    )
             else:
                 await async_salveaza_licenta_globala(
                     self.hass,
@@ -1051,6 +1193,18 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
         intrare = self._get_reauth_entry()
         clasa_furnizor = obtine_clasa_furnizor(self._furnizor)
         erori: dict[str, str] = {}
+
+        if self._furnizor == FURNIZOR_YELLOWGRID and user_input is not None:
+            normalizate = _date_normalizate_yellowgrid(user_input)
+            if normalizate is None:
+                erori["base"] = "yellowgrid_numar_invalid"
+                await async_salvare_diagnostic_yellowgrid(
+                    self.hass, operatie="reautentificare", rezultat="eroare",
+                    etapa="validare_telefon",
+                )
+                user_input = None
+            else:
+                user_input = normalizate
 
         if user_input is not None:
             self._date_utilizator_curente = {
@@ -1126,45 +1280,108 @@ class FluxConfigurareUtilitatiRomania(config_entries.ConfigFlow, domain=DOMENIU)
                     if sesiune_dedicata
                     else async_get_clientsession(self.hass)
                 )
+                actualizare_yellowgrid = {}
+                if self._furnizor == FURNIZOR_YELLOWGRID:
+                    actualizare_yellowgrid = {
+                        CONF_YELLOWGRID_COUNTRY_CODE: COD_TARA_IMPLICIT_YELLOWGRID,
+                        CONF_YELLOWGRID_API_KEY: user_input.get(
+                            CONF_YELLOWGRID_API_KEY,
+                            intrare.data.get(CONF_YELLOWGRID_API_KEY, ""),
+                        ),
+                    }
                 client = clasa_furnizor(
                     sesiune=sesiune,
                     utilizator=user_input[CONF_UTILIZATOR],
                     parola=user_input[CONF_PAROLA],
-                    optiuni=intrare.data,
+                    optiuni={**intrare.data, **intrare.options, **actualizare_yellowgrid},
                 )
                 try:
                     await client.async_testeaza_conexiunea()
-                except EroareAutentificare:
-                    erori["base"] = "autentificare_esuata"
-                except EroareConectare:
-                    erori["base"] = "nu_se_poate_conecta"
-                except Exception:
-                    _LOGGER.exception("Eroare neașteptată în reautentificare")
-                    erori["base"] = "necunoscuta"
+                except (EroareAutentificare, EroareConectare, EroareParsare) as err:
+                    if self._furnizor == FURNIZOR_YELLOWGRID:
+                        erori["base"] = _eroare_formular_yellowgrid(client, err)
+                        await async_salvare_diagnostic_yellowgrid(
+                            self.hass, operatie="reautentificare", rezultat="eroare",
+                            etapa="api", client=client, eroare=err,
+                        )
+                    elif isinstance(err, EroareAutentificare):
+                        erori["base"] = "autentificare_esuata"
+                    elif isinstance(err, EroareConectare):
+                        erori["base"] = "nu_se_poate_conecta"
+                    else:
+                        _LOGGER.exception("Eroare neașteptată în reautentificare")
+                        erori["base"] = "necunoscuta"
+                except Exception as err:
+                    if self._furnizor == FURNIZOR_YELLOWGRID:
+                        erori["base"] = "yellowgrid_eroare_neasteptata"
+                        await async_salvare_diagnostic_yellowgrid(
+                            self.hass, operatie="reautentificare", rezultat="eroare",
+                            etapa="api", client=client, eroare=err,
+                        )
+                    else:
+                        _LOGGER.exception("Eroare neașteptată în reautentificare")
+                        erori["base"] = "necunoscuta"
                 else:
+                    if self._furnizor == FURNIZOR_YELLOWGRID:
+                        await async_salvare_diagnostic_yellowgrid(
+                            self.hass, operatie="reautentificare", rezultat="ok",
+                            etapa="finalizare", client=client,
+                        )
+                        self.hass.config_entries.async_update_entry(
+                            intrare,
+                            options={**intrare.options, **actualizare_yellowgrid},
+                        )
                     return self.async_update_reload_and_abort(
                         intrare,
                         data_updates={
                             CONF_UTILIZATOR: user_input[CONF_UTILIZATOR],
                             CONF_PAROLA: user_input[CONF_PAROLA],
+                            **actualizare_yellowgrid,
                         },
                     )
                 finally:
                     if sesiune_dedicata:
                         _elibereaza_sesiune_dedicata(sesiune)
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_UTILIZATOR, default=intrare.data.get(CONF_UTILIZATOR, "")): str,
-                vol.Required(CONF_PAROLA): str,
+        schema_items_reauth: dict[Any, Any] = {
+            vol.Required(CONF_UTILIZATOR, default=intrare.data.get(CONF_UTILIZATOR, "")): str,
+            vol.Required(CONF_PAROLA): str,
+        }
+        if self._furnizor == FURNIZOR_YELLOWGRID:
+            schema_items_reauth = {
+                vol.Required(CONF_YELLOWGRID_TELEFON, default=intrare.data.get(CONF_UTILIZATOR, "")):
+                    TextSelector(TextSelectorConfig(type=TextSelectorType.TEL)),
+                vol.Required(CONF_PAROLA): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
+                vol.Required(
+                    CONF_YELLOWGRID_API_KEY,
+                    default=intrare.options.get(
+                        CONF_YELLOWGRID_API_KEY, intrare.data.get(CONF_YELLOWGRID_API_KEY, "")
+                    ),
+                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
             }
-        )
+        schema = vol.Schema(schema_items_reauth)
         return self.async_show_form(
-            step_id="confirmare_reautentificare",
+            step_id=(
+                "reconectare_yellowgrid"
+                if self._furnizor == FURNIZOR_YELLOWGRID
+                else "confirmare_reautentificare"
+            ),
             data_schema=schema,
             errors=erori,
             description_placeholders={"furnizor": clasa_furnizor.nume_prietenos},
         )
+
+    async def async_step_reconectare_yellowgrid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_confirmare_reautentificare(user_input)
+
+    async def async_step_confirmare_reautentificare_yellowgrid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_reconectare_yellowgrid(user_input)
 
     async def async_step_eon_cod_email_reauth(
         self, user_input: dict[str, Any] | None = None
@@ -1369,16 +1586,39 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         erori: dict[str, str] = {}
+        este_yellowgrid = self._config_entry.data.get(CONF_FURNIZOR) == FURNIZOR_YELLOWGRID
+        if este_yellowgrid and user_input is not None:
+            normalizate = _date_normalizate_yellowgrid(user_input)
+            if normalizate is None:
+                erori["base"] = "yellowgrid_numar_invalid"
+                await async_salvare_diagnostic_yellowgrid(
+                    self.hass, operatie="optiuni", rezultat="eroare",
+                    etapa="validare_telefon",
+                )
+                user_input = None
+            else:
+                user_input = normalizate
+
         if user_input is not None:
             cheie_licenta = str(user_input[CONF_CHEIE_LICENTA]).strip() or "TRIAL"
             utilizator = str(user_input[CONF_UTILIZATOR]).strip()
+            utilizator_licenta = utilizator
+            if este_yellowgrid:
+                licenta_stocata = await async_obtine_licenta_globala(self.hass)
+                utilizator_licenta = str(
+                    licenta_stocata.get(CONF_UTILIZATOR) or utilizator
+                ).strip()
             try:
-                rezultat_licenta = await async_valideaza_licenta(self.hass, cheie_licenta, utilizator)
+                rezultat_licenta = await async_valideaza_licenta(
+                    self.hass, cheie_licenta, utilizator_licenta
+                )
                 valideaza_rezultat_licenta(rezultat_licenta)
             except Exception:
                 erori["base"] = "licenta_invalida"
             else:
-                await async_salveaza_licenta_globala(self.hass, cheie_licenta, utilizator, rezultat_licenta)
+                await async_salveaza_licenta_globala(
+                    self.hass, cheie_licenta, utilizator_licenta, rezultat_licenta
+                )
                 if self._config_entry.data.get(CONF_FURNIZOR) == FURNIZOR_ADMIN_GLOBAL:
                     data = {
                         CONF_UTILIZATOR: utilizator,
@@ -1393,8 +1633,17 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
                     CONF_UTILIZATOR: utilizator,
                     CONF_PAROLA: str(user_input[CONF_PAROLA]),
                     CONF_CHEIE_LICENTA: cheie_licenta,
-                    CONF_INTERVAL_ACTUALIZARE: int(user_input[CONF_INTERVAL_ACTUALIZARE]),
+                    CONF_INTERVAL_ACTUALIZARE: int(user_input.get(
+                        CONF_INTERVAL_ACTUALIZARE,
+                        self._config_entry.data.get(CONF_INTERVAL_ACTUALIZARE, IMPLICIT_INTERVAL_ACTUALIZARE_ORE),
+                    )),
                 }
+                if self._config_entry.data.get(CONF_FURNIZOR) == FURNIZOR_YELLOWGRID:
+                    data.update({
+                        CONF_YELLOWGRID_COUNTRY_CODE: COD_TARA_IMPLICIT_YELLOWGRID,
+                        CONF_YELLOWGRID_API_KEY: str(user_input[CONF_YELLOWGRID_API_KEY]).strip(),
+                        CONF_YELLOWGRID_INTERVAL_MINUTES: int(user_input[CONF_YELLOWGRID_INTERVAL_MINUTES]),
+                    })
                 if self._config_entry.data.get(CONF_FURNIZOR) == "myelectrica":
                     data[CONF_PUNCTE_CONSUM_SELECTATE] = [
                         str(x) for x in (user_input.get(CONF_PUNCTE_CONSUM_SELECTATE) or []) if str(x).strip()
@@ -1484,6 +1733,34 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
                 )
             ),
         }
+
+        if este_yellowgrid:
+            schema_items.pop(next(key for key in schema_items if key.schema == CONF_INTERVAL_ACTUALIZARE))
+            schema_items.pop(next(key for key in schema_items if key.schema == CONF_UTILIZATOR))
+            schema_items[vol.Required(
+                CONF_YELLOWGRID_TELEFON, default=util_implicit,
+            )] = TextSelector(TextSelectorConfig(type=TextSelectorType.TEL))
+            schema_items[vol.Required(
+                CONF_YELLOWGRID_API_KEY,
+                default=self._config_entry.options.get(
+                    CONF_YELLOWGRID_API_KEY,
+                    self._config_entry.data.get(CONF_YELLOWGRID_API_KEY, ""),
+                ),
+            )] = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
+            schema_items[vol.Required(
+                CONF_YELLOWGRID_INTERVAL_MINUTES,
+                default=self._config_entry.options.get(
+                    CONF_YELLOWGRID_INTERVAL_MINUTES,
+                    self._config_entry.data.get(
+                        CONF_YELLOWGRID_INTERVAL_MINUTES, IMPLICIT_YELLOWGRID_INTERVAL_MINUTES
+                    ),
+                ),
+            )] = NumberSelector(NumberSelectorConfig(
+                min=MINIM_YELLOWGRID_INTERVAL_MINUTES,
+                max=MAXIM_YELLOWGRID_INTERVAL_MINUTES,
+                step=5,
+                mode=NumberSelectorMode.BOX,
+            ))
 
         if self._config_entry.data.get(CONF_FURNIZOR) == "myelectrica":
             options_me: list[dict[str, str]] = []
@@ -1575,4 +1852,13 @@ class FluxOptiuniUtilitatiRomania(config_entries.OptionsFlow):
                 )
             )
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema_items), errors=erori)
+        return self.async_show_form(
+            step_id="yellowgrid" if este_yellowgrid else "init",
+            data_schema=vol.Schema(schema_items),
+            errors=erori,
+        )
+
+    async def async_step_yellowgrid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return await self.async_step_init(user_input)

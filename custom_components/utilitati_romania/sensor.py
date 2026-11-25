@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 import logging
 import re
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription, SensorStateClass
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -19,7 +19,7 @@ from homeassistant.const import UnitOfVolume
 
 from .coordonator import CoordonatorUtilitatiRomania
 from .entitate import EntitateUtilitatiRomania
-from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL, SIGNAL_LICENTA_ACTUALIZATA
+from .const import DOMENIU, CONF_FURNIZOR, FURNIZOR_ADMIN_GLOBAL, SIGNAL_LICENTA_ACTUALIZATA, FURNIZOR_YELLOWGRID
 from .modele import FacturaUtilitate, InstantaneuFurnizor
 from .hidro_device import alias_loc_consum, info_device_hidro, slug_loc_consum
 from .eon_device import (
@@ -2093,7 +2093,35 @@ async def async_setup_entry(
     instantaneu = coordonator.data
     entitati: list[SensorEntity] = []
 
-    if instantaneu and instantaneu.furnizor == "hidroelectrica":
+    if instantaneu and instantaneu.furnizor == FURNIZOR_YELLOWGRID:
+        entitati.extend(
+            SenzorPortofelYellowGrid(coordonator, descriere)
+            for descriere in SENZORI_YELLOWGRID_PORTOFEL
+        )
+        async_add_entities(entitati)
+        instalatii_inregistrate: set[str] = set()
+
+        def _descopera_instalatii_yellowgrid() -> None:
+            date = coordonator.data
+            if date is None or date.furnizor != FURNIZOR_YELLOWGRID:
+                return
+            senzori_noi: list[SensorEntity] = []
+            for cont in date.conturi:
+                if cont.id_cont in instalatii_inregistrate:
+                    continue
+                instalatii_inregistrate.add(cont.id_cont)
+                senzori_noi.extend(
+                    SenzorInstalatieYellowGrid(coordonator, cont, descriere)
+                    for descriere in SENZORI_YELLOWGRID_INSTALATIE
+                )
+            if senzori_noi:
+                async_add_entities(senzori_noi)
+
+        _descopera_instalatii_yellowgrid()
+        entry.async_on_unload(coordonator.async_add_listener(_descopera_instalatii_yellowgrid))
+        return
+
+    elif instantaneu and instantaneu.furnizor == "hidroelectrica":
         entitati.extend(SenzorRezumat(coordonator, d) for d in SENZORI_REZUMAT)
         for cont in instantaneu.conturi:
             for descriere in SENZORI_CONT_HIDRO:
@@ -4404,3 +4432,135 @@ class SenzorApaCanal(EntitateUtilitatiRomania, SensorEntity):
 
         return None
 
+
+
+# YellowGrid: senzori specifici, izolati de modelele pentru facturare.
+SENZORI_YELLOWGRID_INSTALATIE: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(key="solar_w", name="Producție solară", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="ac_coupling_w", name="Producție cuplaj AC", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="production_w", name="Producție totală", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="load_w", name="Consum instantaneu", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="grid_import_w", name="Import din rețea", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="grid_export_w", name="Export în rețea", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="battery_charging_w", name="Încărcare baterie", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="battery_discharging_w", name="Descărcare baterie", native_unit_of_measurement="W",
+                            device_class=SensorDeviceClass.POWER, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="battery_soc_pct", name="Nivel baterie", native_unit_of_measurement="%",
+                            device_class=SensorDeviceClass.BATTERY, state_class=SensorStateClass.MEASUREMENT),
+    SensorEntityDescription(key="state", name="Stare instalație"),
+    SensorEntityDescription(key="solar_to_load_kwh", name="Producție consumată astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+    SensorEntityDescription(key="solar_to_battery_kwh", name="Energie spre baterie astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+    SensorEntityDescription(key="solar_to_grid_kwh", name="Energie exportată astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+    SensorEntityDescription(key="solar_conversion_loss_kwh", name="Pierderi conversie astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+    SensorEntityDescription(key="load_from_battery_kwh", name="Consum din baterie astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+    SensorEntityDescription(key="load_from_grid_kwh", name="Consum din rețea astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+    SensorEntityDescription(key="grid_to_battery_kwh", name="Energie din rețea spre baterie astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+    SensorEntityDescription(key="battery_to_grid_kwh", name="Energie din baterie spre rețea astăzi", native_unit_of_measurement="kWh",
+                            device_class=SensorDeviceClass.ENERGY, state_class=SensorStateClass.TOTAL_INCREASING),
+)
+
+SENZORI_YELLOWGRID_PORTOFEL: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(key="balance", name="Sold portofel", native_unit_of_measurement="RON",
+                            device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL),
+    SensorEntityDescription(key="withdrawable", name="Disponibil pentru retragere", native_unit_of_measurement="RON",
+                            device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL),
+    SensorEntityDescription(key="unpaid", name="Sumă neachitată", native_unit_of_measurement="RON",
+                            device_class=SensorDeviceClass.MONETARY, state_class=SensorStateClass.TOTAL),
+)
+
+
+class SenzorInstalatieYellowGrid(EntitateUtilitatiRomania, SensorEntity):
+    entity_description: SensorEntityDescription
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, cont, descriere: SensorEntityDescription) -> None:
+        super().__init__(coordonator)
+        self._id_instalatie = cont.id_cont
+        self.entity_description = descriere
+        self._attr_unique_id = (
+            f"{coordonator.intrare.entry_id}_yellowgrid_{self._id_instalatie}_{descriere.key}"
+        )
+        slug = build_provider_slug("yellowgrid", cont.nume, self._id_instalatie)
+        self._attr_suggested_object_id = f"{slug}_{descriere.key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMENIU, f"{coordonator.intrare.entry_id}_yellowgrid_{self._id_instalatie}")},
+            name=f"YellowGrid - {cont.nume}",
+            manufacturer="YellowGrid",
+            model="Instalație fotovoltaică",
+        )
+
+    @property
+    def native_value(self):
+        instantaneu = self.coordinator.data
+        if instantaneu is None:
+            return None
+        cont = next(
+            (c for c in instantaneu.conturi if c.id_cont == self._id_instalatie), None
+        )
+        if cont is None:
+            return None
+        valori = (cont.date_brute or {}).get("yellowgrid") or {}
+        key = self.entity_description.key
+        if key.endswith("_w") or key == "battery_soc_pct":
+            if valori.get("state") != "Online":
+                return None
+            timestamp = valori.get("updated_at")
+            if not isinstance(timestamp, str):
+                return None
+            try:
+                moment = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                if moment.tzinfo is None:
+                    return None
+                if abs((datetime.now(timezone.utc) - moment).total_seconds()) > 1800:
+                    return None
+            except ValueError:
+                return None
+        return valori.get(key)
+
+    @property
+    def extra_state_attributes(self):
+        instantaneu = self.coordinator.data
+        if instantaneu is None:
+            return {}
+        cont = next((c for c in instantaneu.conturi if c.id_cont == self._id_instalatie), None)
+        if cont is None:
+            return {}
+        valori = (cont.date_brute or {}).get("yellowgrid") or {}
+        return {"ultima_citire": valori.get("updated_at")} if valori.get("updated_at") else {}
+
+
+class SenzorPortofelYellowGrid(EntitateUtilitatiRomania, SensorEntity):
+    entity_description: SensorEntityDescription
+
+    def __init__(self, coordonator: CoordonatorUtilitatiRomania, descriere: SensorEntityDescription) -> None:
+        super().__init__(coordonator)
+        self.entity_description = descriere
+        self._attr_unique_id = f"{coordonator.intrare.entry_id}_yellowgrid_portofel_{descriere.key}"
+        self._attr_suggested_object_id = f"yellowgrid_portofel_{descriere.key}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMENIU, f"{coordonator.intrare.entry_id}_yellowgrid_portofel")},
+            name="YellowGrid - Portofel",
+            manufacturer="YellowGrid",
+            model="Cont financiar",
+        )
+
+    @property
+    def native_value(self):
+        instantaneu = self.coordinator.data
+        if instantaneu is None:
+            return None
+        valori = instantaneu.extra.get("yellowgrid_wallet") or {}
+        return valori.get(self.entity_description.key)

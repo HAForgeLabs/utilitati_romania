@@ -14,14 +14,19 @@
           "utilizator": "Utilizator / email",
           "parola": "Parolă",
           "interval_actualizare": "Interval actualizare (ore)",
-          "digi_history_limit": "Număr facturi istorice per adresă"
+          "digi_history_limit": "Număr facturi istorice per adresă",
+          "yellowgrid_country_code": "Cod tara YellowGrid",
+          "yellowgrid_api_key": "Cheie API YellowGrid (x-apikey)",
+          "yellowgrid_interval_minutes": "Interval YellowGrid (minute)"
         }
       },
       "confirmare_reautentificare": {
         "title": "Reconectare {furnizor}",
         "data": {
           "utilizator": "Utilizator / email",
-          "parola": "Parolă"
+          "parola": "Parolă",
+          "yellowgrid_country_code": "Cod tara YellowGrid",
+          "yellowgrid_api_key": "Cheie API YellowGrid (x-apikey)"
         }
       },
       "eon_cod_email": {
@@ -112,6 +117,46 @@
         "data": {
           "cod_email": "Cod email"
         }
+      },
+      "credentiale_yellowgrid": {
+        "title": "Conectare YellowGrid",
+        "description": "Introdu numărul de telefon în format 07xxxxxxxx. Prefixul țării este configurat automat. Cheia API este necesară doar în această versiune beta de test.",
+        "data": {
+          "utilizator": "Număr telefon (07xxxxxxxx)",
+          "parola": "Parolă",
+          "yellowgrid_api_key": "Cheie API (doar beta)",
+          "yellowgrid_interval_minutes": "Interval actualizare (minute)"
+        }
+      },
+      "confirmare_reautentificare_yellowgrid": {
+        "title": "Reconectare YellowGrid",
+        "data": {
+          "utilizator": "Număr telefon (07xxxxxxxx)",
+          "parola": "Parolă",
+          "yellowgrid_api_key": "Cheie API (doar beta)"
+        }
+      },
+      "conectare_yellowgrid": {
+        "title": "Conectare YellowGrid",
+        "description": "Telefonul se transmite in format 07xxxxxxxx, iar codul tarii este 004. Daca apare o eroare, verifica fisierul utilitati_romania_yellowgrid_diagnostic.json din /config; nu este necesara repornirea pentru o noua incercare.",
+        "data": {
+          "yellowgrid_telefon": "Număr de telefon (07xxxxxxxx)",
+          "parola": "Parolă",
+          "yellowgrid_api_key": "Cheie API (numai beta)",
+          "yellowgrid_interval_minutes": "Interval actualizare (minute)"
+        },
+        "data_description": {
+          "yellowgrid_telefon": "Introduceți numărul fără prefixul țării."
+        }
+      },
+      "reconectare_yellowgrid": {
+        "title": "Reconectare YellowGrid",
+        "description": "Telefonul se transmite in format 07xxxxxxxx, iar codul tarii este 004. Daca apare o eroare, verifica fisierul utilitati_romania_yellowgrid_diagnostic.json din /config; nu este necesara repornirea pentru o noua incercare.",
+        "data": {
+          "yellowgrid_telefon": "Număr de telefon (07xxxxxxxx)",
+          "parola": "Parolă",
+          "yellowgrid_api_key": "Cheie API (numai beta)"
+        }
       }
     },
     "error": {
@@ -125,7 +170,15 @@
       "digi_selectare_cont_invalida": "Contul Digi selectat nu a putut fi confirmat.",
       "fara_contracte": "Nu am găsit niciun contract disponibil pentru acest cont.",
       "contract_invalid": "Selecția contractului nu mai este validă. Reîncearcă.",
-      "digi_2fa_indisponibil": "Nu este disponibilă nicio metodă de verificare 2FA pentru acest cont Digi."
+      "digi_2fa_indisponibil": "Nu este disponibilă nicio metodă de verificare 2FA pentru acest cont Digi.",
+      "yellowgrid_numar_invalid": "Numărul trebuie să fie de forma 07xxxxxxxx (10 cifre).",
+      "yellowgrid_login_respins": "YellowGrid a respins cererea de autentificare (HTTP 400/422). Vezi diagnosticul din /config.",
+      "yellowgrid_acces_respins": "YellowGrid a respins accesul (HTTP 401/403). Verifică cheia API și datele de autentificare.",
+      "yellowgrid_pre_multe_cereri": "YellowGrid limitează temporar cererile (HTTP 429). Reîncearcă mai târziu.",
+      "yellowgrid_autentificare_esuata": "Autentificarea YellowGrid a eșuat. Vezi diagnosticul din /config.",
+      "yellowgrid_raspuns_invalid": "Răspunsul API YellowGrid este invalid. Vezi diagnosticul din /config.",
+      "yellowgrid_conexiune_esuata": "YellowGrid nu a putut fi contactat. Etapa și codul HTTP sunt în diagnosticul din /config.",
+      "yellowgrid_eroare_neasteptata": "Eroare neașteptată YellowGrid. Vezi jurnalul de diagnostic din /config."
     },
     "abort": {
       "already_configured": "Acest cont este deja configurat.",
@@ -144,12 +197,26 @@
           "cheie_licenta": "Cheie licență",
           "digi_history_limit": "Număr facturi istorice per adresă",
           "retele_interval_date_instantanee": "Interval actualizare automata contor (ore, 0 = dezactivat)",
-          "puncte_consum_selectate": "Puncte de consum"
+          "puncte_consum_selectate": "Puncte de consum",
+          "yellowgrid_country_code": "Cod tara YellowGrid",
+          "yellowgrid_api_key": "Cheie API YellowGrid (x-apikey)",
+          "yellowgrid_interval_minutes": "Interval YellowGrid (minute)"
+        }
+      },
+      "yellowgrid": {
+        "title": "Opțiuni YellowGrid",
+        "data": {
+          "parola": "Parolă",
+          "cheie_licenta": "Cheie licență",
+          "yellowgrid_api_key": "Cheie API (doar beta)",
+          "yellowgrid_interval_minutes": "Interval actualizare (minute)",
+          "yellowgrid_telefon": "Număr de telefon (07xxxxxxxx)"
         }
       }
     },
     "error": {
-      "licenta_invalida": "Licența nu este validă pentru această integrare."
+      "licenta_invalida": "Licența nu este validă pentru această integrare.",
+      "yellowgrid_numar_invalid": "Numărul trebuie să fie de forma 07xxxxxxxx (10 cifre)."
     }
   }
 }

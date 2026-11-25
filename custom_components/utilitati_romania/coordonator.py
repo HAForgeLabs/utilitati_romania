@@ -27,6 +27,9 @@ from .const import (
     MAXIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
     MINIM_RETELE_INTERVAL_DATE_INSTANTANEE_ORE,
     SIGNAL_LICENTA_ACTUALIZATA,
+    FURNIZOR_YELLOWGRID,
+    CONF_YELLOWGRID_INTERVAL_MINUTES,
+    IMPLICIT_YELLOWGRID_INTERVAL_MINUTES,
 )
 from .exceptions import EroareAutentificare, EroareConectare, EroareLicenta
 from .furnizori.registru import obtine_clasa_furnizor
@@ -114,11 +117,20 @@ class CoordonatorUtilitatiRomania(DataUpdateCoordinator[InstantaneuFurnizor]):
             if hasattr(self.client, "importa_cookies"):
                 self.client.importa_cookies(cookies)
 
+        if self.cheie_furnizor == FURNIZOR_YELLOWGRID:
+            interval_minute = intrare.options.get(
+                CONF_YELLOWGRID_INTERVAL_MINUTES,
+                intrare.data.get(CONF_YELLOWGRID_INTERVAL_MINUTES, IMPLICIT_YELLOWGRID_INTERVAL_MINUTES),
+            )
+            interval_actualizare = timedelta(minutes=max(5, min(60, int(interval_minute))))
+        else:
+            interval_actualizare = timedelta(hours=interval_ore)
+
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMENIU}_{self.cheie_furnizor}",
-            update_interval=timedelta(hours=interval_ore),
+            update_interval=interval_actualizare,
             config_entry=intrare,
         )
 

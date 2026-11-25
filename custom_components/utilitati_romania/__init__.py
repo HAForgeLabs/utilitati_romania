@@ -24,6 +24,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .const import (
     CONF_FURNIZOR,
+    FURNIZOR_YELLOWGRID,
     CONF_PREMISE_LABEL,
     CONF_ACCOUNT_ID,
     CONF_CONTRACT_ID,
@@ -64,6 +65,7 @@ from .asocieri_distributie import (
     async_salveaza_asocieri_distributie,
 )
 from .licentiere import async_salveaza_licenta_in_intrare, async_verifica_licenta
+from .dashboard_yellowgrid import descriere_panou_yellowgrid
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,7 +74,7 @@ def _log_temporar(*_args, **_kwargs) -> None:
     return None
 
 
-_FRONTEND_VERSION = "1.19.2"
+_FRONTEND_VERSION = "1.19.3b6"
 _LOVELACE_RESOURCE_BASE_URL = "/utilitati_romania/utilitati_romania-card.js"
 _PANEL_RESOURCE_BASE_URL = "/utilitati_romania/utilitati-romania-panel.js"
 _LOVELACE_RESOURCE_URL = f"{_LOVELACE_RESOURCE_BASE_URL}?v={_FRONTEND_VERSION}"
@@ -237,6 +239,12 @@ async def _websocket_dashboard_payload(hass, connection, msg):
     if not isinstance(payload, dict):
         payload = {"locatii": []}
     connection.send_result(msg["id"], payload)
+
+@websocket_api.websocket_command({vol.Required("type"): "utilitati_romania/yellowgrid_dashboard"})
+@websocket_api.async_response
+async def _websocket_yellowgrid_dashboard(hass, connection, msg):
+    connection.send_result(msg["id"], descriere_panou_yellowgrid(hass))
+
 
 @websocket_api.websocket_command({
     vol.Required("type"): "utilitati_romania/premier_invoice_pdf",
@@ -1144,6 +1152,7 @@ def _async_ensure_services(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMENIU, SERVICIU_SET_DISTRIBUTION_SUPPLIER_LINKS, _async_handle_set_distribution_supplier_links)
     websocket_api.async_register_command(hass, _websocket_distribution_supplier_links)
     websocket_api.async_register_command(hass, _websocket_dashboard_payload)
+    websocket_api.async_register_command(hass, _websocket_yellowgrid_dashboard)
     websocket_api.async_register_command(hass, _websocket_premier_invoice_pdf)
     hass.data[DOMENIU]["_services_registered"] = True
 
